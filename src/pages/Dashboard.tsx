@@ -7,17 +7,18 @@ import type { Item } from '../types';
 export default function Dashboard() {
   const [items, setItems] = useState<Item[]>([]);
   const [pasteText, setPasteText] = useState('');
-  const date = todayKey();
+  const [showPaste, setShowPaste] = useState(false);
+  const [viewDate, setViewDate] = useState(todayKey());
 
   useEffect(() => {
-    const ref = collection(db, 'days', date, 'items');
+    const ref = collection(db, 'days', viewDate, 'items');
     return onSnapshot(ref, (snap) => {
       const list: Item[] = [];
       snap.forEach((d) => list.push(d.data() as Item));
       list.sort((a, b) => a.code.localeCompare(b.code));
       setItems(list);
     });
-  }, [date]);
+  }, [viewDate]);
 
   const stats = useMemo(() => {
     const totalQty = items.reduce((s, i) => s + (i.totalQty || 0), 0);
@@ -27,6 +28,18 @@ export default function Dashboard() {
     const pct = totalQty ? Math.round((actual / totalQty) * 100) : 0;
     return { totalQty, actual, itemCount, completedItems, pct };
   }, [items]);
+
+  const changeDate = (delta: number) => {
+    const d = new Date(viewDate);
+    d.setDate(d.getDate() + delta);
+    setViewDate(d.toISOString().slice(0, 10));
+  };
+
+  const dateLabel = (() => {
+    const d = new Date(viewDate);
+    const days = ['일', '월', '화', '수', '목', '금', '토'];
+    return `${viewDate.replace(/-/g, '.')} (${days[d.getDay()]})`;
+  })();
 
   const onPaste = async () => {
     const rows = pasteText
@@ -39,105 +52,143 @@ export default function Dashboard() {
     const batch = writeBatch(db);
     for (const cols of rows) {
       const code = cols[0].trim();
-      const num = (s: string) => {
-        const n = parseFloat((s || '').replace(/,/g, ''));
-        return isNaN(n) ? 0 : n;
-      };
+      const num = (s: string) => { const n = parseFloat((s || '').replace(/,/g, '')); return isNaN(n) ? 0 : n; };
       const item: Item = {
-        id: code,
-        code,
+        id: code, code,
         name: cols[1]?.trim() || '',
         orderQty: num(cols[2]),
         coupang: num(cols[3]),
         marketKurly: num(cols[4]),
         totalQty: num(cols[8]),
         actualProduction: 0,
-        date,
+        date: viewDate,
       };
-      batch.set(doc(db, 'days', date, 'items', code), item);
+      batch.set(doc(db, 'days', viewDate, 'items', code), item);
     }
     await batch.commit();
     setPasteText('');
+    setShowPaste(false);
   };
 
   const clearAll = async () => {
     if (!confirm('오늘 데이터를 모두 삭제할까요?')) return;
     const batch = writeBatch(db);
-    items.forEach((i) => batch.delete(doc(db, 'days', date, 'items', i.code)));
+    items.forEach((i) => batch.delete(doc(db, 'days', viewDate, 'items', i.code)));
     await batch.commit();
   };
 
   return (
-    <div className="space-y-4">
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
-        <Stat label="품목수" value={`${stats.itemCount} 품목`} />
-        <Stat label="총 수량" value={`${stats.totalQty.toLocaleString()} EA`} />
-        <Stat label="완료된 수량" value={`${stats.actual} EA`} />
-        <Stat label="진행률" value={`${stats.pct}%`} highlight={stats.pct === 100} />
-        <Stat label="완료된 품목" value={`${stats.completedItems} 품목`} />
+    <div className="space-y-5">
+      {/* 날짜 네비게이션 */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <button onClick={() => changeDate(-1)} className="w-8 h-8 flex items-center justify-center rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-600">
+            ‹
+          </button>
+          <span className="font-semibold text-gray-800 text-base">{dateLabel}</span>
+          <button onClick={() => changeDate(1)} className="w-8 h-8 flex items-center justify-center rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-600">
+            ›
+          </button>
+        </div>
+        <div className="flex gap-2">
+          {items.length === 0 ? (
+            <button
+              onClick={() => setShowPaste(true)}
+              className="bg-orange-500 hover:bg-orange-600 text-white text-sm px-4 py-2 rounded font-medium transition"
+            >
+              + 오늘 데이터 입력
+            </button>
+          ) : (
+            <button onClick={clearAll} className="text-sm text-red-500 hover:underline">전체 삭제</button>
+          )}
+        </div>
       </div>
 
-      {items.length === 0 ? (
-        <div className="bg-white border rounded-lg p-4 space-y-3">
-          <h2 className="font-semibold">오늘 데이터 붙여넣기</h2>
-          <p className="text-sm text-slate-500">
-            ERP에서 가공한 데이터를 탭으로 구분된 형식 (코드 / 품목명 / 주문수량 / 쿠팡 / 마켓컬리 / (사용X) / (사용X) / (사용X) / 총수량) 그대로 붙여넣으세요.
+      {/* 통계 카드 */}
+      <div className="grid grid-cols-2 md:grid-cols-5 gap-4">
+        <StatCard label="금일 품목수" value={`${stats.itemCount}`} unit="품목" color="blue" />
+        <StatCard label="총 수량" value={stats.totalQty.toLocaleString()} unit="EA" color="green" />
+        <StatCard label="완료된 수량" value={stats.actual.toLocaleString()} unit="EA" color="orange" />
+        <StatCard label="진행률" value={`${stats.pct}`} unit="%" color={stats.pct === 100 ? 'green' : stats.pct >= 50 ? 'orange' : 'red'} />
+        <StatCard label="완료된 품목" value={`${stats.completedItems}`} unit="품목" color="purple" />
+      </div>
+
+      {/* 붙여넣기 패널 */}
+      {showPaste && (
+        <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-5 space-y-3">
+          <div className="flex justify-between items-center">
+            <h2 className="font-semibold text-gray-800">ERP 데이터 붙여넣기</h2>
+            <button onClick={() => setShowPaste(false)} className="text-gray-400 hover:text-gray-600 text-lg">✕</button>
+          </div>
+          <p className="text-xs text-gray-500">
+            열 순서: 코드 / 품목명 / 주문수량 / 쿠팡 / 마켓컬리 / (사용X) / (사용X) / (사용X) / 총수량
           </p>
           <textarea
             value={pasteText}
             onChange={(e) => setPasteText(e.target.value)}
-            className="w-full h-40 border rounded-md p-3 font-mono text-sm"
-            placeholder="A01\t순수쌀미음\t21\t-\t-\t...\t21"
+            className="w-full h-40 border border-gray-200 rounded-md p-3 font-mono text-xs resize-none focus:outline-none focus:ring-2 focus:ring-blue-900"
+            placeholder="A01&#9;순수쌀미음&#9;21&#9;-&#9;-&#9;...&#9;21"
           />
-          <button
-            onClick={onPaste}
-            className="bg-slate-900 text-white px-4 py-2 rounded-md text-sm font-medium hover:bg-slate-700"
-          >
-            등록
-          </button>
+          <div className="flex gap-2">
+            <button onClick={onPaste} className="bg-blue-900 text-white px-5 py-2 rounded text-sm font-medium hover:bg-blue-800 transition">
+              등록
+            </button>
+            <button onClick={() => setShowPaste(false)} className="border border-gray-300 px-5 py-2 rounded text-sm text-gray-600 hover:bg-gray-50 transition">
+              취소
+            </button>
+          </div>
         </div>
-      ) : (
-        <div className="bg-white border rounded-lg overflow-hidden">
-          <div className="flex justify-between items-center p-3 border-b bg-slate-50">
-            <h2 className="font-semibold">오늘 품목 ({items.length})</h2>
-            <button onClick={clearAll} className="text-xs text-red-500 hover:underline">전체 삭제</button>
+      )}
+
+      {/* 품목 테이블 */}
+      {items.length > 0 && (
+        <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
+          <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
+            <h2 className="font-semibold text-gray-800">품목별 현황</h2>
+            <span className="text-xs text-gray-400">{items.length}개 품목</span>
           </div>
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
-              <thead className="bg-slate-100 text-slate-600 text-xs">
-                <tr>
-                  <th className="p-2 text-left">코드</th>
-                  <th className="p-2 text-left">품목명</th>
-                  <th className="p-2 text-right">주문수량</th>
-                  <th className="p-2 text-right">쿠팡</th>
-                  <th className="p-2 text-right">마켓컬리</th>
-                  <th className="p-2 text-right">총수량</th>
-                  <th className="p-2 text-right">실제 생산량</th>
-                  <th className="p-2 text-right">±</th>
-                  <th className="p-2 text-center">냉각 종료</th>
+              <thead>
+                <tr className="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide">
+                  <th className="px-4 py-3 text-left font-medium">코드</th>
+                  <th className="px-4 py-3 text-left font-medium">품목명</th>
+                  <th className="px-4 py-3 text-right font-medium">주문수량</th>
+                  <th className="px-4 py-3 text-right font-medium text-orange-600">쿠팡</th>
+                  <th className="px-4 py-3 text-right font-medium text-blue-600">마켓컬리</th>
+                  <th className="px-4 py-3 text-right font-medium">총수량</th>
+                  <th className="px-4 py-3 text-right font-medium">실제 생산량</th>
+                  <th className="px-4 py-3 text-right font-medium">±</th>
+                  <th className="px-4 py-3 text-center font-medium">냉각 종료</th>
                 </tr>
               </thead>
-              <tbody>
+              <tbody className="divide-y divide-gray-100">
                 {items.map((it) => {
                   const diff = it.actualProduction - it.totalQty;
                   const done = it.actualProduction >= it.totalQty && it.totalQty > 0;
-                  const short = it.actualProduction > 0 && it.actualProduction < it.totalQty;
+                  const inProgress = it.actualProduction > 0 && it.actualProduction < it.totalQty;
                   return (
                     <tr
                       key={it.code}
-                      className={`border-t ${done ? 'bg-green-100' : ''} ${short ? 'bg-red-50' : ''}`}
+                      className={`transition-colors ${
+                        done
+                          ? 'bg-green-50'
+                          : inProgress
+                          ? 'bg-red-50'
+                          : 'hover:bg-gray-50'
+                      }`}
                     >
-                      <td className="p-2 font-mono">{it.code}</td>
-                      <td className="p-2 font-medium">{it.name}</td>
-                      <td className="p-2 text-right">{it.orderQty || '-'}</td>
-                      <td className="p-2 text-right text-orange-700">{it.coupang || '-'}</td>
-                      <td className="p-2 text-right text-blue-700">{it.marketKurly || '-'}</td>
-                      <td className="p-2 text-right font-semibold">{it.totalQty}</td>
-                      <td className="p-2 text-right">{it.actualProduction}</td>
-                      <td className={`p-2 text-right font-bold ${diff > 0 ? 'text-green-600' : diff < 0 ? 'text-red-600' : 'text-slate-400'}`}>
-                        {diff > 0 ? `+${diff}` : diff || ''}
+                      <td className="px-4 py-3 font-mono text-xs text-gray-500">{it.code}</td>
+                      <td className="px-4 py-3 font-medium text-gray-800">{it.name}</td>
+                      <td className="px-4 py-3 text-right text-gray-600">{it.orderQty || '-'}</td>
+                      <td className="px-4 py-3 text-right text-orange-600 font-medium">{it.coupang || '-'}</td>
+                      <td className="px-4 py-3 text-right text-blue-600 font-medium">{it.marketKurly || '-'}</td>
+                      <td className="px-4 py-3 text-right font-semibold text-gray-800">{it.totalQty}</td>
+                      <td className="px-4 py-3 text-right text-gray-700">{it.actualProduction || 0}</td>
+                      <td className={`px-4 py-3 text-right font-bold ${diff > 0 ? 'text-green-600' : diff < 0 ? 'text-red-500' : 'text-gray-300'}`}>
+                        {diff > 0 ? `+${diff}` : diff < 0 ? diff : ''}
                       </td>
-                      <td className="p-2 text-center text-xs text-slate-500">{it.coolingEndTime || ''}</td>
+                      <td className="px-4 py-3 text-center text-xs text-gray-400">{it.coolingEndTime || '-'}</td>
                     </tr>
                   );
                 })}
@@ -146,15 +197,37 @@ export default function Dashboard() {
           </div>
         </div>
       )}
+
+      {items.length === 0 && !showPaste && (
+        <div className="bg-white rounded-lg border border-dashed border-gray-300 p-12 text-center">
+          <p className="text-gray-400 text-sm mb-3">오늘 생산 데이터가 없습니다</p>
+          <button
+            onClick={() => setShowPaste(true)}
+            className="bg-blue-900 text-white text-sm px-5 py-2 rounded font-medium hover:bg-blue-800 transition"
+          >
+            + 데이터 입력
+          </button>
+        </div>
+      )}
     </div>
   );
 }
 
-function Stat({ label, value, highlight = false }: { label: string; value: string; highlight?: boolean }) {
+const colorMap = {
+  blue:   { border: 'border-blue-500',   text: 'text-blue-600' },
+  green:  { border: 'border-green-500',  text: 'text-green-600' },
+  orange: { border: 'border-orange-400', text: 'text-orange-500' },
+  red:    { border: 'border-red-400',    text: 'text-red-500' },
+  purple: { border: 'border-purple-400', text: 'text-purple-600' },
+};
+
+function StatCard({ label, value, unit, color }: { label: string; value: string; unit: string; color: keyof typeof colorMap }) {
+  const c = colorMap[color];
   return (
-    <div className={`rounded-lg p-3 border ${highlight ? 'bg-green-100 border-green-300' : 'bg-white'}`}>
-      <div className="text-xs text-slate-500">{label}</div>
-      <div className="text-xl font-bold mt-1">{value}</div>
+    <div className={`bg-white rounded-lg border-t-4 ${c.border} shadow-sm p-4`}>
+      <div className="text-xs text-gray-500 mb-2 font-medium">{label}</div>
+      <div className={`text-2xl font-bold ${c.text}`}>{value}</div>
+      <div className="text-xs text-gray-400 mt-0.5">{unit}</div>
     </div>
   );
 }
