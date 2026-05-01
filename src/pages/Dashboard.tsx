@@ -9,6 +9,10 @@ export default function Dashboard() {
   const [pasteText, setPasteText] = useState('');
   const [showPaste, setShowPaste] = useState(false);
   const [viewDate, setViewDate] = useState(todayKey());
+  const [isWeekend, setIsWeekend] = useState(() => {
+    const day = new Date().getDay();
+    return day === 0 || day === 6;
+  });
 
   useEffect(() => {
     const ref = collection(db, 'days', viewDate, 'items');
@@ -42,24 +46,33 @@ export default function Dashboard() {
   })();
 
   const onPaste = async () => {
+    const num = (s: string) => {
+      const cleaned = (s || '').trim().replace(/,/g, '');
+      if (cleaned === '-' || cleaned === '') return 0;
+      const n = parseFloat(cleaned);
+      return isNaN(n) ? 0 : n;
+    };
+
+    // 평일: 6열 (코드/품목명/주문/쿠팡/컬리/총수량)
+    // 주말: 5열 (코드/품목명/주문/쿠팡/총수량) — 컬리 없음
+    const minCols = isWeekend ? 5 : 6;
     const rows = pasteText
       .split('\n')
       .map((r) => r.split('\t'))
-      .filter((cols) => cols.length >= 9 && cols[0]?.trim());
+      .filter((cols) => cols.length >= minCols && cols[0]?.trim());
 
-    if (!rows.length) return alert('붙여넣을 데이터가 없습니다');
+    if (!rows.length) return alert(`붙여넣을 데이터가 없습니다 (${isWeekend ? '주말' : '평일'} 모드: ${minCols}열 필요)`);
 
     const batch = writeBatch(db);
     for (const cols of rows) {
       const code = cols[0].trim();
-      const num = (s: string) => { const n = parseFloat((s || '').replace(/,/g, '')); return isNaN(n) ? 0 : n; };
       const item: Item = {
         id: code, code,
         name: cols[1]?.trim() || '',
         orderQty: num(cols[2]),
         coupang: num(cols[3]),
-        marketKurly: num(cols[4]),
-        totalQty: num(cols[8]),
+        marketKurly: isWeekend ? 0 : num(cols[4]),
+        totalQty: isWeekend ? num(cols[4]) : num(cols[5]),
         actualProduction: 0,
         date: viewDate,
       };
@@ -120,14 +133,35 @@ export default function Dashboard() {
             <h2 className="font-semibold text-gray-800">ERP 데이터 붙여넣기</h2>
             <button onClick={() => setShowPaste(false)} className="text-gray-400 hover:text-gray-600 text-lg">✕</button>
           </div>
+
+          {/* 평일/주말 토글 */}
+          <div className="flex items-center gap-2 bg-gray-50 rounded-md p-1 w-max">
+            <button
+              onClick={() => setIsWeekend(false)}
+              className={`px-4 py-1.5 text-sm rounded transition ${
+                !isWeekend ? 'bg-blue-900 text-white font-medium' : 'text-gray-500 hover:text-gray-800'
+              }`}
+            >
+              평일 (쿠팡+컬리)
+            </button>
+            <button
+              onClick={() => setIsWeekend(true)}
+              className={`px-4 py-1.5 text-sm rounded transition ${
+                isWeekend ? 'bg-blue-900 text-white font-medium' : 'text-gray-500 hover:text-gray-800'
+              }`}
+            >
+              주말 (쿠팡만)
+            </button>
+          </div>
+
           <p className="text-xs text-gray-500">
-            열 순서: 코드 / 품목명 / 주문수량 / 쿠팡 / 마켓컬리 / (사용X) / (사용X) / (사용X) / 총수량
+            열 순서: {isWeekend ? '코드 / 품목명 / 주문수량 / 쿠팡 / 총수량 (5열)' : '코드 / 품목명 / 주문수량 / 쿠팡 / 마켓컬리 / 총수량 (6열)'}
           </p>
           <textarea
             value={pasteText}
             onChange={(e) => setPasteText(e.target.value)}
             className="w-full h-40 border border-gray-200 rounded-md p-3 font-mono text-xs resize-none focus:outline-none focus:ring-2 focus:ring-blue-900"
-            placeholder="A01&#9;순수쌀미음&#9;21&#9;-&#9;-&#9;...&#9;21"
+            placeholder={isWeekend ? 'A01\t순수쌀미음\t17\t-\t17' : 'A01\t순수쌀미음\t17\t-\t-\t17'}
           />
           <div className="flex gap-2">
             <button onClick={onPaste} className="bg-blue-900 text-white px-5 py-2 rounded text-sm font-medium hover:bg-blue-800 transition">
@@ -141,7 +175,9 @@ export default function Dashboard() {
       )}
 
       {/* 품목 테이블 */}
-      {items.length > 0 && (
+      {items.length > 0 && (() => {
+        const hasKurly = items.some((i) => i.marketKurly > 0);
+        return (
         <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
           <div className="px-5 py-3 border-b border-gray-100 flex items-center justify-between">
             <h2 className="font-semibold text-gray-800">품목별 현황</h2>
@@ -155,7 +191,7 @@ export default function Dashboard() {
                   <th className="px-4 py-3 text-left font-medium">품목명</th>
                   <th className="px-4 py-3 text-right font-medium">주문수량</th>
                   <th className="px-4 py-3 text-right font-medium text-orange-600">쿠팡</th>
-                  <th className="px-4 py-3 text-right font-medium text-blue-600">마켓컬리</th>
+                  {hasKurly && <th className="px-4 py-3 text-right font-medium text-blue-600">마켓컬리</th>}
                   <th className="px-4 py-3 text-right font-medium">총수량</th>
                   <th className="px-4 py-3 text-right font-medium">실제 생산량</th>
                   <th className="px-4 py-3 text-right font-medium">±</th>
@@ -182,7 +218,7 @@ export default function Dashboard() {
                       <td className="px-4 py-3 font-medium text-gray-800">{it.name}</td>
                       <td className="px-4 py-3 text-right text-gray-600">{it.orderQty || '-'}</td>
                       <td className="px-4 py-3 text-right text-orange-600 font-medium">{it.coupang || '-'}</td>
-                      <td className="px-4 py-3 text-right text-blue-600 font-medium">{it.marketKurly || '-'}</td>
+                      {hasKurly && <td className="px-4 py-3 text-right text-blue-600 font-medium">{it.marketKurly || '-'}</td>}
                       <td className="px-4 py-3 text-right font-semibold text-gray-800">{it.totalQty}</td>
                       <td className="px-4 py-3 text-right text-gray-700">{it.actualProduction || 0}</td>
                       <td className={`px-4 py-3 text-right font-bold ${diff > 0 ? 'text-green-600' : diff < 0 ? 'text-red-500' : 'text-gray-300'}`}>
@@ -196,7 +232,8 @@ export default function Dashboard() {
             </table>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {items.length === 0 && !showPaste && (
         <div className="bg-white rounded-lg border border-dashed border-gray-300 p-12 text-center">
