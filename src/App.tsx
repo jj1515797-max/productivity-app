@@ -4,6 +4,7 @@ import Machine from './pages/Machine';
 import ExternalPack from './pages/ExternalPack';
 import Remaining from './pages/Remaining';
 import Analytics from './pages/Analytics';
+import Logo from './components/Logo';
 
 export default function App() {
   return (
@@ -38,12 +39,12 @@ function Header() {
 
   return (
     <header className="bg-blue-900 text-white px-5 py-2.5 flex items-center gap-4 sticky top-0 z-20">
-      <div className="flex items-center gap-2.5 min-w-max">
-        <div className="w-9 h-9 bg-white rounded-full flex items-center justify-center shadow">
-          <span className="text-blue-900 font-black text-sm">순</span>
+      <div className="flex items-center gap-3 min-w-max">
+        <div className="bg-white rounded px-2 py-1 flex items-center shadow">
+          <Logo height={32} />
         </div>
         <div className="leading-tight">
-          <div className="font-bold text-sm">순수본 1공장</div>
+          <div className="font-bold text-sm">1공장 생산관리</div>
           <div className="text-blue-300 text-xs">{dateLabel}</div>
         </div>
       </div>
