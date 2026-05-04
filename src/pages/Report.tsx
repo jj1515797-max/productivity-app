@@ -164,7 +164,7 @@ export default function Report() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `생산내역_${date}.xlsx`;
+    a.download = `CCP-2P (${date}).xlsx`;
     a.click();
     URL.revokeObjectURL(url);
   };
