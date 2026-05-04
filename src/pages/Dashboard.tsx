@@ -146,6 +146,12 @@ export default function Dashboard() {
             onClick={() => setViewDate(shiftDate(viewDate, 1))}
             className="w-8 h-8 flex items-center justify-center rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-600 text-lg"
           >›</button>
+          <input
+            type="date"
+            value={viewDate}
+            onChange={(e) => e.target.value && setViewDate(e.target.value)}
+            className="ml-1 px-2 py-1 text-sm border border-gray-300 rounded bg-white hover:bg-gray-50 text-gray-700 cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-900"
+          />
           {viewDate !== todayKey() && (
             <button
               onClick={() => setViewDate(todayKey())}

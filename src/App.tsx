@@ -77,7 +77,7 @@ function SubNav() {
   const location = useLocation();
 
   const tabs = [
-    { label: '입별요약', to: '/', exact: true },
+    { label: '일별요약', to: '/', exact: true },
     { label: '1호기', to: '/machine/1' },
     { label: '2호기', to: '/machine/2' },
     { label: '3호기', to: '/machine/3' },
