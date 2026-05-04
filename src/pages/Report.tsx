@@ -1,10 +1,12 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { collection, onSnapshot } from 'firebase/firestore';
+import ExcelJS from 'exceljs';
 import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
 import type { Item, MachineEntry } from '../types';
 
 const MACHINES: MachineEntry['machine'][] = ['1호기', '2호기', '3호기'];
+const MACHINE_START_COL = ['A', 'F', 'K'];
 
 export default function Report() {
   const [date, setDate] = useState(todayKey());
@@ -43,35 +45,126 @@ export default function Report() {
     return `${y}. ${Number(m)}. ${Number(d)}`;
   }, [date]);
 
+  const sheetName = useMemo(() => {
+    const [, m, d] = date.split('-');
+    return `${m}-${d}`;
+  }, [date]);
+
   const maxRows = Math.max(1, ...MACHINES.map((m) => (byMachine[m] || []).length));
   const totalEntries = MACHINES.reduce((s, m) => s + (byMachine[m] || []).length, 0);
 
-  const downloadCsv = () => {
-    const escape = (v: string | number) => {
-      const s = String(v ?? '');
-      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-    };
-    const header: (string | number)[] = [];
-    MACHINES.forEach((m) => header.push(`${m} 코드`, `${m} 품목명`, `${m} 생산량`, `${m} 작업시간`));
-    const rows: (string | number)[][] = [];
-    for (let i = 0; i < maxRows; i++) {
-      const row: (string | number)[] = [];
-      MACHINES.forEach((m) => {
-        const e = (byMachine[m] || [])[i];
-        if (e) {
-          row.push(e.code, nameMap.get(e.code) || '', e.actualProduction, e.workTime);
-        } else {
-          row.push('', '', '', '');
-        }
+  const downloadXlsx = async () => {
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet(sheetName);
+
+    ws.columns = [
+      { width: 9 }, { width: 22 }, { width: 9 }, { width: 11 },
+      { width: 2 },
+      { width: 9 }, { width: 22 }, { width: 9 }, { width: 11 },
+      { width: 2 },
+      { width: 9 }, { width: 22 }, { width: 9 }, { width: 11 },
+    ];
+
+    const thin = { style: 'thin' as const };
+    const border = { top: thin, left: thin, right: thin, bottom: thin };
+    const headerFill = { type: 'pattern' as const, pattern: 'solid' as const, fgColor: { argb: 'FFD6E4F5' } };
+
+    // Title (A1:J2 merged)
+    ws.mergeCells('A1:J2');
+    const title = ws.getCell('A1');
+    title.value = '금속검출기(CCP-2P) 제품 통과 및 생산 내역';
+    title.font = { size: 16, bold: true };
+    title.alignment = { horizontal: 'center', vertical: 'middle' };
+
+    // Document number / work date (right block)
+    ws.mergeCells('K1:L1');
+    ws.getCell('K1').value = '문서번호';
+    ws.mergeCells('M1:N1');
+    ws.getCell('M1').value = 'PB-HI-05-02';
+    ws.mergeCells('K2:L2');
+    ws.getCell('K2').value = '작업일자';
+    ws.mergeCells('M2:N2');
+    ws.getCell('M2').value = dateLabel;
+    ['K1', 'L1', 'M1', 'N1', 'K2', 'L2', 'M2', 'N2'].forEach((addr) => {
+      const c = ws.getCell(addr);
+      c.border = border;
+      c.alignment = { horizontal: 'center', vertical: 'middle' };
+    });
+
+    // Machine headers (row 4) and column headers (row 5)
+    const subheaders = ['코드명', '품목명', '생산량', '작업 시간'];
+    MACHINES.forEach((m, mi) => {
+      const start = MACHINE_START_COL[mi];
+      const end = String.fromCharCode(start.charCodeAt(0) + 3);
+      ws.mergeCells(`${start}4:${end}4`);
+      const headerCell = ws.getCell(`${start}4`);
+      headerCell.value = m;
+      headerCell.font = { bold: true };
+      headerCell.alignment = { horizontal: 'center', vertical: 'middle' };
+      headerCell.fill = headerFill;
+      headerCell.border = border;
+      // also apply border to merged cells under header
+      for (let i = 0; i < 4; i++) {
+        const col = String.fromCharCode(start.charCodeAt(0) + i);
+        ws.getCell(`${col}4`).border = border;
+      }
+      // Subheaders row 5
+      subheaders.forEach((label, hi) => {
+        const col = String.fromCharCode(start.charCodeAt(0) + hi);
+        const c = ws.getCell(`${col}5`);
+        c.value = label;
+        c.font = { bold: true };
+        c.alignment = { horizontal: 'center', vertical: 'middle' };
+        c.fill = headerFill;
+        c.border = border;
       });
-      rows.push(row);
-    }
-    const csv = [header, ...rows].map((r) => r.map(escape).join(',')).join('\n');
-    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+    });
+
+    // Data rows
+    const blockMaxRow = Math.max(1, ...MACHINES.map((m) => (byMachine[m] || []).length));
+    MACHINES.forEach((m, mi) => {
+      const start = MACHINE_START_COL[mi];
+      const startCode = start.charCodeAt(0);
+      const list = byMachine[m] || [];
+
+      if (list.length === 0) {
+        // "생산 내역 없음" cell at column B/G/L (2nd col) row 6
+        const c = ws.getCell(`${String.fromCharCode(startCode + 1)}6`);
+        c.value = '생산 내역 없음';
+        c.alignment = { horizontal: 'center', vertical: 'middle' };
+      }
+
+      list.forEach((e, idx) => {
+        const row = 6 + idx;
+        const cCode = ws.getCell(`${String.fromCharCode(startCode)}${row}`);
+        cCode.value = e.code;
+        const cName = ws.getCell(`${String.fromCharCode(startCode + 1)}${row}`);
+        cName.value = nameMap.get(e.code) || '';
+        const cQty = ws.getCell(`${String.fromCharCode(startCode + 2)}${row}`);
+        cQty.value = e.actualProduction;
+        const cTime = ws.getCell(`${String.fromCharCode(startCode + 3)}${row}`);
+        cTime.value = e.workTime;
+      });
+
+      // Apply borders + alignment to every cell in block from row 6 to blockMaxRow+5
+      for (let r = 6; r <= 5 + blockMaxRow; r++) {
+        for (let i = 0; i < 4; i++) {
+          const col = String.fromCharCode(startCode + i);
+          const cell = ws.getCell(`${col}${r}`);
+          cell.border = border;
+          cell.alignment = { horizontal: 'center', vertical: 'middle' };
+        }
+      }
+    });
+
+    const buf = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buf], {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+    });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `생산내역_${date}.csv`;
+    a.download = `생산내역_${date}.xlsx`;
     a.click();
     URL.revokeObjectURL(url);
   };
@@ -91,7 +184,7 @@ export default function Report() {
         <div className="flex items-center gap-3">
           <span className="text-sm text-gray-500">총 {totalEntries}건</span>
           <button
-            onClick={downloadCsv}
+            onClick={downloadXlsx}
             disabled={totalEntries === 0}
             className="px-3 py-1.5 text-sm rounded-md bg-blue-900 text-white font-medium hover:bg-blue-800 disabled:bg-gray-300 disabled:cursor-not-allowed"
           >
@@ -110,17 +203,23 @@ export default function Report() {
           <table className="w-full text-sm border-collapse">
             <thead>
               <tr className="bg-blue-100 text-blue-900">
-                {MACHINES.map((m) => (
-                  <th key={m} colSpan={4} className="border p-2 text-center font-semibold">{m}</th>
+                {MACHINES.map((m, mi) => (
+                  <th
+                    key={m}
+                    colSpan={4}
+                    className={`border border-blue-300 p-2 text-center font-semibold ${mi > 0 ? 'border-l-4 border-l-slate-400' : ''}`}
+                  >
+                    {m}
+                  </th>
                 ))}
               </tr>
               <tr className="bg-blue-50 text-xs text-blue-900">
-                {MACHINES.map((m) => (
+                {MACHINES.map((m, mi) => (
                   <Fragment key={m}>
-                    <th className="border p-2">코드명</th>
-                    <th className="border p-2">품목명</th>
-                    <th className="border p-2">생산량</th>
-                    <th className="border p-2">작업 시간</th>
+                    <th className={`border border-blue-200 p-2 ${mi > 0 ? 'border-l-4 border-l-slate-400' : ''}`}>코드명</th>
+                    <th className="border border-blue-200 p-2">품목명</th>
+                    <th className="border border-blue-200 p-2">생산량</th>
+                    <th className="border border-blue-200 p-2">작업 시간</th>
                   </Fragment>
                 ))}
               </tr>
@@ -135,12 +234,13 @@ export default function Report() {
               ) : (
                 Array.from({ length: maxRows }).map((_, i) => (
                   <tr key={i} className="hover:bg-gray-50">
-                    {MACHINES.map((m) => {
+                    {MACHINES.map((m, mi) => {
                       const e = (byMachine[m] || [])[i];
+                      const lDiv = mi > 0 ? 'border-l-4 border-l-slate-400' : '';
                       if (!e) {
                         return (
                           <Fragment key={m}>
-                            <td className="border p-2"></td>
+                            <td className={`border p-2 ${lDiv}`}></td>
                             <td className="border p-2"></td>
                             <td className="border p-2"></td>
                             <td className="border p-2"></td>
@@ -149,7 +249,7 @@ export default function Report() {
                       }
                       return (
                         <Fragment key={m}>
-                          <td className="border p-2 font-mono text-center">{e.code}</td>
+                          <td className={`border p-2 font-mono text-center ${lDiv}`}>{e.code}</td>
                           <td className="border p-2 text-center">{nameMap.get(e.code) || ''}</td>
                           <td className="border p-2 text-center font-bold">{e.actualProduction}</td>
                           <td className="border p-2 text-center">{e.workTime}</td>
