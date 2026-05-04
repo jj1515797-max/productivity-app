@@ -4,6 +4,7 @@ import Machine from './pages/Machine';
 import ExternalPack from './pages/ExternalPack';
 import Remaining from './pages/Remaining';
 import Report from './pages/Report';
+import Import from './pages/Import';
 import Analytics from './pages/Analytics';
 import Logo from './components/Logo';
 
@@ -19,6 +20,7 @@ export default function App() {
           <Route path="/external/:id" element={<ExternalPack />} />
           <Route path="/remaining" element={<Remaining />} />
           <Route path="/report" element={<Report />} />
+          <Route path="/import" element={<Import />} />
           <Route path="/analytics" element={<Analytics />} />
         </Routes>
       </main>
