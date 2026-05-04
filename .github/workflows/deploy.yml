@@ -2,7 +2,7 @@ name: Deploy to GitHub Pages
 
 on:
   push:
-    branches: [main, claude/automate-data-collection-8CHvP]
+   branches: [main, 'claude/**']
   workflow_dispatch:
 
 permissions:
