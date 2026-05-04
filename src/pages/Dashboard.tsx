@@ -40,6 +40,7 @@ export default function Dashboard() {
 
   // 품목 목록 구독
   useEffect(() => {
+    setItems([]); // 날짜 바뀌면 즉시 초기화 (구데이터 잔상 방지)
     return onSnapshot(collection(db, 'days', viewDate, 'items'), (snap) => {
       const list: Item[] = [];
       snap.forEach((d) => list.push(d.data() as Item));
@@ -134,8 +135,8 @@ export default function Dashboard() {
   return (
     <div className="space-y-5">
       {/* 날짜 네비게이션 */}
-      <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
+      <div className="flex items-center justify-between flex-wrap gap-2">
+        <div className="flex items-center gap-2">
           <button
             onClick={() => setViewDate(shiftDate(viewDate, -1))}
             className="w-8 h-8 flex items-center justify-center rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-600 text-lg"
@@ -145,6 +146,12 @@ export default function Dashboard() {
             onClick={() => setViewDate(shiftDate(viewDate, 1))}
             className="w-8 h-8 flex items-center justify-center rounded border border-gray-300 bg-white hover:bg-gray-50 text-gray-600 text-lg"
           >›</button>
+          {viewDate !== todayKey() && (
+            <button
+              onClick={() => setViewDate(todayKey())}
+              className="ml-1 text-xs px-2.5 py-1 rounded border border-blue-300 text-blue-700 bg-blue-50 hover:bg-blue-100 font-medium"
+            >오늘로</button>
+          )}
         </div>
         <div className="flex gap-2 items-center">
           <button
