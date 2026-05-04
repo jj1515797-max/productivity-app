@@ -3,6 +3,7 @@ import Dashboard from './pages/Dashboard';
 import Machine from './pages/Machine';
 import ExternalPack from './pages/ExternalPack';
 import Remaining from './pages/Remaining';
+import Report from './pages/Report';
 import Analytics from './pages/Analytics';
 import Logo from './components/Logo';
 
@@ -17,6 +18,7 @@ export default function App() {
           <Route path="/machine/:id" element={<Machine />} />
           <Route path="/external/:id" element={<ExternalPack />} />
           <Route path="/remaining" element={<Remaining />} />
+          <Route path="/report" element={<Report />} />
           <Route path="/analytics" element={<Analytics />} />
         </Routes>
       </main>
@@ -24,12 +26,13 @@ export default function App() {
   );
 }
 
-type Section = 'dashboard' | 'machine' | 'external' | 'remaining';
+type Section = 'dashboard' | 'machine' | 'external' | 'remaining' | 'report';
 
 function getSection(pathname: string): Section {
   if (pathname.startsWith('/machine')) return 'machine';
   if (pathname.startsWith('/external')) return 'external';
   if (pathname.startsWith('/remaining')) return 'remaining';
+  if (pathname.startsWith('/report')) return 'report';
   return 'dashboard';
 }
 
@@ -49,6 +52,7 @@ const SUB_TABS: Record<Section, { label: string; to: string; exact?: boolean }[]
     { label: '외포장-3', to: '/external/3' },
   ],
   remaining: [{ label: '잔여량', to: '/remaining' }],
+  report: [{ label: '조회', to: '/report' }],
 };
 
 function Header() {
@@ -62,6 +66,7 @@ function Header() {
     { section: 'machine', to: '/machine/1', label: '내포장' },
     { section: 'external', to: '/external/1', label: '외포장' },
     { section: 'remaining', to: '/remaining', label: '잔여량' },
+    { section: 'report', to: '/report', label: '조회' },
   ];
 
   return (
