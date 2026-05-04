@@ -50,11 +50,48 @@ export default function Remaining() {
   const exact = produced.filter((it) => it.actualProduction === it.totalQty);
   const shortage = produced.filter((it) => it.actualProduction < it.totalQty);
 
+  const downloadCsv = () => {
+    const escape = (v: string | number) => {
+      const s = String(v ?? '');
+      return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+    const header = ['구분', '코드', '품목명', '총수량', '실제 생산량', '잔여량'];
+    const sectionFor = (it: typeof produced[number]) => {
+      const r = it.actualProduction - it.totalQty;
+      return r > 0 ? '잔여' : r < 0 ? '부족' : '완료';
+    };
+    const rows = produced.map((it) => [
+      sectionFor(it),
+      it.code,
+      it.name,
+      it.totalQty,
+      it.actualProduction,
+      it.actualProduction - it.totalQty,
+    ]);
+    const csv = [header, ...rows].map((r) => r.map(escape).join(',')).join('\n');
+    const blob = new Blob(['﻿' + csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `잔여량_${date}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between">
         <h2 className="text-lg font-bold text-gray-800">잔여량 확인</h2>
-        <span className="text-sm text-gray-500">생산 진행 {produced.length}개 품목</span>
+        <div className="flex items-center gap-3">
+          <span className="text-sm text-gray-500">생산 진행 {produced.length}개 품목</span>
+          <button
+            onClick={downloadCsv}
+            disabled={produced.length === 0}
+            className="px-3 py-1.5 text-sm rounded-md bg-blue-900 text-white font-medium hover:bg-blue-800 disabled:bg-gray-300 disabled:cursor-not-allowed"
+          >
+            엑셀 다운로드
+          </button>
+        </div>
       </div>
 
       {produced.length === 0 && (
