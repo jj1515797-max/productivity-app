@@ -25,6 +25,7 @@ export default function ExternalPack() {
     return onSnapshot(collection(db, 'days', date, 'machines', machine, 'entries'), (snap) => {
       const list: MachineEntry[] = [];
       snap.forEach((d) => list.push(d.data() as MachineEntry));
+      list.sort((a, b) => b.workTime.localeCompare(a.workTime));
       setEntries(list);
     });
   }, [date, machine]);
