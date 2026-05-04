@@ -9,7 +9,7 @@ const MACHINES: MachineEntry['machine'][] = ['1호기', '2호기', '3호기'];
 export default function Remaining() {
   const [items, setItems] = useState<Item[]>([]);
   const [machineQty, setMachineQty] = useState<Record<string, Record<string, number>>>({});
-  const date = todayKey();
+  const [date, setDate] = useState(todayKey());
 
   useEffect(() => {
     return onSnapshot(collection(db, 'days', date, 'items'), (snap) => {
@@ -21,6 +21,7 @@ export default function Remaining() {
   }, [date]);
 
   useEffect(() => {
+    setMachineQty({});
     const unsubs = MACHINES.map((machine) =>
       onSnapshot(collection(db, 'days', date, 'machines', machine, 'entries'), (snap) => {
         const map: Record<string, number> = {};
@@ -58,7 +59,7 @@ export default function Remaining() {
     const header = ['구분', '코드', '품목명', '총수량', '실제 생산량', '잔여량'];
     const sectionFor = (it: typeof produced[number]) => {
       const r = it.actualProduction - it.totalQty;
-      return r > 0 ? '잔여' : r < 0 ? '부족' : '완료';
+      return r > 0 ? '잔여' : r < 0 ? '부족' : '잔여량 없음';
     };
     const rows = produced.map((it) => [
       sectionFor(it),
@@ -81,7 +82,15 @@ export default function Remaining() {
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between">
-        <h2 className="text-lg font-bold text-gray-800">잔여량 확인</h2>
+        <div className="flex items-center gap-3">
+          <h2 className="text-lg font-bold text-gray-800">잔여량 확인</h2>
+          <input
+            type="date"
+            value={date}
+            onChange={(e) => setDate(e.target.value)}
+            className="border rounded px-2 py-1 text-sm"
+          />
+        </div>
         <div className="flex items-center gap-3">
           <span className="text-sm text-gray-500">생산 진행 {produced.length}개 품목</span>
           <button

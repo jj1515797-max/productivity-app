@@ -8,7 +8,7 @@ import type { Item, MachineEntry } from '../types';
 export default function ExternalPack() {
   const { id } = useParams();
   const machine = `${id}호기`;
-  const date = todayKey();
+  const [date, setDate] = useState(todayKey());
 
   const [items, setItems] = useState<Item[]>([]);
   const [entries, setEntries] = useState<MachineEntry[]>([]);
@@ -50,7 +50,15 @@ export default function ExternalPack() {
 
   return (
     <div className="space-y-4">
-      <h2 className="text-xl font-bold">외포장-{id}</h2>
+      <div className="flex items-center gap-3">
+        <h2 className="text-xl font-bold">외포장-{id}</h2>
+        <input
+          type="date"
+          value={date}
+          onChange={(e) => setDate(e.target.value)}
+          className="border rounded px-2 py-1 text-sm"
+        />
+      </div>
       <div className="bg-white border rounded-lg overflow-hidden">
         <table className="w-full text-sm">
           <thead className="bg-slate-100 text-xs text-slate-600">
