@@ -1,11 +1,14 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { collection, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
-import type { Item } from '../types';
+import type { Item, MachineEntry } from '../types';
+
+const MACHINES: MachineEntry['machine'][] = ['1호기', '2호기', '3호기'];
 
 export default function Remaining() {
   const [items, setItems] = useState<Item[]>([]);
+  const [machineQty, setMachineQty] = useState<Record<string, Record<string, number>>>({});
   const date = todayKey();
 
   useEffect(() => {
@@ -17,8 +20,32 @@ export default function Remaining() {
     });
   }, [date]);
 
-  // 실제 생산된 항목만, 잔여량 = 실제생산량 - 총수량 (양수면 잔여, 음수면 부족)
-  const produced = items.filter((it) => it.actualProduction > 0);
+  useEffect(() => {
+    const unsubs = MACHINES.map((machine) =>
+      onSnapshot(collection(db, 'days', date, 'machines', machine, 'entries'), (snap) => {
+        const map: Record<string, number> = {};
+        snap.forEach((d) => {
+          const e = d.data() as MachineEntry;
+          map[e.code] = (e.actualProduction || 0) + (e.additionalProduction || 0);
+        });
+        setMachineQty((prev) => ({ ...prev, [machine]: map }));
+      })
+    );
+    return () => unsubs.forEach((u) => u());
+  }, [date]);
+
+  const actualByCode = useMemo(() => {
+    const totals: Record<string, number> = {};
+    MACHINES.forEach((m) => {
+      Object.entries(machineQty[m] || {}).forEach(([code, qty]) => {
+        totals[code] = (totals[code] || 0) + qty;
+      });
+    });
+    return totals;
+  }, [machineQty]);
+
+  const enriched = items.map((it) => ({ ...it, actualProduction: actualByCode[it.code] || 0 }));
+  const produced = enriched.filter((it) => it.actualProduction > 0);
   const surplus = produced.filter((it) => it.actualProduction > it.totalQty);
   const exact = produced.filter((it) => it.actualProduction === it.totalQty);
   const shortage = produced.filter((it) => it.actualProduction < it.totalQty);
