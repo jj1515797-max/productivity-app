@@ -27,7 +27,14 @@ export default function Dashboard() {
   const [items, setItems] = useState<Item[]>([]);
   const [pasteText, setPasteText] = useState('');
   const [showPaste, setShowPaste] = useState(false);
-  const [viewDate, setViewDate] = useState(todayKey());
+  const [viewDate, setViewDate] = useState(() => {
+    const saved = localStorage.getItem('viewDate');
+    return saved || todayKey();
+  });
+
+  useEffect(() => {
+    localStorage.setItem('viewDate', viewDate);
+  }, [viewDate]);
   const [isWeekend, setIsWeekend] = useState(() => {
     const day = new Date().getDay();
     return day === 0 || day === 6;
