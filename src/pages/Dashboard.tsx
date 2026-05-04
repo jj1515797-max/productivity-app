@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { collection, doc, onSnapshot, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
+import { loadViewDate, saveViewDate } from '../lib/viewDate';
 import type { Item } from '../types';
 
 const MACHINES = ['1호기', '2호기', '3호기'] as const;
@@ -27,14 +28,10 @@ export default function Dashboard() {
   const [items, setItems] = useState<Item[]>([]);
   const [pasteText, setPasteText] = useState('');
   const [showPaste, setShowPaste] = useState(false);
-  const [viewDate, setViewDate] = useState(() => {
-    const saved = localStorage.getItem('viewDate');
-    const today = todayKey();
-    return saved === today ? saved : today;
-  });
+  const [viewDate, setViewDate] = useState(loadViewDate);
 
   useEffect(() => {
-    localStorage.setItem('viewDate', viewDate);
+    saveViewDate(viewDate);
   }, [viewDate]);
   const [isWeekend, setIsWeekend] = useState(() => {
     const day = new Date().getDay();

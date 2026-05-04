@@ -3,12 +3,16 @@ import { useParams } from 'react-router-dom';
 import { collection, doc, onSnapshot, setDoc, deleteDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { todayKey, formatTime } from '../lib/dateUtil';
+import { loadViewDate, saveViewDate } from '../lib/viewDate';
 import type { Item, MachineEntry } from '../types';
 
 export default function Machine() {
   const { id } = useParams();
   const machine = `${id}호기` as MachineEntry['machine'];
-  const date = todayKey();
+  const [date, setDate] = useState(loadViewDate);
+  useEffect(() => { saveViewDate(date); }, [date]);
+  const today = todayKey();
+  const isToday = date === today;
 
   const [items, setItems] = useState<Item[]>([]);
   const [entries, setEntries] = useState<MachineEntry[]>([]);
@@ -65,7 +69,26 @@ export default function Machine() {
 
   return (
     <div className="space-y-4">
-      <h2 className="text-xl font-bold">{machine} 입력</h2>
+      <div className="flex items-center gap-3 flex-wrap">
+        <h2 className="text-xl font-bold">{machine} 입력</h2>
+        <input
+          type="date"
+          value={date}
+          onChange={(e) => setDate(e.target.value)}
+          className="border rounded px-2 py-1 text-sm"
+        />
+        {!isToday && (
+          <button
+            onClick={() => setDate(today)}
+            className="px-3 py-1 text-xs rounded bg-blue-100 text-blue-700 font-medium hover:bg-blue-200"
+          >
+            오늘로
+          </button>
+        )}
+        {!isToday && (
+          <span className="text-xs text-orange-600 font-medium">⚠ 과거 날짜에 입력 중</span>
+        )}
+      </div>
 
       <div className="bg-white border rounded-lg p-4 space-y-3">
         <input
