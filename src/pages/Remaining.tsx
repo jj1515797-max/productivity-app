@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { collection, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
+import { loadViewDate, saveViewDate } from '../lib/viewDate';
 import type { Item, MachineEntry } from '../types';
 
 const MACHINES: MachineEntry['machine'][] = ['1호기', '2호기', '3호기'];
@@ -9,7 +10,10 @@ const MACHINES: MachineEntry['machine'][] = ['1호기', '2호기', '3호기'];
 export default function Remaining() {
   const [items, setItems] = useState<Item[]>([]);
   const [machineQty, setMachineQty] = useState<Record<string, Record<string, number>>>({});
-  const [date, setDate] = useState(todayKey());
+  const [date, setDate] = useState(loadViewDate);
+  useEffect(() => { saveViewDate(date); }, [date]);
+  const today = todayKey();
+  const isToday = date === today;
 
   useEffect(() => {
     return onSnapshot(collection(db, 'days', date, 'items'), (snap) => {
@@ -27,7 +31,7 @@ export default function Remaining() {
         const map: Record<string, number> = {};
         snap.forEach((d) => {
           const e = d.data() as MachineEntry;
-          map[e.code] = (e.actualProduction || 0) + (e.additionalProduction || 0);
+          map[String(e.code || '').toLowerCase()] = (e.actualProduction || 0) + (e.additionalProduction || 0);
         });
         setMachineQty((prev) => ({ ...prev, [machine]: map }));
       })
@@ -45,7 +49,7 @@ export default function Remaining() {
     return totals;
   }, [machineQty]);
 
-  const enriched = items.map((it) => ({ ...it, actualProduction: actualByCode[it.code] || 0 }));
+  const enriched = items.map((it) => ({ ...it, actualProduction: actualByCode[it.code.toLowerCase()] || 0 }));
   const produced = enriched.filter((it) => it.actualProduction > 0);
   const surplus = produced.filter((it) => it.actualProduction > it.totalQty);
   const exact = produced.filter((it) => it.actualProduction === it.totalQty);
@@ -82,7 +86,7 @@ export default function Remaining() {
   return (
     <div className="space-y-5">
       <div className="flex items-center justify-between">
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
           <h2 className="text-lg font-bold text-gray-800">잔여량 확인</h2>
           <input
             type="date"
@@ -90,6 +94,17 @@ export default function Remaining() {
             onChange={(e) => setDate(e.target.value)}
             className="border rounded px-2 py-1 text-sm"
           />
+          {!isToday && (
+            <button
+              onClick={() => setDate(today)}
+              className="px-3 py-1 text-xs rounded bg-blue-100 text-blue-700 font-medium hover:bg-blue-200"
+            >
+              오늘로
+            </button>
+          )}
+          {!isToday && (
+            <span className="text-xs text-orange-600 font-medium">⚠ 과거 날짜 보는 중</span>
+          )}
         </div>
         <div className="flex items-center gap-3">
           <span className="text-sm text-gray-500">생산 진행 {produced.length}개 품목</span>

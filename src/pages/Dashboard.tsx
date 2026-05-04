@@ -62,7 +62,8 @@ export default function Dashboard() {
         const map: Record<string, number> = {};
         snap.forEach((d) => {
           const e = d.data();
-          map[e.code] = (e.actualProduction || 0) + (e.additionalProduction || 0);
+          const key = String(e.code || '').toLowerCase();
+          map[key] = (e.actualProduction || 0) + (e.additionalProduction || 0);
         });
         setMachineQty((prev) => ({ ...prev, [machine]: map }));
       })
@@ -83,10 +84,10 @@ export default function Dashboard() {
 
   const stats = useMemo(() => {
     const totalQty = items.reduce((s, i) => s + (i.totalQty || 0), 0);
-    const actual = items.reduce((s, i) => s + (actualByCode[i.code] || 0), 0);
+    const actual = items.reduce((s, i) => s + (actualByCode[i.code.toLowerCase()] || 0), 0);
     const itemCount = items.length;
     const completedItems = items.filter(
-      (i) => (actualByCode[i.code] || 0) >= i.totalQty && i.totalQty > 0
+      (i) => (actualByCode[i.code.toLowerCase()] || 0) >= i.totalQty && i.totalQty > 0
     ).length;
     const pct = totalQty ? Math.round((actual / totalQty) * 100) : 0;
     return { totalQty, actual, itemCount, completedItems, pct };
@@ -268,7 +269,7 @@ export default function Dashboard() {
               </thead>
               <tbody className="divide-y divide-gray-100">
                 {items.map((it) => {
-                  const actual = actualByCode[it.code] || 0;
+                  const actual = actualByCode[it.code.toLowerCase()] || 0;
                   const diff = actual - it.totalQty;
                   const done = actual >= it.totalQty && it.totalQty > 0;
                   const inProgress = actual > 0 && actual < it.totalQty;

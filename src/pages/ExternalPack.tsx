@@ -35,9 +35,9 @@ export default function ExternalPack() {
   }, [date, machine]);
 
   const rows = useMemo(() => {
-    const itemMap = new Map(items.map((i) => [i.code, i]));
+    const itemMap = new Map(items.map((i) => [i.code.toLowerCase(), i]));
     return entries.map((e) => {
-      const item = itemMap.get(e.code);
+      const item = itemMap.get(e.code.toLowerCase());
       const orderQty = item?.orderQty || 0;
       const totalQty = item?.totalQty || 0;
       const shortage = e.actualProduction - totalQty;

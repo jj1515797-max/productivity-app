@@ -3,13 +3,17 @@ import { collection, onSnapshot } from 'firebase/firestore';
 import ExcelJS from 'exceljs';
 import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
+import { loadViewDate, saveViewDate } from '../lib/viewDate';
 import type { Item, MachineEntry } from '../types';
 
 const MACHINES: MachineEntry['machine'][] = ['1호기', '2호기', '3호기'];
 const MACHINE_START_COL = ['A', 'F', 'K'];
 
 export default function Report() {
-  const [date, setDate] = useState(todayKey());
+  const [date, setDate] = useState(loadViewDate);
+  useEffect(() => { saveViewDate(date); }, [date]);
+  const today = todayKey();
+  const isToday = date === today;
   const [items, setItems] = useState<Item[]>([]);
   const [byMachine, setByMachine] = useState<Record<string, MachineEntry[]>>({});
 
@@ -36,7 +40,7 @@ export default function Report() {
 
   const nameMap = useMemo(() => {
     const map = new Map<string, string>();
-    items.forEach((i) => map.set(i.code, i.name));
+    items.forEach((i) => map.set(i.code.toLowerCase(), i.name));
     return map;
   }, [items]);
 
@@ -139,7 +143,7 @@ export default function Report() {
         const cCode = ws.getCell(`${String.fromCharCode(startCode)}${row}`);
         cCode.value = e.code;
         const cName = ws.getCell(`${String.fromCharCode(startCode + 1)}${row}`);
-        cName.value = nameMap.get(e.code) || '';
+        cName.value = nameMap.get(e.code.toLowerCase()) || '';
         const cQty = ws.getCell(`${String.fromCharCode(startCode + 2)}${row}`);
         cQty.value = e.actualProduction;
         const cTime = ws.getCell(`${String.fromCharCode(startCode + 3)}${row}`);
@@ -172,7 +176,7 @@ export default function Report() {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-3">
-        <div className="flex items-center gap-3">
+        <div className="flex items-center gap-3 flex-wrap">
           <h2 className="text-lg font-bold text-gray-800">생산 내역 조회</h2>
           <input
             type="date"
@@ -180,6 +184,17 @@ export default function Report() {
             onChange={(e) => setDate(e.target.value)}
             className="border rounded px-2 py-1 text-sm"
           />
+          {!isToday && (
+            <button
+              onClick={() => setDate(today)}
+              className="px-3 py-1 text-xs rounded bg-blue-100 text-blue-700 font-medium hover:bg-blue-200"
+            >
+              오늘로
+            </button>
+          )}
+          {!isToday && (
+            <span className="text-xs text-orange-600 font-medium">⚠ 과거 날짜 보는 중</span>
+          )}
         </div>
         <div className="flex items-center gap-3">
           <span className="text-sm text-gray-500">총 {totalEntries}건</span>
@@ -250,7 +265,7 @@ export default function Report() {
                       return (
                         <Fragment key={m}>
                           <td className={`border p-2 font-mono text-center ${lDiv}`}>{e.code}</td>
-                          <td className="border p-2 text-center">{nameMap.get(e.code) || ''}</td>
+                          <td className="border p-2 text-center">{nameMap.get(e.code.toLowerCase()) || ''}</td>
                           <td className="border p-2 text-center font-bold">{e.actualProduction}</td>
                           <td className="border p-2 text-center">{e.workTime}</td>
                         </Fragment>
