@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { collection, doc, onSnapshot, setDoc, deleteDoc, updateDoc } from 'firebase/firestore';
+import { collection, doc, onSnapshot, setDoc, deleteDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { todayKey, formatTime } from '../lib/dateUtil';
 import type { Item, MachineEntry } from '../types';
@@ -48,7 +48,6 @@ export default function Machine() {
       actualProduction: qty,
       additionalProduction: 0,
       workTime: formatTime(),
-      isLast: false,
       machine,
       date,
     };
@@ -56,11 +55,6 @@ export default function Machine() {
     setSelectedCode(null);
     setQty(0);
     setSearch('');
-  };
-
-  const toggleLast = async (code: string, isLast: boolean) => {
-    const ref = doc(db, 'days', date, 'machines', machine, 'entries', code);
-    await updateDoc(ref, { isLast: !isLast });
   };
 
   const remove = async (code: string) => {
@@ -118,7 +112,6 @@ export default function Machine() {
               <th className="p-2 text-left">코드</th>
               <th className="p-2 text-right">실제 생산량</th>
               <th className="p-2 text-center">작업 시간</th>
-              <th className="p-2 text-center">마지막 제품</th>
               <th className="p-2"></th>
             </tr>
           </thead>
@@ -128,21 +121,13 @@ export default function Machine() {
                 <td className="p-2 font-mono">{e.code}</td>
                 <td className="p-2 text-right font-bold">{e.actualProduction}</td>
                 <td className="p-2 text-center">{e.workTime}</td>
-                <td className="p-2 text-center">
-                  <input
-                    type="checkbox"
-                    checked={e.isLast}
-                    onChange={() => toggleLast(e.code, e.isLast)}
-                    className="w-5 h-5"
-                  />
-                </td>
                 <td className="p-2 text-right">
                   <button onClick={() => remove(e.code)} className="text-xs text-red-500 hover:underline">삭제</button>
                 </td>
               </tr>
             ))}
             {entries.length === 0 && (
-              <tr><td colSpan={5} className="p-6 text-center text-slate-400">아직 입력 내역이 없습니다</td></tr>
+              <tr><td colSpan={4} className="p-6 text-center text-slate-400">아직 입력 내역이 없습니다</td></tr>
             )}
           </tbody>
         </table>

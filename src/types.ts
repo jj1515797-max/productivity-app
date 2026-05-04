@@ -18,7 +18,6 @@ export interface MachineEntry {
   additionalProduction: number;
   workTime: string;
   additionalWorkTime?: string;
-  isLast: boolean;
   machine: '1호기' | '2호기' | '3호기';
   date: string;
 }
