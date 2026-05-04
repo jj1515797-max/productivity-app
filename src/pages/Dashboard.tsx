@@ -29,7 +29,8 @@ export default function Dashboard() {
   const [showPaste, setShowPaste] = useState(false);
   const [viewDate, setViewDate] = useState(() => {
     const saved = localStorage.getItem('viewDate');
-    return saved || todayKey();
+    const today = todayKey();
+    return saved === today ? saved : today;
   });
 
   useEffect(() => {
