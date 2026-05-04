@@ -24,17 +24,44 @@ export default function App() {
   );
 }
 
+type Section = 'dashboard' | 'machine' | 'external' | 'remaining';
+
+function getSection(pathname: string): Section {
+  if (pathname.startsWith('/machine')) return 'machine';
+  if (pathname.startsWith('/external')) return 'external';
+  if (pathname.startsWith('/remaining')) return 'remaining';
+  return 'dashboard';
+}
+
+const SUB_TABS: Record<Section, { label: string; to: string; exact?: boolean }[]> = {
+  dashboard: [
+    { label: '일별요약', to: '/', exact: true },
+    { label: '분석', to: '/analytics' },
+  ],
+  machine: [
+    { label: '1호기', to: '/machine/1' },
+    { label: '2호기', to: '/machine/2' },
+    { label: '3호기', to: '/machine/3' },
+  ],
+  external: [
+    { label: '외포장-1', to: '/external/1' },
+    { label: '외포장-2', to: '/external/2' },
+    { label: '외포장-3', to: '/external/3' },
+  ],
+  remaining: [{ label: '잔여량', to: '/remaining' }],
+};
+
 function Header() {
   const today = new Date();
   const days = ['일', '월', '화', '수', '목', '금', '토'];
   const dateLabel = `${today.getMonth() + 1}/${today.getDate()}(${days[today.getDay()]})`;
+  const section = getSection(useLocation().pathname);
 
-  const rightLinks = [
-    { to: '/', label: '대시보드', end: true },
-    { to: '/machine/1', label: '호기 입력' },
-    { to: '/external/1', label: '외포장' },
-    { to: '/remaining', label: '잔여량' },
-    { to: '/analytics', label: '분석' },
+  const rightLinks: { section: Section; to: string; label: string }[] = [
+    { section: 'dashboard', to: '/', label: '대시보드' },
+    { section: 'machine', to: '/machine/1', label: '내포장' },
+    { section: 'external', to: '/external/1', label: '외포장' },
+    { section: 'remaining', to: '/remaining', label: '잔여량' },
   ];
 
   return (
@@ -52,22 +79,20 @@ function Header() {
       <div className="flex-1" />
 
       <nav className="flex gap-1">
-        {rightLinks.map((l) => (
-          <NavLink
-            key={l.to}
-            to={l.to}
-            end={l.end}
-            className={({ isActive }) =>
-              `px-3 py-1.5 text-sm rounded font-medium transition ${
-                isActive
-                  ? 'bg-white text-blue-900'
-                  : 'text-blue-200 hover:bg-blue-800'
-              }`
-            }
-          >
-            {l.label}
-          </NavLink>
-        ))}
+        {rightLinks.map((l) => {
+          const active = section === l.section;
+          return (
+            <NavLink
+              key={l.to}
+              to={l.to}
+              className={`px-3 py-1.5 text-sm rounded font-medium transition ${
+                active ? 'bg-white text-blue-900' : 'text-blue-200 hover:bg-blue-800'
+              }`}
+            >
+              {l.label}
+            </NavLink>
+          );
+        })}
       </nav>
     </header>
   );
@@ -75,18 +100,7 @@ function Header() {
 
 function SubNav() {
   const location = useLocation();
-
-  const tabs = [
-    { label: '일별요약', to: '/', exact: true },
-    { label: '1호기', to: '/machine/1' },
-    { label: '2호기', to: '/machine/2' },
-    { label: '3호기', to: '/machine/3' },
-    { label: '외포장-1', to: '/external/1' },
-    { label: '외포장-2', to: '/external/2' },
-    { label: '외포장-3', to: '/external/3' },
-    { label: '잔여량', to: '/remaining' },
-    { label: '분석', to: '/analytics' },
-  ];
+  const tabs = SUB_TABS[getSection(location.pathname)];
 
   return (
     <div className="bg-white border-b border-gray-200 sticky top-[52px] z-10">
