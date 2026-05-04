@@ -101,26 +101,36 @@ export default function Dashboard() {
       .map((r) => r.split('\t'))
       .filter((cols) => cols.length >= minCols && cols[0]?.trim());
 
-    if (!rows.length) return alert(`붙여넣을 데이터가 없습니다 (${isWeekend ? '주말' : '평일'} 모드: ${minCols}열 필요)`);
-
-    const batch = writeBatch(db);
-    for (const cols of rows) {
-      const code = cols[0].trim();
-      const item: Item = {
-        id: code, code,
-        name: cols[1]?.trim() || '',
-        orderQty: num(cols[2]),
-        coupang: num(cols[3]),
-        marketKurly: isWeekend ? 0 : num(cols[4]),
-        totalQty: isWeekend ? num(cols[4]) : num(cols[5]),
-        actualProduction: 0,
-        date: viewDate,
-      };
-      batch.set(doc(db, 'days', viewDate, 'items', code), item);
-    }
-    await batch.commit();
+    // 등록 누르면 즉시 패널 닫기
+    const text = pasteText;
     setPasteText('');
     setShowPaste(false);
+
+    if (!rows.length) {
+      setTimeout(() => alert(`붙여넣을 데이터가 없습니다 (${isWeekend ? '주말' : '평일'} 모드: ${minCols}열 필요)\n\n붙여넣은 첫 줄: ${text.split('\n')[0]?.slice(0, 80) || '(비어있음)'}`), 50);
+      return;
+    }
+
+    try {
+      const batch = writeBatch(db);
+      for (const cols of rows) {
+        const code = cols[0].trim();
+        const item: Item = {
+          id: code, code,
+          name: cols[1]?.trim() || '',
+          orderQty: num(cols[2]),
+          coupang: num(cols[3]),
+          marketKurly: isWeekend ? 0 : num(cols[4]),
+          totalQty: isWeekend ? num(cols[4]) : num(cols[5]),
+          actualProduction: 0,
+          date: viewDate,
+        };
+        batch.set(doc(db, 'days', viewDate, 'items', code), item);
+      }
+      await batch.commit();
+    } catch (err) {
+      setTimeout(() => alert(`등록 중 오류: ${err instanceof Error ? err.message : err}`), 50);
+    }
   };
 
   const clearAll = async () => {
