@@ -89,7 +89,7 @@ export default function Dashboard() {
     const completedItems = items.filter(
       (i) => (actualByCode[i.code.toLowerCase()] || 0) >= i.totalQty && i.totalQty > 0
     ).length;
-    const pct = totalQty ? Math.round((actual / totalQty) * 100) : 0;
+    const pct = itemCount ? Math.round((completedItems / itemCount) * 100) : 0;
     return { totalQty, actual, itemCount, completedItems, pct };
   }, [items, actualByCode]);
 
