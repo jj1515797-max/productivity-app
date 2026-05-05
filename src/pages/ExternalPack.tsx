@@ -68,12 +68,30 @@ export default function ExternalPack() {
 
   const rows = useMemo(() => {
     const itemMap = new Map(items.map((i) => [i.code.toLowerCase(), i]));
+
+    // 이 호기에서 코드별 등록 횟수
+    const entryCountByCode: Record<string, number> = {};
+    entries.forEach((e) => {
+      const k = e.code.toLowerCase();
+      entryCountByCode[k] = (entryCountByCode[k] || 0) + 1;
+    });
+
     return entries.map((e, idx) => {
       const item = itemMap.get(e.code.toLowerCase());
       const orderQty = item?.orderQty || 0;
       const totalQty = item?.totalQty || 0;
       const rowActual = (e.actualProduction || 0) + (e.additionalProduction || 0);
       const combined = combinedByCode[e.code.toLowerCase()] || 0;
+      const multiEntry = (entryCountByCode[e.code.toLowerCase()] || 1) > 1;
+
+      let bg = '';
+      if (totalQty > 0) {
+        if (combined < totalQty) bg = 'bg-red-200';           // 합산해도 부족
+        else if (multiEntry) bg = 'bg-green-200';             // 재생산으로 맞춤/초과
+        else if (combined > totalQty) bg = 'bg-yellow-200';   // 단일 생산, 초과
+        // combined === totalQty && 단일 생산 → 흰색 (bg 없음)
+      }
+
       const combinedDiff = combined - totalQty;
       return {
         key: `${e.code}-${idx}`,
@@ -82,8 +100,8 @@ export default function ExternalPack() {
         orderQty,
         shipped: totalQty,
         actual: rowActual,
-        combined,
         combinedDiff,
+        bg,
       };
     });
   }, [items, entries, combinedByCode]);
@@ -124,17 +142,11 @@ export default function ExternalPack() {
           </thead>
           <tbody>
             {rows.map((r) => {
-              let rowBg = '';
-              if (r.shipped > 0) {
-                if (r.combinedDiff > 0) rowBg = 'bg-yellow-200';
-                else if (r.combinedDiff === 0) rowBg = 'bg-green-200';
-                else rowBg = 'bg-red-200';
-              }
               const diffColor =
                 r.combinedDiff > 0 ? 'text-green-700' :
                 r.combinedDiff < 0 ? 'text-red-700' : '';
               return (
-                <tr key={r.key} className={`border-t ${rowBg}`}>
+                <tr key={r.key} className={`border-t ${r.bg}`}>
                   <td className="p-2 font-mono">{r.code}</td>
                   <td className="p-2">{r.name}</td>
                   <td className="p-2 text-right">{r.orderQty}</td>
