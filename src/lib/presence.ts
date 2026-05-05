@@ -24,8 +24,16 @@ export function usePresence(): number {
       let active = 0;
       snap.forEach((d) => {
         const ts = d.data().lastSeen as Timestamp | undefined;
-        if (!ts) return;
-        if (now - ts.toMillis() < STALE_MS) active++;
+        if (!ts) {
+          deleteDoc(d.ref).catch(() => {});
+          return;
+        }
+        const age = now - ts.toMillis();
+        if (age < STALE_MS) {
+          active++;
+        } else if (age > 5 * 60 * 1000 && d.id !== sessionId) {
+          deleteDoc(d.ref).catch(() => {});
+        }
       });
       setCount(active);
     });
