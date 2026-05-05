@@ -31,7 +31,9 @@ export default function Remaining() {
         const map: Record<string, number> = {};
         snap.forEach((d) => {
           const e = d.data() as MachineEntry;
-          map[String(e.code || '').toLowerCase()] = (e.actualProduction || 0) + (e.additionalProduction || 0);
+          const key = String(e.code || '').toLowerCase();
+          const qty = (e.actualProduction || 0) + (e.additionalProduction || 0);
+          map[key] = (map[key] || 0) + qty;
         });
         setMachineQty((prev) => ({ ...prev, [machine]: map }));
       })
@@ -124,6 +126,14 @@ export default function Remaining() {
         </div>
       )}
 
+      {shortage.length > 0 && (
+        <Section title="부족 (추가생산 필요)" count={shortage.length} color="red">
+          {shortage.map((it) => (
+            <Row key={it.code} item={it} />
+          ))}
+        </Section>
+      )}
+
       {surplus.length > 0 && (
         <Section title="잔여량 있음" count={surplus.length} color="green">
           {surplus.map((it) => (
@@ -133,16 +143,8 @@ export default function Remaining() {
       )}
 
       {exact.length > 0 && (
-        <Section title="정확히 완료" count={exact.length} color="blue">
+        <Section title="잔여량 없음" count={exact.length} color="blue">
           {exact.map((it) => (
-            <Row key={it.code} item={it} />
-          ))}
-        </Section>
-      )}
-
-      {shortage.length > 0 && (
-        <Section title="부족 (추가생산 필요)" count={shortage.length} color="red">
-          {shortage.map((it) => (
             <Row key={it.code} item={it} />
           ))}
         </Section>
