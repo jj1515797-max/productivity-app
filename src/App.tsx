@@ -86,6 +86,10 @@ function Header() {
 
       <div className="flex-1" />
 
+      <div className="bg-white rounded px-2 py-1 flex items-center shadow mr-2">
+        <Logo height={32} />
+      </div>
+
       <nav className="flex gap-1">
         {rightLinks.map((l) => {
           const active = section === l.section;
