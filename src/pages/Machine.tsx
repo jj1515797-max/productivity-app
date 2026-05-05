@@ -19,6 +19,7 @@ export default function Machine() {
   const [search, setSearch] = useState('');
   const [selectedCode, setSelectedCode] = useState<string | null>(null);
   const [qty, setQty] = useState<number>(0);
+  const [isAdditional, setIsAdditional] = useState(false);
 
   useEffect(() => {
     return onSnapshot(collection(db, 'days', date, 'items'), (snap) => {
@@ -33,7 +34,7 @@ export default function Machine() {
     return onSnapshot(collection(db, 'days', date, 'machines', machine, 'entries'), (snap) => {
       const list: MachineEntry[] = [];
       snap.forEach((d) => list.push(d.data() as MachineEntry));
-      list.sort((a, b) => b.workTime.localeCompare(a.workTime));
+      list.sort((a, b) => (b.workTime || b.additionalWorkTime || '').localeCompare(a.workTime || a.additionalWorkTime || ''));
       setEntries(list);
     });
   }, [date, machine]);
@@ -47,19 +48,16 @@ export default function Machine() {
   const submit = async () => {
     if (!selectedCode || qty <= 0) return alert('코드와 수량을 입력하세요');
     const ref = doc(db, 'days', date, 'machines', machine, 'entries', selectedCode);
-    const entry: MachineEntry = {
-      id: selectedCode,
-      code: selectedCode,
-      actualProduction: qty,
-      additionalProduction: 0,
-      workTime: formatTime(),
-      machine,
-      date,
-    };
-    await setDoc(ref, entry);
+    const time = formatTime();
+    const base = { id: selectedCode, code: selectedCode, machine, date };
+    const data = isAdditional
+      ? { ...base, additionalProduction: qty, additionalWorkTime: time }
+      : { ...base, actualProduction: qty, workTime: time };
+    await setDoc(ref, data, { merge: true });
     setSelectedCode(null);
     setQty(0);
     setSearch('');
+    setIsAdditional(false);
   };
 
   const remove = async (code: string) => {
@@ -114,16 +112,34 @@ export default function Machine() {
         )}
 
         {selectedCode && (
-          <div className="flex items-center gap-2">
-            <button onClick={() => setQty(Math.max(0, qty - 1))} className="w-12 h-12 border rounded-md text-xl">−</button>
-            <input
-              type="number"
-              value={qty}
-              onChange={(e) => setQty(Number(e.target.value) || 0)}
-              className="flex-1 border rounded-md px-3 py-3 text-center text-xl font-bold"
-            />
-            <button onClick={() => setQty(qty + 1)} className="w-12 h-12 border rounded-md text-xl">+</button>
-            <button onClick={submit} className="bg-slate-900 text-white px-6 py-3 rounded-md font-medium">등록</button>
+          <div className="space-y-2">
+            <label className="flex items-center gap-2 text-sm font-medium">
+              <input
+                type="checkbox"
+                checked={isAdditional}
+                onChange={(e) => setIsAdditional(e.target.checked)}
+                className="w-5 h-5"
+              />
+              <span className={isAdditional ? 'text-green-700' : 'text-slate-700'}>
+                추가 생산 {isAdditional && '(부족분 추가 생산으로 기록)'}
+              </span>
+            </label>
+            <div className="flex items-center gap-2">
+              <button onClick={() => setQty(Math.max(0, qty - 1))} className="w-12 h-12 border rounded-md text-xl">−</button>
+              <input
+                type="number"
+                value={qty}
+                onChange={(e) => setQty(Number(e.target.value) || 0)}
+                className="flex-1 border rounded-md px-3 py-3 text-center text-xl font-bold"
+              />
+              <button onClick={() => setQty(qty + 1)} className="w-12 h-12 border rounded-md text-xl">+</button>
+              <button
+                onClick={submit}
+                className={`text-white px-6 py-3 rounded-md font-medium ${isAdditional ? 'bg-green-700 hover:bg-green-800' : 'bg-slate-900 hover:bg-slate-800'}`}
+              >
+                {isAdditional ? '추가 등록' : '등록'}
+              </button>
+            </div>
           </div>
         )}
       </div>
@@ -135,23 +151,35 @@ export default function Machine() {
             <tr>
               <th className="p-2 text-left">코드</th>
               <th className="p-2 text-right">실제 생산량</th>
+              <th className="p-2 text-right bg-green-50">추가 생산량</th>
               <th className="p-2 text-center">작업 시간</th>
+              <th className="p-2 text-center bg-green-50">추가 작업 시간</th>
               <th className="p-2"></th>
             </tr>
           </thead>
           <tbody>
-            {entries.map((e) => (
-              <tr key={e.code} className="border-t">
-                <td className="p-2 font-mono">{e.code}</td>
-                <td className="p-2 text-right font-bold">{e.actualProduction}</td>
-                <td className="p-2 text-center">{e.workTime}</td>
-                <td className="p-2 text-right">
-                  <button onClick={() => remove(e.code)} className="text-xs text-red-500 hover:underline">삭제</button>
-                </td>
-              </tr>
-            ))}
+            {entries.map((e) => {
+              const actual = e.actualProduction || 0;
+              const add = e.additionalProduction || 0;
+              return (
+                <tr key={e.code} className="border-t">
+                  <td className="p-2 font-mono">{e.code}</td>
+                  <td className="p-2 text-right font-bold">{actual || '-'}</td>
+                  <td className={`p-2 text-right font-bold ${add > 0 ? 'bg-green-50 text-green-700' : ''}`}>
+                    {add > 0 ? `+${add}` : '-'}
+                  </td>
+                  <td className="p-2 text-center">{e.workTime || '-'}</td>
+                  <td className={`p-2 text-center ${e.additionalWorkTime ? 'bg-green-50 text-green-700' : ''}`}>
+                    {e.additionalWorkTime || '-'}
+                  </td>
+                  <td className="p-2 text-right">
+                    <button onClick={() => remove(e.code)} className="text-xs text-red-500 hover:underline">삭제</button>
+                  </td>
+                </tr>
+              );
+            })}
             {entries.length === 0 && (
-              <tr><td colSpan={4} className="p-6 text-center text-slate-400">아직 입력 내역이 없습니다</td></tr>
+              <tr><td colSpan={6} className="p-6 text-center text-slate-400">아직 입력 내역이 없습니다</td></tr>
             )}
           </tbody>
         </table>

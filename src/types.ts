@@ -14,9 +14,9 @@ export interface Item {
 export interface MachineEntry {
   id: string;
   code: string;
-  actualProduction: number;
-  additionalProduction: number;
-  workTime: string;
+  actualProduction?: number;
+  additionalProduction?: number;
+  workTime?: string;
   additionalWorkTime?: string;
   machine: '1호기' | '2호기' | '3호기';
   date: string;

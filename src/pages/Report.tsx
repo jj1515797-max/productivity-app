@@ -31,7 +31,7 @@ export default function Report() {
       onSnapshot(collection(db, 'days', date, 'machines', m, 'entries'), (snap) => {
         const list: MachineEntry[] = [];
         snap.forEach((d) => list.push(d.data() as MachineEntry));
-        list.sort((a, b) => a.workTime.localeCompare(b.workTime));
+        list.sort((a, b) => (a.workTime || a.additionalWorkTime || '').localeCompare(b.workTime || b.additionalWorkTime || ''));
         setByMachine((prev) => ({ ...prev, [m]: list }));
       })
     );

@@ -29,7 +29,7 @@ export default function ExternalPack() {
     return onSnapshot(collection(db, 'days', date, 'machines', machine, 'entries'), (snap) => {
       const list: MachineEntry[] = [];
       snap.forEach((d) => list.push(d.data() as MachineEntry));
-      list.sort((a, b) => b.workTime.localeCompare(a.workTime));
+      list.sort((a, b) => (b.workTime || b.additionalWorkTime || '').localeCompare(a.workTime || a.additionalWorkTime || ''));
       setEntries(list);
     });
   }, [date, machine]);
@@ -40,13 +40,14 @@ export default function ExternalPack() {
       const item = itemMap.get(e.code.toLowerCase());
       const orderQty = item?.orderQty || 0;
       const totalQty = item?.totalQty || 0;
-      const shortage = e.actualProduction - totalQty;
+      const actual = (e.actualProduction || 0) + (e.additionalProduction || 0);
+      const shortage = actual - totalQty;
       return {
         code: e.code,
         name: item?.name || '',
         orderQty,
         shipped: totalQty,
-        actual: e.actualProduction,
+        actual,
         shortage,
       };
     });
