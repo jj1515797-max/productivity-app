@@ -80,15 +80,11 @@ function Header() {
         </div>
         <div className="leading-tight">
           <div className="font-bold text-sm">순수본 1공장</div>
-          <div className="text-blue-100 text-xs">스마트팩토리 · {dateLabel}</div>
+          <div className="text-blue-100 text-xs">{dateLabel}</div>
         </div>
       </div>
 
       <div className="flex-1" />
-
-      <div className="bg-white rounded px-2 py-1 flex items-center shadow mr-2">
-        <Logo height={32} />
-      </div>
 
       <nav className="flex gap-1">
         {rightLinks.map((l) => {
