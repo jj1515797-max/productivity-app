@@ -147,9 +147,9 @@ export default function Report() {
         const cName = ws.getCell(`${String.fromCharCode(startCode + 1)}${row}`);
         cName.value = nameMap.get(e.code.toLowerCase()) || '';
         const cQty = ws.getCell(`${String.fromCharCode(startCode + 2)}${row}`);
-        cQty.value = e.actualProduction;
+        cQty.value = e.actualProduction || e.additionalProduction || 0;
         const cTime = ws.getCell(`${String.fromCharCode(startCode + 3)}${row}`);
-        cTime.value = e.workTime;
+        cTime.value = e.workTime || e.additionalWorkTime || '';
       });
 
       // Apply borders + alignment to every cell in block from row 6 to blockMaxRow+5
@@ -272,8 +272,8 @@ export default function Report() {
                         <Fragment key={m}>
                           <td className={`border p-2 font-mono text-center ${lDiv}`}>{e.code}</td>
                           <td className="border p-2 text-center">{nameMap.get(e.code.toLowerCase()) || ''}</td>
-                          <td className="border p-2 text-center font-bold">{e.actualProduction}</td>
-                          <td className="border p-2 text-center">{e.workTime}</td>
+                          <td className="border p-2 text-center font-bold">{e.actualProduction || e.additionalProduction || ''}</td>
+                          <td className="border p-2 text-center">{e.workTime || e.additionalWorkTime || ''}</td>
                         </Fragment>
                       );
                     })}

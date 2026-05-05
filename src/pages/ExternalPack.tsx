@@ -6,6 +6,8 @@ import { todayKey } from '../lib/dateUtil';
 import { loadViewDate, saveViewDate } from '../lib/viewDate';
 import type { Item, MachineEntry } from '../types';
 
+const MACHINES = ['1호기', '2호기', '3호기'] as const;
+
 export default function ExternalPack() {
   const { id } = useParams();
   const machine = `${id}호기`;
@@ -16,6 +18,9 @@ export default function ExternalPack() {
 
   const [items, setItems] = useState<Item[]>([]);
   const [entries, setEntries] = useState<MachineEntry[]>([]);
+  const [allMachineQty, setAllMachineQty] = useState<Record<string, Record<string, number>>>({
+    '1호기': {}, '2호기': {}, '3호기': {},
+  });
 
   useEffect(() => {
     return onSnapshot(collection(db, 'days', date, 'items'), (snap) => {
@@ -34,24 +39,54 @@ export default function ExternalPack() {
     });
   }, [date, machine]);
 
+  useEffect(() => {
+    setAllMachineQty({ '1호기': {}, '2호기': {}, '3호기': {} });
+    const unsubs = MACHINES.map((m) =>
+      onSnapshot(collection(db, 'days', date, 'machines', m, 'entries'), (snap) => {
+        const map: Record<string, number> = {};
+        snap.forEach((d) => {
+          const e = d.data();
+          const key = String(e.code || '').toLowerCase();
+          const qty = (e.actualProduction || 0) + (e.additionalProduction || 0);
+          map[key] = (map[key] || 0) + qty;
+        });
+        setAllMachineQty((prev) => ({ ...prev, [m]: map }));
+      })
+    );
+    return () => unsubs.forEach((u) => u());
+  }, [date]);
+
+  const combinedByCode = useMemo(() => {
+    const result: Record<string, number> = {};
+    MACHINES.forEach((m) => {
+      Object.entries(allMachineQty[m]).forEach(([code, qty]) => {
+        result[code] = (result[code] || 0) + qty;
+      });
+    });
+    return result;
+  }, [allMachineQty]);
+
   const rows = useMemo(() => {
     const itemMap = new Map(items.map((i) => [i.code.toLowerCase(), i]));
-    return entries.map((e) => {
+    return entries.map((e, idx) => {
       const item = itemMap.get(e.code.toLowerCase());
       const orderQty = item?.orderQty || 0;
       const totalQty = item?.totalQty || 0;
-      const actual = (e.actualProduction || 0) + (e.additionalProduction || 0);
-      const shortage = actual - totalQty;
+      const rowActual = (e.actualProduction || 0) + (e.additionalProduction || 0);
+      const combined = combinedByCode[e.code.toLowerCase()] || 0;
+      const combinedDiff = combined - totalQty;
       return {
+        key: `${e.code}-${idx}`,
         code: e.code,
         name: item?.name || '',
         orderQty,
         shipped: totalQty,
-        actual,
-        shortage,
+        actual: rowActual,
+        combined,
+        combinedDiff,
       };
     });
-  }, [items, entries]);
+  }, [items, entries, combinedByCode]);
 
   return (
     <div className="space-y-4">
@@ -88,18 +123,29 @@ export default function ExternalPack() {
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
-              <tr key={r.code} className={`border-t ${r.shortage > 0 ? 'bg-yellow-50' : ''} ${r.shortage < 0 ? 'bg-red-50' : ''}`}>
-                <td className="p-2 font-mono">{r.code}</td>
-                <td className="p-2">{r.name}</td>
-                <td className="p-2 text-right">{r.orderQty}</td>
-                <td className="p-2 text-right">{r.shipped}</td>
-                <td className="p-2 text-right font-bold">{r.actual}</td>
-                <td className={`p-2 text-right font-bold ${r.shortage > 0 ? 'text-green-600' : r.shortage < 0 ? 'text-red-600' : ''}`}>
-                  {r.shortage > 0 ? `+${r.shortage}` : r.shortage || ''}
-                </td>
-              </tr>
-            ))}
+            {rows.map((r) => {
+              let rowBg = '';
+              if (r.shipped > 0) {
+                if (r.combinedDiff > 0) rowBg = 'bg-yellow-200';
+                else if (r.combinedDiff === 0) rowBg = 'bg-green-200';
+                else rowBg = 'bg-red-200';
+              }
+              const diffColor =
+                r.combinedDiff > 0 ? 'text-green-700' :
+                r.combinedDiff < 0 ? 'text-red-700' : '';
+              return (
+                <tr key={r.key} className={`border-t ${rowBg}`}>
+                  <td className="p-2 font-mono">{r.code}</td>
+                  <td className="p-2">{r.name}</td>
+                  <td className="p-2 text-right">{r.orderQty}</td>
+                  <td className="p-2 text-right">{r.shipped}</td>
+                  <td className="p-2 text-right font-bold">{r.actual}</td>
+                  <td className={`p-2 text-right font-bold ${diffColor}`}>
+                    {r.combinedDiff > 0 ? `+${r.combinedDiff}` : r.combinedDiff || ''}
+                  </td>
+                </tr>
+              );
+            })}
             {rows.length === 0 && (
               <tr><td colSpan={6} className="p-6 text-center text-slate-400">{machine}에서 입력된 내역이 없습니다</td></tr>
             )}
