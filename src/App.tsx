@@ -73,7 +73,7 @@ function Header() {
   ];
 
   return (
-    <header className="bg-blue-600 text-white px-5 py-2.5 flex items-center gap-4 sticky top-0 z-20">
+    <header className="bg-blue-700 text-white px-5 py-2.5 flex items-center gap-4 sticky top-0 z-20">
       <div className="flex items-center gap-3 min-w-max">
         <div className="bg-white rounded px-2 py-1 flex items-center shadow">
           <Logo height={32} />
@@ -98,7 +98,7 @@ function Header() {
               key={l.to}
               to={l.to}
               className={`px-3 py-1.5 text-sm rounded font-medium transition ${
-                active ? 'bg-white text-blue-700' : 'text-blue-100 hover:bg-blue-700'
+                active ? 'bg-white text-blue-700' : 'text-blue-100 hover:bg-blue-800'
               }`}
             >
               {l.label}
