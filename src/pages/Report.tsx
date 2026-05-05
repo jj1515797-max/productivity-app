@@ -4,6 +4,7 @@ import ExcelJS from 'exceljs';
 import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
 import { loadViewDate, saveViewDate } from '../lib/viewDate';
+import { usePresence } from '../lib/presence';
 import type { Item, MachineEntry } from '../types';
 
 const MACHINES: MachineEntry['machine'][] = ['1호기', '2호기', '3호기'];
@@ -14,6 +15,7 @@ export default function Report() {
   useEffect(() => { saveViewDate(date); }, [date]);
   const today = todayKey();
   const isToday = date === today;
+  const visitors = usePresence();
   const [items, setItems] = useState<Item[]>([]);
   const [byMachine, setByMachine] = useState<Record<string, MachineEntry[]>>({});
 
@@ -178,6 +180,10 @@ export default function Report() {
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div className="flex items-center gap-3 flex-wrap">
           <h2 className="text-lg font-bold text-gray-800">생산 내역 조회</h2>
+          <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-green-50 border border-green-200 text-xs text-green-700 font-medium">
+            <span className="w-1.5 h-1.5 rounded-full bg-green-500 animate-pulse" />
+            방문자 {visitors}명
+          </span>
           <input
             type="date"
             value={date}
