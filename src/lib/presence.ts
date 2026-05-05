@@ -24,9 +24,14 @@ export function useTrackVisit(): void {
       lastSeen: serverTimestamp(),
     }).catch(() => {});
 
-    getDocs(query(collection(db, 'visits'), where('date', '<', date)))
-      .then((snap) => snap.forEach((d) => deleteDoc(d.ref).catch(() => {})))
-      .catch(() => {});
+    if (localStorage.getItem('visitsCleanupDate') !== date) {
+      getDocs(query(collection(db, 'visits'), where('date', '<', date)))
+        .then((snap) => {
+          snap.forEach((d) => deleteDoc(d.ref).catch(() => {}));
+          localStorage.setItem('visitsCleanupDate', date);
+        })
+        .catch(() => {});
+    }
   }, []);
 }
 
