@@ -63,7 +63,8 @@ export default function Dashboard() {
         snap.forEach((d) => {
           const e = d.data();
           const key = String(e.code || '').toLowerCase();
-          map[key] = (e.actualProduction || 0) + (e.additionalProduction || 0);
+          const qty = (e.actualProduction || 0) + (e.additionalProduction || 0);
+          map[key] = (map[key] || 0) + qty;
         });
         setMachineQty((prev) => ({ ...prev, [machine]: map }));
       })
@@ -276,7 +277,7 @@ export default function Dashboard() {
                   return (
                     <tr
                       key={it.code}
-                      className={`transition-colors ${done ? 'bg-green-50' : inProgress ? 'bg-red-50' : 'hover:bg-gray-50'}`}
+                      className={`transition-colors ${done ? 'bg-green-200' : inProgress ? 'bg-red-200' : 'hover:bg-gray-50'}`}
                     >
                       <td className="px-4 py-3 font-mono text-xs text-gray-500">{it.code}</td>
                       <td className="px-4 py-3 font-medium text-gray-800">{it.name}</td>
