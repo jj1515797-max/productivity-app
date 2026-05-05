@@ -8,8 +8,10 @@ import Import from './pages/Import';
 import Analytics from './pages/Analytics';
 import AnalyticsMonthly from './pages/AnalyticsMonthly';
 import Logo from './components/Logo';
+import { useTrackVisit } from './lib/presence';
 
 export default function App() {
+  useTrackVisit();
   return (
     <div className="min-h-screen bg-gray-100 flex flex-col">
       <Header />

@@ -1,50 +1,41 @@
 import { useEffect, useState } from 'react';
-import { collection, deleteDoc, doc, onSnapshot, serverTimestamp, setDoc, Timestamp } from 'firebase/firestore';
+import {
+  collection, deleteDoc, doc, getDocs, onSnapshot, query, serverTimestamp, setDoc, where,
+} from 'firebase/firestore';
 import { db } from '../firebase';
+import { todayKey } from './dateUtil';
 
-const HEARTBEAT_MS = 15000;
-const STALE_MS = 35000;
+function getVisitorId(): string {
+  let id = localStorage.getItem('visitorId');
+  if (!id) {
+    id = `${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+    localStorage.setItem('visitorId', id);
+  }
+  return id;
+}
 
-export function usePresence(): number {
-  const [count, setCount] = useState(0);
-
+export function useTrackVisit(): void {
   useEffect(() => {
-    const sessionId = `${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    const ref = doc(db, 'presence', sessionId);
+    const date = todayKey();
+    const visitorId = getVisitorId();
+    setDoc(doc(db, 'visits', `${date}_${visitorId}`), {
+      date,
+      visitorId,
+      lastSeen: serverTimestamp(),
+    }).catch(() => {});
 
-    const beat = () => setDoc(ref, { lastSeen: serverTimestamp() }).catch(() => {});
-    beat();
-    const interval = setInterval(beat, HEARTBEAT_MS);
-
-    const onUnload = () => deleteDoc(ref).catch(() => {});
-    window.addEventListener('beforeunload', onUnload);
-
-    const unsub = onSnapshot(collection(db, 'presence'), (snap) => {
-      const now = Date.now();
-      let active = 0;
-      snap.forEach((d) => {
-        const ts = d.data().lastSeen as Timestamp | undefined;
-        if (!ts) {
-          deleteDoc(d.ref).catch(() => {});
-          return;
-        }
-        const age = now - ts.toMillis();
-        if (age < STALE_MS) {
-          active++;
-        } else if (age > 5 * 60 * 1000 && d.id !== sessionId) {
-          deleteDoc(d.ref).catch(() => {});
-        }
-      });
-      setCount(active);
-    });
-
-    return () => {
-      clearInterval(interval);
-      window.removeEventListener('beforeunload', onUnload);
-      unsub();
-      deleteDoc(ref).catch(() => {});
-    };
+    getDocs(query(collection(db, 'visits'), where('date', '<', date)))
+      .then((snap) => snap.forEach((d) => deleteDoc(d.ref).catch(() => {})))
+      .catch(() => {});
   }, []);
+}
 
+export function useTodayVisitorCount(): number {
+  const [count, setCount] = useState(0);
+  useEffect(() => {
+    const date = todayKey();
+    const q = query(collection(db, 'visits'), where('date', '==', date));
+    return onSnapshot(q, (snap) => setCount(snap.size));
+  }, []);
   return count;
 }
