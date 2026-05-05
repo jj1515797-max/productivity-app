@@ -82,7 +82,10 @@ export default function ExternalPack() {
       const totalQty = item?.totalQty || 0;
       const rowActual = (e.actualProduction || 0) + (e.additionalProduction || 0);
       const combined = combinedByCode[e.code.toLowerCase()] || 0;
-      const multiEntry = (entryCountByCode[e.code.toLowerCase()] || 1) > 1;
+      // 같은 호기에서 여러 번 OR 다른 호기에서도 생산한 경우
+      const sameMulti = (entryCountByCode[e.code.toLowerCase()] || 1) > 1;
+      const crossMachine = MACHINES.filter((m) => (allMachineQty[m][e.code.toLowerCase()] || 0) > 0).length > 1;
+      const multiEntry = sameMulti || crossMachine;
 
       let bg = '';
       if (totalQty > 0) {
