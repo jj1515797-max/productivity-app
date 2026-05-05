@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { collection, doc, onSnapshot, setDoc, deleteDoc } from 'firebase/firestore';
+import { collection, doc, onSnapshot, addDoc, deleteDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { todayKey, formatTime } from '../lib/dateUtil';
 import { loadViewDate, saveViewDate } from '../lib/viewDate';
@@ -15,7 +15,7 @@ export default function Machine() {
   const isToday = date === today;
 
   const [items, setItems] = useState<Item[]>([]);
-  const [entries, setEntries] = useState<MachineEntry[]>([]);
+  const [entries, setEntries] = useState<(MachineEntry & { docId: string })[]>([]);
   const [search, setSearch] = useState('');
   const [selectedCode, setSelectedCode] = useState<string | null>(null);
   const [qty, setQty] = useState<number>(0);
@@ -32,8 +32,8 @@ export default function Machine() {
 
   useEffect(() => {
     return onSnapshot(collection(db, 'days', date, 'machines', machine, 'entries'), (snap) => {
-      const list: MachineEntry[] = [];
-      snap.forEach((d) => list.push(d.data() as MachineEntry));
+      const list: (MachineEntry & { docId: string })[] = [];
+      snap.forEach((d) => list.push({ ...(d.data() as MachineEntry), docId: d.id }));
       list.sort((a, b) => (b.workTime || b.additionalWorkTime || '').localeCompare(a.workTime || a.additionalWorkTime || ''));
       setEntries(list);
     });
@@ -47,22 +47,21 @@ export default function Machine() {
 
   const submit = async () => {
     if (!selectedCode || qty <= 0) return alert('코드와 수량을 입력하세요');
-    const ref = doc(db, 'days', date, 'machines', machine, 'entries', selectedCode);
     const time = formatTime();
     const base = { id: selectedCode, code: selectedCode, machine, date };
     const data = isAdditional
       ? { ...base, additionalProduction: qty, additionalWorkTime: time }
       : { ...base, actualProduction: qty, workTime: time };
-    await setDoc(ref, data, { merge: true });
+    await addDoc(collection(db, 'days', date, 'machines', machine, 'entries'), data);
     setSelectedCode(null);
     setQty(0);
     setSearch('');
     setIsAdditional(false);
   };
 
-  const remove = async (code: string) => {
+  const remove = async (docId: string, code: string) => {
     if (!confirm(`${code} 기록을 삭제할까요?`)) return;
-    await deleteDoc(doc(db, 'days', date, 'machines', machine, 'entries', code));
+    await deleteDoc(doc(db, 'days', date, 'machines', machine, 'entries', docId));
   };
 
   return (
@@ -162,7 +161,7 @@ export default function Machine() {
               const actual = e.actualProduction || 0;
               const add = e.additionalProduction || 0;
               return (
-                <tr key={e.code} className="border-t">
+                <tr key={e.docId} className="border-t">
                   <td className="p-2 font-mono">{e.code}</td>
                   <td className="p-2 text-right font-bold">{actual || '-'}</td>
                   <td className={`p-2 text-right font-bold ${add > 0 ? 'bg-green-50 text-green-700' : ''}`}>
@@ -173,7 +172,7 @@ export default function Machine() {
                     {e.additionalWorkTime || '-'}
                   </td>
                   <td className="p-2 text-right">
-                    <button onClick={() => remove(e.code)} className="text-xs text-red-500 hover:underline">삭제</button>
+                    <button onClick={() => remove(e.docId, e.code)} className="text-xs text-red-500 hover:underline">삭제</button>
                   </td>
                 </tr>
               );
