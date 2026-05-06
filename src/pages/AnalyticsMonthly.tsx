@@ -12,10 +12,19 @@ function thisMonth() {
   return `${y}-${m}`;
 }
 
+function prevMonths(month: string, count: number): string[] {
+  const [y, m] = month.split('-').map(Number);
+  return Array.from({ length: count }, (_, i) => {
+    const d = new Date(y, m - 2 - i, 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  });
+}
+
 export default function AnalyticsMonthly() {
   const [month, setMonth] = useState(thisMonth());
   const [entries, setEntries] = useState<MachineEntry[]>([]);
   const [nameMap, setNameMap] = useState<Map<string, string>>(new Map());
+  const [prev3Avg, setPrev3Avg] = useState<number>(0);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
 
@@ -25,11 +34,19 @@ export default function AnalyticsMonthly() {
     setErr(null);
     const start = `${month}-01`;
     const end = `${month}-31`;
+    const qty = (e: MachineEntry) => (e.actualProduction || 0) + (e.additionalProduction || 0);
+
+    const prevMs = prevMonths(month, 3);
+    const prevQueries = prevMs.map((pm) =>
+      getDocs(query(collectionGroup(db, 'entries'), where('date', '>=', `${pm}-01`), where('date', '<=', `${pm}-31`)))
+    );
+
     Promise.all([
       getDocs(query(collectionGroup(db, 'entries'), where('date', '>=', start), where('date', '<=', end))),
       getDocs(query(collectionGroup(db, 'items'), where('date', '>=', start), where('date', '<=', end))),
+      ...prevQueries,
     ])
-      .then(([entriesSnap, itemsSnap]) => {
+      .then(([entriesSnap, itemsSnap, ...prevSnaps]) => {
         if (cancelled) return;
         setEntries(entriesSnap.docs.map((d) => d.data() as MachineEntry));
         const map = new Map<string, string>();
@@ -38,6 +55,14 @@ export default function AnalyticsMonthly() {
           if (it.code && it.name) map.set(it.code, it.name);
         });
         setNameMap(map);
+
+        const monthAvgs = prevSnaps.map((snap) => {
+          const ents = snap.docs.map((d) => d.data() as MachineEntry);
+          const days = new Set(ents.map((e) => e.date));
+          const total = ents.reduce((s, e) => s + qty(e), 0);
+          return days.size ? total / days.size : 0;
+        }).filter((a) => a > 0);
+        setPrev3Avg(monthAvgs.length ? monthAvgs.reduce((s, a) => s + a, 0) / monthAvgs.length : 0);
       })
       .catch((e) => {
         if (!cancelled) setErr(e.message || String(e));
@@ -170,6 +195,7 @@ export default function AnalyticsMonthly() {
         monthLabel={monthLabel}
         days={stats.allDays}
         avg={stats.avgPerDay}
+        prev3Avg={prev3Avg}
       />
 
       <div className="bg-white border rounded-lg overflow-hidden">
@@ -217,13 +243,14 @@ function niceMax(value: number): number {
 }
 
 function DailyChart({
-  monthLabel, days, avg,
+  monthLabel, days, avg, prev3Avg,
 }: {
   monthLabel: string;
   days: { day: number; label: string; total: number; isWeekend: boolean }[];
   avg: number;
+  prev3Avg: number;
 }) {
-  const maxRaw = Math.max(avg, ...days.map((d) => d.total));
+  const maxRaw = Math.max(avg, prev3Avg, ...days.map((d) => d.total));
   const yMax = niceMax(maxRaw * 1.15);
   const ticks = 6;
   const tickStep = yMax / ticks;
@@ -295,8 +322,18 @@ function DailyChart({
                 <line x1={padL} y1={yFor(avg)} x2={padL + innerW} y2={yFor(avg)}
                   stroke="#9ca3af" strokeWidth={1.5} strokeDasharray="4 3" />
                 <text x={padL + innerW - 6} y={yFor(avg) - 4} textAnchor="end" fontSize="11"
-                  className="fill-gray-600" fontWeight="bold">
+                  fill="#6b7280" fontWeight="bold">
                   일 평균 {Math.round(avg).toLocaleString()}
+                </text>
+              </g>
+            )}
+            {prev3Avg > 0 && (
+              <g>
+                <line x1={padL} y1={yFor(prev3Avg)} x2={padL + innerW} y2={yFor(prev3Avg)}
+                  stroke="#f59e0b" strokeWidth={1.5} strokeDasharray="4 3" />
+                <text x={padL + innerW - 6} y={yFor(prev3Avg) - 4} textAnchor="end" fontSize="11"
+                  fill="#d97706" fontWeight="bold">
+                  직전 3개월 일평균 {Math.round(prev3Avg).toLocaleString()}
                 </text>
               </g>
             )}
@@ -305,12 +342,15 @@ function DailyChart({
             <line x1={padL} y1={padT} x2={padL} y2={padT + innerH} stroke="#9ca3af" />
           </svg>
 
-          <div className="flex items-center justify-center gap-5 mt-3 text-xs text-gray-600">
+          <div className="flex items-center justify-center gap-5 mt-3 text-xs text-gray-600 flex-wrap">
             <span className="flex items-center gap-1.5">
               <span className="w-3 h-3 inline-block bg-blue-600 rounded-sm" /> 생산량
             </span>
             <span className="flex items-center gap-1.5">
-              <span className="w-4 border-t-2 border-dashed border-gray-400 inline-block" /> 일 평균 생산량
+              <span className="w-5 border-t-2 border-dashed border-gray-400 inline-block" /> 일 평균 생산량
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="w-5 border-t-2 border-dashed border-amber-400 inline-block" /> 직전 3개월 일평균 생산량
             </span>
           </div>
         </div>
