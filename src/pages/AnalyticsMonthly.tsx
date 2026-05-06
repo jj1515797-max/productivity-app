@@ -52,7 +52,7 @@ export default function AnalyticsMonthly() {
         const map = new Map<string, string>();
         itemsSnap.forEach((d) => {
           const it = d.data() as Item;
-          if (it.code && it.name) map.set(it.code, it.name);
+          if (it.code && it.name) map.set(it.code.toLowerCase(), it.name);
         });
         setNameMap(map);
 
@@ -119,7 +119,7 @@ export default function AnalyticsMonthly() {
       byCode[e.code] = (byCode[e.code] || 0) + qty(e);
     });
     const topCodes = Object.entries(byCode)
-      .map(([code, total]) => ({ code, name: nameMap.get(code) || '', total }))
+      .map(([code, total]) => ({ code, name: nameMap.get(code.toLowerCase()) || '', total }))
       .sort((a, b) => b.total - a.total)
       .slice(0, 10);
 
@@ -199,32 +199,35 @@ export default function AnalyticsMonthly() {
         prev3Avg={prev3Avg}
       />
 
-      <div className="bg-white border rounded-lg overflow-hidden">
-        <div className="px-5 py-3 border-b bg-slate-50 font-semibold text-gray-800">상위 생산 품목 (Top 10)</div>
-        {stats.topCodes.length === 0 ? (
-          <div className="p-12 text-center text-gray-400 text-sm">데이터 없음</div>
-        ) : (
-          <table className="w-full text-sm">
-            <thead className="bg-gray-50 text-xs text-gray-500">
-              <tr>
-                <th className="px-4 py-2 text-left">순위</th>
-                <th className="px-4 py-2 text-left">코드</th>
-                <th className="px-4 py-2 text-left">품목명</th>
-                <th className="px-4 py-2 text-right">총 생산량</th>
-              </tr>
-            </thead>
-            <tbody>
-              {stats.topCodes.map((row, i) => (
-                <tr key={row.code} className="border-t">
-                  <td className="px-4 py-2 font-bold text-gray-500">{i + 1}</td>
-                  <td className="px-4 py-2 font-mono">{row.code}</td>
-                  <td className="px-4 py-2">{row.name || '-'}</td>
-                  <td className="px-4 py-2 text-right font-bold">{row.total.toLocaleString()}</td>
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
+        <div className="bg-white border rounded-lg overflow-hidden">
+          <div className="px-5 py-3 border-b bg-slate-50 font-semibold text-gray-800">상위 생산 품목 (Top 10)</div>
+          {stats.topCodes.length === 0 ? (
+            <div className="p-12 text-center text-gray-400 text-sm">데이터 없음</div>
+          ) : (
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 text-xs text-gray-500">
+                <tr>
+                  <th className="px-4 py-2 text-left w-12">순위</th>
+                  <th className="px-4 py-2 text-left w-20">코드</th>
+                  <th className="px-4 py-2 text-left">품목명</th>
+                  <th className="px-4 py-2 text-right w-28">총 생산량</th>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
+              </thead>
+              <tbody>
+                {stats.topCodes.map((row, i) => (
+                  <tr key={row.code} className="border-t">
+                    <td className="px-4 py-2 font-bold text-gray-500">{i + 1}</td>
+                    <td className="px-4 py-2 font-mono">{row.code}</td>
+                    <td className="px-4 py-2">{row.name || '-'}</td>
+                    <td className="px-4 py-2 text-right font-bold">{row.total.toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+        <div className="hidden lg:block" />
       </div>
     </div>
   );
