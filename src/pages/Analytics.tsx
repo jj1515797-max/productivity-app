@@ -79,8 +79,8 @@ export default function AnalyticsDaily() {
     const itemCount = items.length;
     const remaining = items.reduce((s, i) => {
       const a = actualByCode[i.code.toLowerCase()] || 0;
-      const r = (i.totalQty || 0) - a;
-      return s + (r > 0 ? r : 0);
+      const surplus = a - (i.totalQty || 0);
+      return s + (surplus > 0 ? surplus : 0);
     }, 0);
 
     const byStage = STAGE_LETTERS.map((letter, idx) => {
@@ -124,7 +124,7 @@ export default function AnalyticsDaily() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
         <BigCard label="총 생산(EA)" value={stats.totalActual.toLocaleString()} unit="EA" color="blue" />
         <BigCard label="품목수" value={stats.itemCount.toString()} unit="품목" color="green" />
-        <BigCard label="생산성" value="-" unit="EA/인시" color="orange" />
+        <BigCard label="생산성" value="-" unit="" color="orange" />
         <BigCard label="잔여량" value={stats.remaining.toLocaleString()} unit="EA" color="red" />
       </div>
 
