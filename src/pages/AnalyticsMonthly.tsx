@@ -72,6 +72,22 @@ export default function AnalyticsMonthly() {
       .map(([date, total]) => ({ date, total }))
       .sort((a, b) => a.date.localeCompare(b.date));
 
+    const [yy, mm] = month.split('-').map(Number);
+    const lastDay = new Date(yy, mm, 0).getDate();
+    const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
+    const allDays = Array.from({ length: lastDay }, (_, i) => {
+      const day = i + 1;
+      const dateStr = `${month}-${String(day).padStart(2, '0')}`;
+      const dow = new Date(yy, mm - 1, day).getDay();
+      return {
+        day,
+        dateStr,
+        label: `${day}(${dayNames[dow]})`,
+        total: byDay[dateStr] || 0,
+        isWeekend: dow === 0 || dow === 6,
+      };
+    });
+
     const byCode: Record<string, number> = {};
     entries.forEach((e) => {
       byCode[e.code] = (byCode[e.code] || 0) + qty(e);
@@ -83,7 +99,7 @@ export default function AnalyticsMonthly() {
 
     const maxDayTotal = Math.max(1, ...dayList.map((d) => d.total));
 
-    return { total, daysWorked, avgPerDay, itemsCount: items.size, byMachine, dayList, topCodes, maxDayTotal };
+    return { total, daysWorked, avgPerDay, itemsCount: items.size, byMachine, dayList, allDays, topCodes, maxDayTotal };
   }, [entries, nameMap]);
 
   const shiftMonth = (delta: number) => {
@@ -150,27 +166,11 @@ export default function AnalyticsMonthly() {
         </table>
       </div>
 
-      <div className="bg-white border rounded-lg overflow-hidden">
-        <div className="px-5 py-3 border-b bg-slate-50 font-semibold text-gray-800">일별 생산량</div>
-        {stats.dayList.length === 0 ? (
-          <div className="p-12 text-center text-gray-400 text-sm">해당 월에 생산 내역이 없습니다</div>
-        ) : (
-          <div className="p-4 space-y-1.5">
-            {stats.dayList.map((d) => (
-              <div key={d.date} className="flex items-center gap-3 text-sm">
-                <span className="w-24 font-mono text-xs text-gray-500">{d.date}</span>
-                <div className="flex-1 bg-gray-100 rounded h-5 overflow-hidden">
-                  <div
-                    className="bg-blue-600 h-full"
-                    style={{ width: `${(d.total / stats.maxDayTotal) * 100}%` }}
-                  />
-                </div>
-                <span className="w-20 text-right font-bold text-gray-700">{d.total.toLocaleString()}</span>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
+      <DailyChart
+        monthLabel={monthLabel}
+        days={stats.allDays}
+        avg={stats.avgPerDay}
+      />
 
       <div className="bg-white border rounded-lg overflow-hidden">
         <div className="px-5 py-3 border-b bg-slate-50 font-semibold text-gray-800">상위 생산 품목 (Top 10)</div>
@@ -199,6 +199,122 @@ export default function AnalyticsMonthly() {
           </table>
         )}
       </div>
+    </div>
+  );
+}
+
+function niceMax(value: number): number {
+  if (value <= 0) return 10;
+  const exp = Math.pow(10, Math.floor(Math.log10(value)));
+  const n = value / exp;
+  let nice;
+  if (n <= 1) nice = 1;
+  else if (n <= 2) nice = 2;
+  else if (n <= 2.5) nice = 2.5;
+  else if (n <= 5) nice = 5;
+  else nice = 10;
+  return nice * exp;
+}
+
+function DailyChart({
+  monthLabel, days, avg,
+}: {
+  monthLabel: string;
+  days: { day: number; label: string; total: number; isWeekend: boolean }[];
+  avg: number;
+}) {
+  const maxRaw = Math.max(avg, ...days.map((d) => d.total));
+  const yMax = niceMax(maxRaw * 1.15);
+  const ticks = 6;
+  const tickStep = yMax / ticks;
+
+  const padL = 60, padR = 20, padT = 30, padB = 50;
+  const innerW = Math.max(720, days.length * 32);
+  const innerH = 360;
+  const W = padL + innerW + padR;
+  const H = padT + innerH + padB;
+
+  const bandW = innerW / days.length;
+  const barW = Math.min(22, bandW * 0.6);
+  const yFor = (v: number) => padT + innerH - (v / yMax) * innerH;
+
+  return (
+    <div className="bg-white border rounded-lg overflow-hidden">
+      <div className="px-5 py-3 border-b bg-slate-50 font-semibold text-gray-800">
+        {monthLabel} 일별 생산량
+      </div>
+      {days.every((d) => d.total === 0) ? (
+        <div className="p-12 text-center text-gray-400 text-sm">해당 월에 생산 내역이 없습니다</div>
+      ) : (
+        <div className="p-4 overflow-x-auto">
+          <svg width={W} height={H} className="min-w-full">
+            <text x={W / 2} y={18} textAnchor="middle" className="fill-gray-800" fontSize="14" fontWeight="bold">
+              생산팀 {monthLabel} 생산량 집계현황
+            </text>
+
+            {Array.from({ length: ticks + 1 }).map((_, i) => {
+              const v = tickStep * i;
+              const y = yFor(v);
+              return (
+                <g key={i}>
+                  <line x1={padL} y1={y} x2={padL + innerW} y2={y} stroke="#e5e7eb" strokeWidth={1} />
+                  <text x={padL - 8} y={y + 4} textAnchor="end" fontSize="11" className="fill-gray-500">
+                    {v.toLocaleString()}
+                  </text>
+                </g>
+              );
+            })}
+
+            {days.map((d, i) => {
+              const cx = padL + bandW * i + bandW / 2;
+              return (
+                <text key={`x-${d.day}`} x={cx} y={padT + innerH + 16} textAnchor="middle" fontSize="10"
+                  className={d.isWeekend ? 'fill-rose-500' : 'fill-gray-600'}>
+                  {d.label}
+                </text>
+              );
+            })}
+
+            {days.map((d, i) => {
+              if (d.total <= 0) return null;
+              const cx = padL + bandW * i + bandW / 2;
+              const y = yFor(d.total);
+              const h = padT + innerH - y;
+              return (
+                <g key={`bar-${d.day}`}>
+                  <rect x={cx - barW / 2} y={y} width={barW} height={h} fill="#2563eb" rx={2} />
+                  <text x={cx} y={y - 4} textAnchor="middle" fontSize="10" className="fill-gray-700" fontWeight="bold">
+                    {d.total.toLocaleString()}
+                  </text>
+                </g>
+              );
+            })}
+
+            {avg > 0 && (
+              <g>
+                <line x1={padL} y1={yFor(avg)} x2={padL + innerW} y2={yFor(avg)}
+                  stroke="#9ca3af" strokeWidth={1.5} strokeDasharray="4 3" />
+                <text x={padL + innerW - 6} y={yFor(avg) - 4} textAnchor="end" fontSize="11"
+                  className="fill-gray-600" fontWeight="bold">
+                  일 평균 {Math.round(avg).toLocaleString()}
+                </text>
+              </g>
+            )}
+
+            <line x1={padL} y1={padT + innerH} x2={padL + innerW} y2={padT + innerH} stroke="#9ca3af" />
+            <line x1={padL} y1={padT} x2={padL} y2={padT + innerH} stroke="#9ca3af" />
+          </svg>
+
+          <div className="flex items-center justify-center gap-5 mt-3 text-xs text-gray-600">
+            <span className="flex items-center gap-1.5">
+              <span className="w-3 h-3 inline-block bg-blue-600 rounded-sm" /> 생산량
+            </span>
+            <span className="flex items-center gap-1.5">
+              <span className="w-4 border-t-2 border-dashed border-gray-400 inline-block" /> 일 평균 생산량
+            </span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
