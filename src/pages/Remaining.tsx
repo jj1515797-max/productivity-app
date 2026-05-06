@@ -63,10 +63,10 @@ export default function Remaining() {
   useEffect(() => {
     setLogisticsQty({});
     return onSnapshot(collection(db, 'days', date, 'logistics'), (snap) => {
+      // key = 실제 doc ID (ourCode, e.g. "A-01") → 삭제 시 그대로 사용
       const map: Record<string, number> = {};
       snap.forEach((d) => {
-        const data = d.data();
-        map[normalize(String(data.code || ''))] = data.qty || 0;
+        map[d.id] = (d.data().qty as number) || 0;
       });
       setLogisticsQty(map);
     });
@@ -86,8 +86,10 @@ export default function Remaining() {
 
   const enriched = useMemo(() => items.map((it) => {
     const actual = actualByCode[it.code.toLowerCase()] || 0;
-    const logQty = logisticsQty[normalize(it.code)];
-    const totalQty = logQty !== undefined ? logQty : (it.totalQty || 0);
+    // logisticsQty 키(doc ID)와 item 코드를 둘 다 normalize해서 비교
+    const normItem = normalize(it.code);
+    const logEntry = Object.entries(logisticsQty).find(([k]) => normalize(k) === normItem);
+    const totalQty = logEntry !== undefined ? logEntry[1] : (it.totalQty || 0);
     return { ...it, actualProduction: actual, totalQty };
   }), [items, actualByCode, logisticsQty]);
 
