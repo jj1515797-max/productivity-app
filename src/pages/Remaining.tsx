@@ -86,17 +86,29 @@ export default function Remaining() {
 
   const enriched = useMemo(() => items.map((it) => {
     const actual = actualByCode[it.code.toLowerCase()] || 0;
-    // logisticsQty 키(doc ID)와 item 코드를 둘 다 normalize해서 비교
     const normItem = normalize(it.code);
     const logEntry = Object.entries(logisticsQty).find(([k]) => normalize(k) === normItem);
-    const totalQty = logEntry !== undefined ? logEntry[1] : (it.totalQty || 0);
-    return { ...it, actualProduction: actual, totalQty };
+    const logQty = logEntry ? logEntry[1] : undefined;
+    return {
+      ...it,
+      actualProduction: actual,
+      totalQty: it.totalQty || 0,
+      logQty,
+    };
   }), [items, actualByCode, logisticsQty]);
 
-  const produced = enriched.filter((it) => it.actualProduction > 0);
-  const surplus  = produced.filter((it) => it.actualProduction > it.totalQty);
-  const exact    = produced.filter((it) => it.actualProduction === it.totalQty);
-  const shortage = produced.filter((it) => it.actualProduction < it.totalQty);
+  // 생산 모드: 잔여량 = actual - totalQty
+  // 물류 모드: 잔여량 = logQty (등록수량 그대로)
+  const produced = enriched.filter((it) => it.actualProduction > 0 || it.logQty !== undefined);
+  const surplus  = hasLogistics
+    ? produced.filter((it) => (it.logQty || 0) > 0)
+    : produced.filter((it) => it.actualProduction > it.totalQty);
+  const exact    = hasLogistics
+    ? produced.filter((it) => it.logQty === 0)
+    : produced.filter((it) => it.actualProduction === it.totalQty);
+  const shortage = hasLogistics
+    ? []
+    : produced.filter((it) => it.actualProduction < it.totalQty);
 
   const saveLogistics = async () => {
     const lines = pasteText.trim().split('\n').map((r) => r.split('\t'));
@@ -208,19 +220,19 @@ export default function Remaining() {
 
       {shortage.length > 0 && (
         <Section title="부족 (추가생산 필요)" count={shortage.length} color="red">
-          {shortage.map((it) => <Row key={it.code} item={it} />)}
+          {shortage.map((it) => <Row key={it.code} item={it} mode={hasLogistics ? 'logistics' : 'production'} />)}
         </Section>
       )}
 
       {surplus.length > 0 && (
         <Section title="잔여량 있음" count={surplus.length} color="green">
-          {surplus.map((it) => <Row key={it.code} item={it} />)}
+          {surplus.map((it) => <Row key={it.code} item={it} mode={hasLogistics ? 'logistics' : 'production'} />)}
         </Section>
       )}
 
       {exact.length > 0 && (
         <Section title="잔여량 없음" count={exact.length} color="blue">
-          {exact.map((it) => <Row key={it.code} item={it} />)}
+          {exact.map((it) => <Row key={it.code} item={it} mode={hasLogistics ? 'logistics' : 'production'} />)}
         </Section>
       )}
 
@@ -288,7 +300,21 @@ function Section({ title, count, color, children }: {
   );
 }
 
-function Row({ item }: { item: Item }) {
+function Row({ item, mode }: { item: Item & { logQty?: number }; mode: 'production' | 'logistics' }) {
+  if (mode === 'logistics') {
+    const log = item.logQty ?? 0;
+    return (
+      <tr className="hover:bg-gray-50">
+        <td className="px-4 py-2.5 font-mono text-xs text-gray-500">{item.code}</td>
+        <td className="px-4 py-2.5 font-medium text-gray-800">{item.name}</td>
+        <td className="px-4 py-2.5 text-right text-gray-600">{item.totalQty}</td>
+        <td className="px-4 py-2.5 text-right text-gray-700">{item.actualProduction}</td>
+        <td className={`px-4 py-2.5 text-right font-bold ${log > 0 ? 'text-green-600' : 'text-blue-600'}`}>
+          {log > 0 ? `+${log}` : '✓'}
+        </td>
+      </tr>
+    );
+  }
   const remain = item.actualProduction - item.totalQty;
   return (
     <tr className="hover:bg-gray-50">
