@@ -32,21 +32,16 @@ export default function AnalyticsMonthly() {
     let cancelled = false;
     setLoading(true);
     setErr(null);
+    setPrev3Avg(0);
     const start = `${month}-01`;
     const end = `${month}-31`;
     const qty = (e: MachineEntry) => (e.actualProduction || 0) + (e.additionalProduction || 0);
 
-    const prevMs = prevMonths(month, 3);
-    const prevQueries = prevMs.map((pm) =>
-      getDocs(query(collectionGroup(db, 'entries'), where('date', '>=', `${pm}-01`), where('date', '<=', `${pm}-31`)))
-    );
-
     Promise.all([
       getDocs(query(collectionGroup(db, 'entries'), where('date', '>=', start), where('date', '<=', end))),
       getDocs(query(collectionGroup(db, 'items'), where('date', '>=', start), where('date', '<=', end))),
-      ...prevQueries,
     ])
-      .then(([entriesSnap, itemsSnap, ...prevSnaps]) => {
+      .then(([entriesSnap, itemsSnap]) => {
         if (cancelled) return;
         setEntries(entriesSnap.docs.map((d) => d.data() as MachineEntry));
         const map = new Map<string, string>();
@@ -55,14 +50,6 @@ export default function AnalyticsMonthly() {
           if (it.code && it.name) map.set(it.code.toLowerCase(), it.name);
         });
         setNameMap(map);
-
-        const monthAvgs = prevSnaps.map((snap) => {
-          const ents = snap.docs.map((d) => d.data() as MachineEntry);
-          const days = new Set(ents.map((e) => e.date));
-          const total = ents.reduce((s, e) => s + qty(e), 0);
-          return days.size ? total / days.size : 0;
-        }).filter((a) => a > 0);
-        setPrev3Avg(monthAvgs.length ? monthAvgs.reduce((s, a) => s + a, 0) / monthAvgs.length : 0);
       })
       .catch((e) => {
         if (!cancelled) setErr(e.message || String(e));
@@ -70,6 +57,28 @@ export default function AnalyticsMonthly() {
       .finally(() => {
         if (!cancelled) setLoading(false);
       });
+
+    // 직전 3개월 평균은 백그라운드로 따로 fetch (UI 블로킹 X)
+    const prevMs = prevMonths(month, 3);
+    Promise.all(
+      prevMs.map((pm) =>
+        getDocs(query(collectionGroup(db, 'entries'), where('date', '>=', `${pm}-01`), where('date', '<=', `${pm}-31`)))
+      )
+    )
+      .then((prevSnaps) => {
+        if (cancelled) return;
+        const monthAvgs = prevSnaps
+          .map((snap) => {
+            const ents = snap.docs.map((d) => d.data() as MachineEntry);
+            const days = new Set(ents.map((e) => e.date));
+            const total = ents.reduce((s, e) => s + qty(e), 0);
+            return days.size ? total / days.size : 0;
+          })
+          .filter((a) => a > 0);
+        setPrev3Avg(monthAvgs.length ? monthAvgs.reduce((s, a) => s + a, 0) / monthAvgs.length : 0);
+      })
+      .catch(() => {});
+
     return () => {
       cancelled = true;
     };
