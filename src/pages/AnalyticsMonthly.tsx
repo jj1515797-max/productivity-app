@@ -340,9 +340,9 @@ function DailyChart({
               const h = padT + innerH - y;
               const text = d.total.toLocaleString();
               const textW = text.length * 7 + 10;
-              // 막대가 짧으면 막대 위, 충분히 길면 막대 안쪽 상단
-              const insideBar = h >= 30;
-              const labelCY = insideBar ? y + 14 : y - 10;
+              // 막대가 충분히 길면 막대의 가운데, 짧으면 막대 위
+              const insideBar = h >= 28;
+              const labelCY = insideBar ? y + h / 2 : y - 10;
               return (
                 <g key={`bar-${d.day}`}>
                   <rect x={cx - barW / 2} y={y} width={barW} height={h} fill="#2563eb" rx={2} />
