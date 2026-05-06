@@ -271,15 +271,30 @@ function DailyChart({
   const { max: yMax, step: tickStep } = niceScale(maxRaw * 1.15);
   const tickCount = Math.round(yMax / tickStep);
 
-  const padL = 80, padR = 110, padT = 50, padB = 60;
-  const innerW = Math.max(1100, days.length * 42);
+  const padL = 90, padR = 110, padT = 50, padB = 60;
+  const innerW = 1200;
   const innerH = 520;
   const W = padL + innerW + padR;
   const H = padT + innerH + padB;
 
   const bandW = innerW / days.length;
-  const barW = Math.min(32, bandW * 0.7);
+  const barW = Math.min(34, bandW * 0.72);
   const yFor = (v: number) => padT + innerH - (v / yMax) * innerH;
+
+  // 평균선 라벨 겹침 방지
+  const avgY = avg > 0 ? yFor(avg) : 0;
+  const prev3Y = prev3Avg > 0 ? yFor(prev3Avg) : 0;
+  let avgLabelY = avgY;
+  let prev3LabelY = prev3Y;
+  if (avg > 0 && prev3Avg > 0 && Math.abs(avgY - prev3Y) < 24) {
+    if (avg < prev3Avg) {
+      avgLabelY = avgY + 14;
+      prev3LabelY = prev3Y - 14;
+    } else {
+      avgLabelY = avgY - 14;
+      prev3LabelY = prev3Y + 14;
+    }
+  }
 
   return (
     <div className="bg-white border rounded-lg overflow-hidden">
@@ -289,8 +304,8 @@ function DailyChart({
       {days.every((d) => d.total === 0) ? (
         <div className="p-12 text-center text-gray-400 text-sm">해당 월에 생산 내역이 없습니다</div>
       ) : (
-        <div className="p-4 overflow-x-auto">
-          <svg width={W} height={H} className="min-w-full">
+        <div className="p-4">
+          <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid meet" className="w-full h-auto block">
             <text x={W / 2} y={26} textAnchor="middle" fill="#1f2937" fontSize="18" fontWeight="bold">
               생산팀 {monthLabel} 생산량 집계현황
             </text>
@@ -323,11 +338,19 @@ function DailyChart({
               const cx = padL + bandW * i + bandW / 2;
               const y = yFor(d.total);
               const h = padT + innerH - y;
+              const text = d.total.toLocaleString();
+              const textW = text.length * 7 + 10;
+              // 막대가 짧으면 막대 위, 충분히 길면 막대 안쪽 상단
+              const insideBar = h >= 30;
+              const labelCY = insideBar ? y + 14 : y - 10;
               return (
                 <g key={`bar-${d.day}`}>
                   <rect x={cx - barW / 2} y={y} width={barW} height={h} fill="#2563eb" rx={2} />
-                  <text x={cx} y={y - 6} textAnchor="middle" fontSize="11" fill="#1f2937" fontWeight="bold">
-                    {d.total.toLocaleString()}
+                  <rect x={cx - textW / 2} y={labelCY - 9} width={textW} height={16}
+                    fill="white" fillOpacity={0.9} stroke="#cbd5e1" strokeWidth={0.5} rx={3} />
+                  <text x={cx} y={labelCY + 3} textAnchor="middle" fontSize="11"
+                    fill="#1f2937" fontWeight="bold">
+                    {text}
                   </text>
                 </g>
               );
@@ -335,10 +358,11 @@ function DailyChart({
 
             {avg > 0 && (
               <g>
-                <line x1={padL} y1={yFor(avg)} x2={padL + innerW} y2={yFor(avg)}
+                <line x1={padL} y1={avgY} x2={padL + innerW} y2={avgY}
                   stroke="#6b7280" strokeWidth={2.5} />
-                <rect x={padL + innerW + 4} y={yFor(avg) - 11} width={92} height={22} fill="#f3f4f6" stroke="#9ca3af" rx={2} />
-                <text x={padL + innerW + 50} y={yFor(avg) + 4} textAnchor="middle" fontSize="12"
+                <rect x={padL + innerW + 4} y={avgLabelY - 11} width={92} height={22}
+                  fill="#f3f4f6" stroke="#9ca3af" rx={2} />
+                <text x={padL + innerW + 50} y={avgLabelY + 4} textAnchor="middle" fontSize="12"
                   fill="#374151" fontWeight="bold">
                   {Math.round(avg).toLocaleString()}
                 </text>
@@ -346,10 +370,11 @@ function DailyChart({
             )}
             {prev3Avg > 0 && (
               <g>
-                <line x1={padL} y1={yFor(prev3Avg)} x2={padL + innerW} y2={yFor(prev3Avg)}
+                <line x1={padL} y1={prev3Y} x2={padL + innerW} y2={prev3Y}
                   stroke="#f59e0b" strokeWidth={2.5} />
-                <rect x={padL + innerW + 4} y={yFor(prev3Avg) - 11} width={92} height={22} fill="#fffbeb" stroke="#f59e0b" rx={2} />
-                <text x={padL + innerW + 50} y={yFor(prev3Avg) + 4} textAnchor="middle" fontSize="12"
+                <rect x={padL + innerW + 4} y={prev3LabelY - 11} width={92} height={22}
+                  fill="#fffbeb" stroke="#f59e0b" rx={2} />
+                <text x={padL + innerW + 50} y={prev3LabelY + 4} textAnchor="middle" fontSize="12"
                   fill="#b45309" fontWeight="bold">
                   {Math.round(prev3Avg).toLocaleString()}
                 </text>
