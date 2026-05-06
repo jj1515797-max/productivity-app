@@ -109,9 +109,10 @@ export default function AnalyticsMonthly() {
         dateStr,
         label: `${day}(${dayNames[dow]})`,
         total: byDay[dateStr] || 0,
-        isWeekend: dow === 0 || dow === 6,
+        dow,
+        isSunday: dow === 0,
       };
-    });
+    }).filter((d) => d.dow !== 6); // 토요일 제외
 
     const byCode: Record<string, number> = {};
     entries.forEach((e) => {
@@ -229,40 +230,43 @@ export default function AnalyticsMonthly() {
   );
 }
 
-function niceMax(value: number): number {
-  if (value <= 0) return 10;
-  const exp = Math.pow(10, Math.floor(Math.log10(value)));
-  const n = value / exp;
-  let nice;
-  if (n <= 1) nice = 1;
-  else if (n <= 2) nice = 2;
-  else if (n <= 2.5) nice = 2.5;
-  else if (n <= 5) nice = 5;
-  else nice = 10;
-  return nice * exp;
+function niceScale(maxValue: number): { max: number; step: number } {
+  if (maxValue <= 0) return { max: 10, step: 2 };
+  const targetTicks = 6;
+  const rawStep = maxValue / targetTicks;
+  const exp = Math.pow(10, Math.floor(Math.log10(rawStep)));
+  const n = rawStep / exp;
+  let niceN;
+  if (n <= 1) niceN = 1;
+  else if (n <= 2) niceN = 2;
+  else if (n <= 2.5) niceN = 2.5;
+  else if (n <= 5) niceN = 5;
+  else niceN = 10;
+  const step = niceN * exp;
+  const niceMaxVal = Math.ceil(maxValue / step) * step;
+  return { max: niceMaxVal, step };
 }
 
 function DailyChart({
   monthLabel, days, avg, prev3Avg,
 }: {
   monthLabel: string;
-  days: { day: number; label: string; total: number; isWeekend: boolean }[];
+  days: { day: number; label: string; total: number; isSunday: boolean }[];
   avg: number;
   prev3Avg: number;
 }) {
   const maxRaw = Math.max(avg, prev3Avg, ...days.map((d) => d.total));
-  const yMax = niceMax(maxRaw * 1.15);
-  const ticks = 6;
-  const tickStep = yMax / ticks;
+  const { max: yMax, step: tickStep } = niceScale(maxRaw * 1.15);
+  const tickCount = Math.round(yMax / tickStep);
 
-  const padL = 60, padR = 20, padT = 30, padB = 50;
-  const innerW = Math.max(720, days.length * 32);
-  const innerH = 360;
+  const padL = 80, padR = 110, padT = 50, padB = 60;
+  const innerW = Math.max(1100, days.length * 42);
+  const innerH = 520;
   const W = padL + innerW + padR;
   const H = padT + innerH + padB;
 
   const bandW = innerW / days.length;
-  const barW = Math.min(22, bandW * 0.6);
+  const barW = Math.min(32, bandW * 0.7);
   const yFor = (v: number) => padT + innerH - (v / yMax) * innerH;
 
   return (
@@ -275,18 +279,18 @@ function DailyChart({
       ) : (
         <div className="p-4 overflow-x-auto">
           <svg width={W} height={H} className="min-w-full">
-            <text x={W / 2} y={18} textAnchor="middle" className="fill-gray-800" fontSize="14" fontWeight="bold">
+            <text x={W / 2} y={26} textAnchor="middle" fill="#1f2937" fontSize="18" fontWeight="bold">
               생산팀 {monthLabel} 생산량 집계현황
             </text>
 
-            {Array.from({ length: ticks + 1 }).map((_, i) => {
+            {Array.from({ length: tickCount + 1 }).map((_, i) => {
               const v = tickStep * i;
               const y = yFor(v);
               return (
                 <g key={i}>
                   <line x1={padL} y1={y} x2={padL + innerW} y2={y} stroke="#e5e7eb" strokeWidth={1} />
-                  <text x={padL - 8} y={y + 4} textAnchor="end" fontSize="11" className="fill-gray-500">
-                    {v.toLocaleString()}
+                  <text x={padL - 10} y={y + 4} textAnchor="end" fontSize="12" fill="#6b7280">
+                    {Math.round(v).toLocaleString()}
                   </text>
                 </g>
               );
@@ -295,8 +299,8 @@ function DailyChart({
             {days.map((d, i) => {
               const cx = padL + bandW * i + bandW / 2;
               return (
-                <text key={`x-${d.day}`} x={cx} y={padT + innerH + 16} textAnchor="middle" fontSize="10"
-                  className={d.isWeekend ? 'fill-rose-500' : 'fill-gray-600'}>
+                <text key={`x-${d.day}`} x={cx} y={padT + innerH + 20} textAnchor="middle" fontSize="11"
+                  fill={d.isSunday ? '#ef4444' : '#4b5563'}>
                   {d.label}
                 </text>
               );
@@ -310,7 +314,7 @@ function DailyChart({
               return (
                 <g key={`bar-${d.day}`}>
                   <rect x={cx - barW / 2} y={y} width={barW} height={h} fill="#2563eb" rx={2} />
-                  <text x={cx} y={y - 4} textAnchor="middle" fontSize="10" className="fill-gray-700" fontWeight="bold">
+                  <text x={cx} y={y - 6} textAnchor="middle" fontSize="11" fill="#1f2937" fontWeight="bold">
                     {d.total.toLocaleString()}
                   </text>
                 </g>
@@ -320,20 +324,22 @@ function DailyChart({
             {avg > 0 && (
               <g>
                 <line x1={padL} y1={yFor(avg)} x2={padL + innerW} y2={yFor(avg)}
-                  stroke="#9ca3af" strokeWidth={1.5} strokeDasharray="4 3" />
-                <text x={padL + innerW - 6} y={yFor(avg) - 4} textAnchor="end" fontSize="11"
-                  fill="#6b7280" fontWeight="bold">
-                  일 평균 {Math.round(avg).toLocaleString()}
+                  stroke="#6b7280" strokeWidth={2.5} />
+                <rect x={padL + innerW + 4} y={yFor(avg) - 11} width={92} height={22} fill="#f3f4f6" stroke="#9ca3af" rx={2} />
+                <text x={padL + innerW + 50} y={yFor(avg) + 4} textAnchor="middle" fontSize="12"
+                  fill="#374151" fontWeight="bold">
+                  {Math.round(avg).toLocaleString()}
                 </text>
               </g>
             )}
             {prev3Avg > 0 && (
               <g>
                 <line x1={padL} y1={yFor(prev3Avg)} x2={padL + innerW} y2={yFor(prev3Avg)}
-                  stroke="#f59e0b" strokeWidth={1.5} strokeDasharray="4 3" />
-                <text x={padL + innerW - 6} y={yFor(prev3Avg) - 4} textAnchor="end" fontSize="11"
-                  fill="#d97706" fontWeight="bold">
-                  직전 3개월 일평균 {Math.round(prev3Avg).toLocaleString()}
+                  stroke="#f59e0b" strokeWidth={2.5} />
+                <rect x={padL + innerW + 4} y={yFor(prev3Avg) - 11} width={92} height={22} fill="#fffbeb" stroke="#f59e0b" rx={2} />
+                <text x={padL + innerW + 50} y={yFor(prev3Avg) + 4} textAnchor="middle" fontSize="12"
+                  fill="#b45309" fontWeight="bold">
+                  {Math.round(prev3Avg).toLocaleString()}
                 </text>
               </g>
             )}
@@ -342,15 +348,15 @@ function DailyChart({
             <line x1={padL} y1={padT} x2={padL} y2={padT + innerH} stroke="#9ca3af" />
           </svg>
 
-          <div className="flex items-center justify-center gap-5 mt-3 text-xs text-gray-600 flex-wrap">
-            <span className="flex items-center gap-1.5">
-              <span className="w-3 h-3 inline-block bg-blue-600 rounded-sm" /> 생산량
+          <div className="flex items-center justify-center gap-6 mt-4 text-sm text-gray-700 flex-wrap">
+            <span className="flex items-center gap-2">
+              <span className="w-4 h-4 inline-block bg-blue-600 rounded-sm" /> 생산량
             </span>
-            <span className="flex items-center gap-1.5">
-              <span className="w-5 border-t-2 border-dashed border-gray-400 inline-block" /> 일 평균 생산량
+            <span className="flex items-center gap-2">
+              <span className="w-6 border-t-[2.5px] border-gray-500 inline-block" /> 일 평균 생산량
             </span>
-            <span className="flex items-center gap-1.5">
-              <span className="w-5 border-t-2 border-dashed border-amber-400 inline-block" /> 직전 3개월 일평균 생산량
+            <span className="flex items-center gap-2">
+              <span className="w-6 border-t-[2.5px] border-amber-500 inline-block" /> 직전 3개월 일평균 생산량
             </span>
           </div>
         </div>
