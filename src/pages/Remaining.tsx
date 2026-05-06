@@ -219,13 +219,28 @@ export default function Remaining() {
       )}
 
       {shortage.length > 0 && (
-        <Section title="부족 (추가생산 필요)" count={shortage.length} color="red">
+        <Section
+          title="부족 (추가생산 필요)"
+          count={shortage.length}
+          color="red"
+          totalLabel="부족 합계"
+          totalValue={shortage.reduce((s, it) => s + (it.totalQty - it.actualProduction), 0)}
+        >
           {shortage.map((it) => <Row key={it.code} item={it} mode={hasLogistics ? 'logistics' : 'production'} />)}
         </Section>
       )}
 
       {surplus.length > 0 && (
-        <Section title="잔여량 있음" count={surplus.length} color="green">
+        <Section
+          title="잔여량 있음"
+          count={surplus.length}
+          color="green"
+          totalLabel="잔여량 합계"
+          totalValue={surplus.reduce(
+            (s, it) => s + (hasLogistics ? (it.logQty || 0) : (it.actualProduction - it.totalQty)),
+            0,
+          )}
+        >
           {surplus.map((it) => <Row key={it.code} item={it} mode={hasLogistics ? 'logistics' : 'production'} />)}
         </Section>
       )}
@@ -273,8 +288,13 @@ export default function Remaining() {
   );
 }
 
-function Section({ title, count, color, children }: {
-  title: string; count: number; color: 'green' | 'blue' | 'red'; children: React.ReactNode;
+function Section({ title, count, color, totalLabel, totalValue, children }: {
+  title: string;
+  count: number;
+  color: 'green' | 'blue' | 'red';
+  totalLabel?: string;
+  totalValue?: number;
+  children: React.ReactNode;
 }) {
   const colors = { green: 'border-green-500 bg-green-50', blue: 'border-blue-500 bg-blue-50', red: 'border-red-500 bg-red-50' };
   const textColors = { green: 'text-green-700', blue: 'text-blue-700', red: 'text-red-700' };
@@ -282,7 +302,12 @@ function Section({ title, count, color, children }: {
     <div className="bg-white rounded-lg border border-gray-200 shadow-sm overflow-hidden">
       <div className={`px-5 py-3 border-b border-l-4 ${colors[color]} flex items-center gap-2`}>
         <span className={`font-semibold ${textColors[color]}`}>{title}</span>
-        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${colors[color]} ${textColors[color]}`}>{count}개</span>
+        <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${colors[color]} ${textColors[color]}`}>품목수 {count}개</span>
+        {totalLabel && totalValue !== undefined && (
+          <span className={`ml-auto text-sm font-bold ${textColors[color]}`}>
+            {totalLabel} {totalValue.toLocaleString()}
+          </span>
+        )}
       </div>
       <table className="w-full text-sm">
         <thead>
