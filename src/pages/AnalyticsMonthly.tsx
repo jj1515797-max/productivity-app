@@ -285,10 +285,22 @@ export default function AnalyticsMonthly() {
     // 잔여량/비율은 computeMonthStats를 통해 (current도 동일 로직)
     const ms = computeMonthStats(entries, ambient, items, logisticsByDay);
 
+    // 10EA 미만 생산 수량 합계 (일자별 코드 합산이 1~9인 경우만)
+    const actualByDateCode: Record<string, number> = {};
+    entries.forEach((e) => {
+      const k = `${e.date}|${e.code.toLowerCase()}`;
+      actualByDateCode[k] = (actualByDateCode[k] || 0) + qty(e);
+    });
+    let under10Sum = 0;
+    Object.values(actualByDateCode).forEach((v) => {
+      if (v >= 1 && v < 10) under10Sum += v;
+    });
+
     return {
       total, coldTotal, ambientTotal,
       totalRemaining: ms.totalRemaining,
       remainingRatio: ms.remainingRatio,
+      under10Sum,
       daysWorked, coldDays, ambientDays,
       avgPerDay, coldAvg, ambientAvg,
       avgItemsPerDay,
@@ -355,44 +367,55 @@ export default function AnalyticsMonthly() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Card label="일평균 생산량" value={Math.round(stats.avgPerDay).toLocaleString()} unit="EA" color="purple" sub="냉장 + 상온" />
         <Card label="잔여량 비율" value={stats.remainingRatio.toFixed(2)} unit="%" color="rose" sub={`잔여 ${stats.totalRemaining.toLocaleString()} / 냉장 ${stats.coldTotal.toLocaleString()}`} />
-        <Card label="잔여량 합계" value={stats.totalRemaining.toLocaleString()} unit="EA" color="amber" sub="생산 잔여량 자동 + 입력값 override" />
+        <Card label="10EA 미만 생산" value={stats.under10Sum.toLocaleString()} unit="EA" color="amber" sub="일별 코드합 1~9 인 항목 합계" />
         <Card label="일별 평균 품목 수" value={Math.round(stats.avgItemsPerDay).toLocaleString()} unit="개" color="teal" />
       </div>
 
       {/* 호기별 + 전월비교 (차트 위) */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
         <div className="lg:col-span-5 bg-white border rounded-lg overflow-hidden flex flex-col">
-          <div className="px-4 py-3 border-b bg-slate-50 font-semibold text-gray-800 text-sm">
-            호기별 생산량 <span className="text-xs text-gray-500 font-normal">(냉장)</span>
+          <div className="px-4 py-3 border-b bg-slate-50 font-semibold text-gray-800 text-sm flex items-center justify-between">
+            <span>호기별 생산량 <span className="text-xs text-gray-500 font-normal">(냉장)</span></span>
+            <span className="text-xs text-gray-500 font-normal">합계 <span className="font-bold text-blue-700">{stats.coldTotal.toLocaleString()}</span> EA</span>
           </div>
-          <table className="w-full text-sm">
-            <thead className="bg-gray-50 text-xs text-gray-500">
-              <tr>
-                <th className="px-4 py-2 text-left">호기</th>
-                <th className="px-4 py-2 text-right">생산량</th>
-                <th className="px-4 py-2 text-right">입력 건수</th>
-                <th className="px-4 py-2 text-right">비율</th>
-              </tr>
-            </thead>
-            <tbody>
-              {stats.byMachine.map((row) => (
-                <tr key={row.machine} className="border-t">
-                  <td className="px-4 py-2 font-medium">{row.machine}</td>
-                  <td className="px-4 py-2 text-right font-bold">{row.total.toLocaleString()}</td>
-                  <td className="px-4 py-2 text-right text-gray-600 text-xs">{row.count}</td>
-                  <td className="px-4 py-2 text-right text-gray-600 text-xs">
-                    {stats.coldTotal ? `${((row.total / stats.coldTotal) * 100).toFixed(1)}%` : '-'}
-                  </td>
-                </tr>
-              ))}
-              <tr className="border-t bg-slate-50">
-                <td className="px-4 py-2 font-semibold text-gray-700">합계</td>
-                <td className="px-4 py-2 text-right font-bold text-blue-700">{stats.coldTotal.toLocaleString()}</td>
-                <td className="px-4 py-2 text-right text-xs text-gray-600">{stats.byMachine.reduce((s, r) => s + r.count, 0)}</td>
-                <td className="px-4 py-2 text-right text-xs text-gray-500">100%</td>
-              </tr>
-            </tbody>
-          </table>
+          <div className="p-4 space-y-3">
+            {/* 가로 누적 막대 */}
+            <div className="w-full h-7 rounded-md overflow-hidden flex bg-gray-100">
+              {stats.byMachine.map((row, i) => {
+                const pct = stats.coldTotal ? (row.total / stats.coldTotal) * 100 : 0;
+                if (pct === 0) return null;
+                const colors = ['bg-blue-500', 'bg-emerald-500', 'bg-violet-500'];
+                return (
+                  <div
+                    key={row.machine}
+                    className={`${colors[i]} h-full flex items-center justify-center text-[11px] text-white font-semibold`}
+                    style={{ width: `${pct}%` }}
+                    title={`${row.machine}: ${row.total.toLocaleString()} (${pct.toFixed(1)}%)`}
+                  >
+                    {pct >= 8 ? `${pct.toFixed(1)}%` : ''}
+                  </div>
+                );
+              })}
+            </div>
+            {/* 범례 + 수치 */}
+            <div className="grid grid-cols-3 gap-2 text-xs">
+              {stats.byMachine.map((row, i) => {
+                const pct = stats.coldTotal ? (row.total / stats.coldTotal) * 100 : 0;
+                const colors = ['bg-blue-500', 'bg-emerald-500', 'bg-violet-500'];
+                return (
+                  <div key={row.machine} className="border rounded px-2.5 py-2">
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <span className={`w-2 h-2 rounded-full ${colors[i]}`} />
+                      <span className="font-medium text-gray-700">{row.machine}</span>
+                      <span className="ml-auto text-gray-400">{pct.toFixed(1)}%</span>
+                    </div>
+                    <div className="font-bold text-gray-900 text-sm">{row.total.toLocaleString()}<span className="text-[10px] text-gray-500 ml-1 font-normal">EA</span></div>
+                    <div className="text-[10px] text-gray-400 mt-0.5">{row.count}건 입력</div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
         </div>
 
         <div className="lg:col-span-7">
@@ -695,40 +718,35 @@ function PrevMonthCompare({
 
   return (
     <div className="bg-white border rounded-lg overflow-hidden h-full flex flex-col">
-      <div className="px-4 py-3 border-b bg-amber-50 flex items-center justify-between flex-wrap gap-2">
-        <div className="font-semibold text-gray-800 text-sm">전월 비교</div>
+      <div className="px-3 py-2 border-b bg-amber-50 flex items-center gap-2 flex-wrap">
+        <span className="font-semibold text-gray-800 text-sm">전월 비교</span>
         {isCurrentMonth && (
-          <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-200 text-amber-800 font-medium">
-            진행중 ({current.daysWorked}일)
+          <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-200 text-amber-800 font-medium">
+            진행중 {current.daysWorked}일
           </span>
         )}
+        <div className="ml-auto flex items-center gap-1">
+          <button
+            onClick={() => onModeChange('full')}
+            className={`px-2.5 py-1 text-[11px] rounded font-medium ${
+              mode === 'full' ? 'bg-amber-500 text-white' : 'bg-white border text-gray-600 hover:bg-gray-100'
+            }`}
+          >월 전체</button>
+          <button
+            onClick={() => onModeChange('sameDays')}
+            className={`px-2.5 py-1 text-[11px] rounded font-medium ${
+              mode === 'sameDays' ? 'bg-amber-500 text-white' : 'bg-white border text-gray-600 hover:bg-gray-100'
+            }`}
+          >동일 작업일수</button>
+        </div>
       </div>
-      <div className="px-4 pt-3 pb-1 border-b bg-white flex items-center gap-1">
-        <button
-          onClick={() => onModeChange('full')}
-          className={`px-3 py-1.5 text-xs rounded font-medium ${
-            mode === 'full' ? 'bg-amber-500 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-          }`}
-        >📅 월 전체</button>
-        <button
-          onClick={() => onModeChange('sameDays')}
-          className={`px-3 py-1.5 text-xs rounded font-medium ${
-            mode === 'sameDays' ? 'bg-amber-500 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
-          }`}
-        >⚖️ 동일 작업일수</button>
-        <span className="ml-2 text-[11px] text-gray-500">
-          {mode === 'full'
-            ? '월 누계 비교 (현재월은 진행 중)'
-            : `전월의 첫 ${current.daysWorked}일과 비교`}
-        </span>
-      </div>
-      <table className="w-full text-sm">
-        <thead className="bg-gray-50 text-[11px] text-gray-500">
+      <table className="w-full text-xs">
+        <thead className="bg-gray-50 text-[10px] text-gray-500">
           <tr>
-            <th className="px-3 py-2 text-left">항목</th>
-            <th className="px-3 py-2 text-right">{prevLabel}</th>
-            <th className="px-3 py-2 text-right">{currLabel}</th>
-            <th className="px-3 py-2 text-right">증감</th>
+            <th className="px-3 py-1.5 text-left">항목</th>
+            <th className="px-3 py-1.5 text-right">{prevLabel}</th>
+            <th className="px-3 py-1.5 text-right">{currLabel}</th>
+            <th className="px-3 py-1.5 text-right">증감</th>
           </tr>
         </thead>
         <tbody>
@@ -744,14 +762,14 @@ function PrevMonthCompare({
             const fmt = (v: number) => r.pp ? v.toFixed(2) : Math.round(v).toLocaleString();
             return (
               <tr key={r.label} className={`border-t ${r.bold ? 'bg-slate-50/60' : ''}`}>
-                <td className={`px-3 py-2 text-gray-700 text-xs ${r.bold ? 'font-bold' : ''}`}>{r.label}</td>
-                <td className="px-3 py-2 text-right text-gray-600">
+                <td className={`px-3 py-1.5 text-gray-700 ${r.bold ? 'font-bold' : ''}`}>{r.label}</td>
+                <td className="px-3 py-1.5 text-right text-gray-600">
                   {prev ? fmt(r.prv) : <span className="text-gray-300">···</span>}
                 </td>
-                <td className={`px-3 py-2 text-right font-bold text-gray-800 ${r.bold ? 'text-base' : ''}`}>
+                <td className={`px-3 py-1.5 text-right font-bold text-gray-800 ${r.bold ? 'text-sm' : ''}`}>
                   {fmt(r.cur)}
                 </td>
-                <td className={`px-3 py-2 text-right text-xs font-semibold ${cls}`}>
+                <td className={`px-3 py-1.5 text-right font-semibold ${cls}`}>
                   {prev ? (
                     r.pp ? (
                       <span>{up ? '+' : down ? '−' : ''}{Math.abs(diff).toFixed(2)}%p</span>
