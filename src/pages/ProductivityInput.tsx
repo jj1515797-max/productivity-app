@@ -5,6 +5,7 @@ import { todayKey } from '../lib/dateUtil';
 import { loadViewDate, saveViewDate } from '../lib/viewDate';
 import type { AttendanceRecord, MachineEntry, Member, ProductSetting } from '../types';
 import { summarizeAttendance } from '../lib/attendance';
+import { convertErpCode, normalizeCode } from '../lib/codeUtil';
 
 type StageKey = 'bg' | 'ck' | 'fl' | 'pk';
 
@@ -127,17 +128,29 @@ export default function ProductivityInput() {
     [members, attendRecords, date]
   );
 
+  // 정규화된 키로 productSettings를 다시 인덱싱 (A-001-01 ↔ A-01 호환)
+  const settingsByNormalized = useMemo(() => {
+    const map = new Map<string, ProductSetting>();
+    Object.entries(productSettings).forEach(([key, val]) => {
+      map.set(normalizeCode(key), val);
+      map.set(normalizeCode(convertErpCode(key)), val);
+    });
+    return map;
+  }, [productSettings]);
+
   const productionByType = useMemo(() => {
     let pot = 0, bat = 0;
     entries.forEach((e) => {
       const code = e.code;
-      const setting = productSettings[code] || productSettings[code.toUpperCase()] || productSettings[code.toLowerCase()];
+      const setting =
+        settingsByNormalized.get(normalizeCode(code)) ||
+        settingsByNormalized.get(normalizeCode(convertErpCode(code)));
       const qty = (e.actualProduction || 0) + (e.additionalProduction || 0);
       if (setting?.type === '냄비') pot += qty;
       else if (setting?.type === '바트') bat += qty;
     });
     return { pot, bat };
-  }, [entries, productSettings]);
+  }, [entries, settingsByNormalized]);
 
   const auto = {
     attend: attendanceSummary.workforceN,

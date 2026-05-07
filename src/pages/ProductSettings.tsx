@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { collection, deleteDoc, doc, onSnapshot, setDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import type { ProductSetting } from '../types';
+import { convertErpCode } from '../lib/codeUtil';
 
 type ProdType = '냄비' | '바트';
 
@@ -117,9 +118,19 @@ export default function ProductSettings() {
                   </tr>
                 </thead>
                 <tbody>
-                  {filtered.map((s) => (
+                  {filtered.map((s) => {
+                    const shortCode = convertErpCode(s.code);
+                    const isErp = shortCode !== s.code;
+                    return (
                     <tr key={s.code} className="border-t hover:bg-slate-50/60">
-                      <td className="px-4 py-2 font-mono text-sm">{s.code}</td>
+                      <td className="px-4 py-2 font-mono text-sm">
+                        {s.code}
+                        {isErp && (
+                          <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200">
+                            → {shortCode}
+                          </span>
+                        )}
+                      </td>
                       <td className="px-4 py-2 text-gray-700">{s.name || <span className="text-gray-300">-</span>}</td>
                       <td className="px-4 py-2">
                         <div className="flex items-center justify-center gap-1.5">
@@ -156,7 +167,8 @@ export default function ProductSettings() {
                         >삭제</button>
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
