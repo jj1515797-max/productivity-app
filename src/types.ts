@@ -47,6 +47,10 @@ export interface Member {
   dept?: string;
   active?: boolean;
   createdAt?: string;
+  /** 휴직 시작일 (YYYY-MM-DD). leaveTo 가 null/없음이면 무기한 */
+  leaveFrom?: string;
+  /** 휴직 종료일 (YYYY-MM-DD). 이 날까지 휴직(inclusive) */
+  leaveTo?: string;
 }
 
 export type AttendanceStatus = '출근' | '연차' | '반차' | '결혼반차' | '병가' | '경조사' | '휴무';

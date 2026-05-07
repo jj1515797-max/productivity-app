@@ -29,6 +29,13 @@ function dateLabel(dateStr: string): string {
   return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')} (${days[date.getDay()]})`;
 }
 
+function isOnLeave(m: Member, date: string): boolean {
+  if (!m.leaveFrom) return false;
+  if (m.leaveFrom > date) return false;
+  if (m.leaveTo && m.leaveTo < date) return false;
+  return true;
+}
+
 export default function Attendance() {
   const [date, setDate] = useState(loadViewDate);
   useEffect(() => { saveViewDate(date); }, [date]);
@@ -40,6 +47,7 @@ export default function Attendance() {
   const [editing, setEditing] = useState<string | null>(null);
   const [editName, setEditName] = useState('');
   const [editDept, setEditDept] = useState('');
+  const [leaveTarget, setLeaveTarget] = useState<Member | null>(null);
 
   useEffect(() => {
     return onSnapshot(collection(db, 'members'), (snap) => {
@@ -67,16 +75,19 @@ export default function Attendance() {
     const breakdown: Record<AttendanceStatus, number> = {
       출근: 0, 연차: 0, 반차: 0, 결혼반차: 0, 병가: 0, 경조사: 0, 휴무: 0,
     };
+    let onLeaveN = 0;
     members.forEach((m) => {
+      if (isOnLeave(m, date)) { onLeaveN++; return; } // 휴직: 일별 카운트 제외
       const status = (records[m.id]?.status as AttendanceStatus) || '출근';
       breakdown[status]++;
     });
     const presentN = breakdown.출근;
     const restN = breakdown.휴무;
-    const leaveN = totalN - presentN - restN; // 연차/반차/결혼반차/병가/경조사 합산
-    const workforceN = totalN - restN; // 휴무 제외 (생산성 분모)
-    return { totalN, presentN, leaveN, restN, workforceN, breakdown };
-  }, [members, records]);
+    const dailyN = totalN - onLeaveN; // 일별 카운트 대상 (휴직 제외)
+    const leaveN = dailyN - presentN - restN; // 연차/반차/결혼반차/병가/경조사 합산
+    const workforceN = totalN - onLeaveN - restN; // 휴직+휴무 제외 (생산성 분모)
+    return { totalN, presentN, leaveN, restN, onLeaveN, workforceN, breakdown };
+  }, [members, records, date]);
 
   const grouped = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -126,6 +137,17 @@ export default function Attendance() {
     await updateDoc(doc(db, 'members', m.id), { active: false });
   };
 
+  const setLeave = async (m: Member, leaveFrom: string | null, leaveTo: string | null) => {
+    const update: Partial<Member> = {};
+    update.leaveFrom = leaveFrom || undefined;
+    update.leaveTo = leaveTo || undefined;
+    // Firestore: undefined 필드는 제거하기 위해 deleteField 사용 대신 빈 문자열로
+    await updateDoc(doc(db, 'members', m.id), {
+      leaveFrom: leaveFrom || null,
+      leaveTo: leaveTo || null,
+    });
+  };
+
   const isToday = date === todayKey();
 
   return (
@@ -156,16 +178,17 @@ export default function Attendance() {
           >오늘로</button>
         )}
         <div className="ml-auto text-xs text-gray-500">
-          출근 분모 (휴무 제외) <span className="font-bold text-gray-800 ml-1">{counts.workforceN}명</span>
+          출근 분모 (휴직·휴무 제외) <span className="font-bold text-gray-800 ml-1">{counts.workforceN}명</span>
         </div>
       </div>
 
       {/* 카운트 카드 */}
-      <div className="grid grid-cols-2 md:grid-cols-5 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
         <StatCard label="총원" value={counts.totalN} unit="명" tone="indigo" highlight />
         <StatCard label="출근" value={counts.presentN} unit="명" tone="emerald" sub={counts.workforceN > 0 ? `${((counts.presentN / counts.workforceN) * 100).toFixed(1)}%` : ''} />
         <StatCard label="연차/반차 등" value={counts.leaveN} unit="명" tone="orange" />
         <StatCard label="휴무" value={counts.restN} unit="명" tone="gray" />
+        <StatCard label="휴직" value={counts.onLeaveN} unit="명" tone="zinc" />
         <div className="bg-white border rounded-lg p-3 text-xs">
           <div className="text-gray-500 font-medium mb-1.5">상세 내역</div>
           <div className="grid grid-cols-2 gap-y-1 gap-x-2">
@@ -221,11 +244,13 @@ export default function Attendance() {
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 divide-x divide-y divide-gray-100" style={{ borderRight: 0 }}>
                 {list.map((m) => {
+                  const onLeave = isOnLeave(m, date);
                   const status = (records[m.id]?.status as AttendanceStatus) || '출근';
                   const color = STATUS_COLOR[status];
                   const isEdit = editing === m.id;
+                  const cardBg = onLeave ? 'bg-zinc-100' : color.soft;
                   return (
-                    <div key={m.id} className={`p-3 ${color.soft} relative group`}>
+                    <div key={m.id} className={`p-3 ${cardBg} relative group`}>
                       {isEdit ? (
                         <div className="space-y-2">
                           <input
@@ -249,10 +274,17 @@ export default function Attendance() {
                         <>
                           <div className="flex items-start justify-between gap-2 mb-2">
                             <div className="min-w-0">
-                              <div className="font-bold text-gray-900 truncate">{m.name}</div>
+                              <div className="font-bold text-gray-900 truncate flex items-center gap-1">
+                                {m.name}
+                              </div>
                               {m.dept && <div className="text-[10px] text-gray-500 truncate">{m.dept}</div>}
                             </div>
                             <div className="opacity-0 group-hover:opacity-100 transition flex gap-0.5 -mt-1">
+                              <button
+                                onClick={() => setLeaveTarget(m)}
+                                className={`text-xs px-1 ${onLeave ? 'text-zinc-700 font-bold' : 'text-gray-400 hover:text-zinc-700'}`}
+                                title="휴직 관리"
+                              >💼</button>
                               <button
                                 onClick={() => { setEditing(m.id); setEditName(m.name); setEditDept(m.dept || ''); }}
                                 className="text-gray-400 hover:text-gray-700 text-xs px-1"
@@ -265,18 +297,33 @@ export default function Attendance() {
                               >×</button>
                             </div>
                           </div>
-                          <div className="relative">
-                            <select
-                              value={status}
-                              onChange={(e) => setStatus(m, e.target.value as AttendanceStatus)}
-                              className={`w-full px-2 py-1.5 rounded border-2 ${color.border} ${color.text} bg-white font-semibold text-sm cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-200 appearance-none pr-7`}
+                          {onLeave ? (
+                            <button
+                              onClick={() => setLeaveTarget(m)}
+                              className="w-full px-2 py-1.5 rounded border-2 border-zinc-400 text-zinc-700 bg-zinc-50 font-semibold text-sm hover:bg-zinc-100 text-left"
                             >
-                              {ATTENDANCE_STATUSES.map((s) => (
-                                <option key={s} value={s}>{s}</option>
-                              ))}
-                            </select>
-                            <span className={`absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none ${color.text} text-xs`}>▼</span>
-                          </div>
+                              <div className="flex items-center justify-between">
+                                <span>💼 휴직 중</span>
+                                <span className="text-[10px] text-zinc-500 font-normal">관리</span>
+                              </div>
+                              <div className="text-[10px] text-zinc-500 font-normal mt-0.5">
+                                {m.leaveFrom}{m.leaveTo ? ` ~ ${m.leaveTo}` : ' ~'}
+                              </div>
+                            </button>
+                          ) : (
+                            <div className="relative">
+                              <select
+                                value={status}
+                                onChange={(e) => setStatus(m, e.target.value as AttendanceStatus)}
+                                className={`w-full px-2 py-1.5 rounded border-2 ${color.border} ${color.text} bg-white font-semibold text-sm cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-200 appearance-none pr-7`}
+                              >
+                                {ATTENDANCE_STATUSES.map((s) => (
+                                  <option key={s} value={s}>{s}</option>
+                                ))}
+                              </select>
+                              <span className={`absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none ${color.text} text-xs`}>▼</span>
+                            </div>
+                          )}
                         </>
                       )}
                     </div>
@@ -300,6 +347,23 @@ export default function Attendance() {
           onAdd={(name, dept) => addMember(name, dept)}
         />
       )}
+
+      {/* 휴직 관리 모달 */}
+      {leaveTarget && (
+        <LeaveModal
+          member={leaveTarget}
+          today={date}
+          onClose={() => setLeaveTarget(null)}
+          onApply={async (from, to) => {
+            await setLeave(leaveTarget, from, to);
+            setLeaveTarget(null);
+          }}
+          onClear={async () => {
+            await setLeave(leaveTarget, null, null);
+            setLeaveTarget(null);
+          }}
+        />
+      )}
     </div>
   );
 }
@@ -308,7 +372,7 @@ function StatCard({
   label, value, unit, tone, sub, highlight,
 }: {
   label: string; value: number; unit: string;
-  tone: 'indigo' | 'emerald' | 'orange' | 'gray';
+  tone: 'indigo' | 'emerald' | 'orange' | 'gray' | 'zinc';
   sub?: string; highlight?: boolean;
 }) {
   const tones = {
@@ -316,6 +380,7 @@ function StatCard({
     emerald: 'border-emerald-500 text-emerald-700',
     orange:  'border-orange-500  text-orange-700',
     gray:    'border-gray-400    text-gray-600',
+    zinc:    'border-zinc-500    text-zinc-700',
   };
   return (
     <div className={`bg-white border-l-4 ${tones[tone]} rounded-lg shadow-sm p-4 ${highlight ? 'ring-1 ring-indigo-100' : ''}`}>
@@ -425,6 +490,103 @@ function AddMemberModal({
             className="ml-auto px-5 py-2 bg-blue-600 text-white rounded font-medium hover:bg-blue-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
           >
             {saving ? '저장중...' : '추가'}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function LeaveModal({
+  member, today, onClose, onApply, onClear,
+}: {
+  member: Member;
+  today: string;
+  onClose: () => void;
+  onApply: (from: string, to: string | null) => Promise<void>;
+  onClear: () => Promise<void>;
+}) {
+  const isOn = !!member.leaveFrom && (!member.leaveTo || member.leaveTo >= today);
+  const [from, setFrom] = useState(member.leaveFrom || today);
+  const [to, setTo] = useState(member.leaveTo || '');
+  const [saving, setSaving] = useState(false);
+
+  const apply = async () => {
+    if (!from) return;
+    if (to && to < from) { alert('휴직 종료일은 시작일 이후여야 합니다'); return; }
+    setSaving(true);
+    try { await onApply(from, to || null); }
+    finally { setSaving(false); }
+  };
+
+  const clear = async () => {
+    if (!confirm(`'${member.name}'의 휴직을 완전히 해제할까요?`)) return;
+    setSaving(true);
+    try { await onClear(); }
+    finally { setSaving(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-md overflow-hidden">
+        <div className="px-5 py-4 border-b bg-gradient-to-r from-zinc-50 to-slate-50 flex items-center justify-between">
+          <div>
+            <h3 className="font-bold text-gray-800 flex items-center gap-2">💼 휴직 관리</h3>
+            <div className="text-xs text-gray-500 mt-0.5">{member.name}{member.dept && ` · ${member.dept}`}</div>
+          </div>
+          <button onClick={onClose} className="w-7 h-7 rounded-full hover:bg-gray-200 text-gray-500">×</button>
+        </div>
+        <div className="p-5 space-y-4">
+          {isOn ? (
+            <div className="px-3 py-2 bg-zinc-100 border border-zinc-300 rounded text-sm text-zinc-700">
+              현재 <b>휴직 중</b> ({member.leaveFrom}{member.leaveTo ? ` ~ ${member.leaveTo}` : ' ~ 현재'})
+            </div>
+          ) : (
+            <div className="px-3 py-2 bg-emerald-50 border border-emerald-200 rounded text-sm text-emerald-700">
+              현재 휴직 상태가 아닙니다
+            </div>
+          )}
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">휴직 시작일</label>
+              <input
+                type="date"
+                value={from}
+                onChange={(e) => setFrom(e.target.value)}
+                className="w-full border rounded-md px-3 py-2 text-sm"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">휴직 종료일 <span className="text-gray-400">(선택)</span></label>
+              <input
+                type="date"
+                value={to}
+                onChange={(e) => setTo(e.target.value)}
+                className="w-full border rounded-md px-3 py-2 text-sm"
+              />
+            </div>
+          </div>
+          <p className="text-[11px] text-gray-500 leading-relaxed">
+            · 종료일을 비우면 무기한 휴직으로 등록됩니다.<br />
+            · 등록 후 해당 기간 동안 출근/연차/휴무 카운트에서 자동으로 제외됩니다.<br />
+            · 종료일을 설정하면 그날까지(포함) 휴직으로 처리되고 다음 날부터 자동 복귀합니다.
+          </p>
+        </div>
+        <div className="px-5 py-3 border-t bg-slate-50 flex items-center gap-2">
+          {isOn && (
+            <button
+              onClick={clear}
+              disabled={saving}
+              className="px-3 py-2 border border-red-300 text-red-700 rounded text-sm font-medium hover:bg-red-50 disabled:opacity-50"
+            >완전 해제</button>
+          )}
+          <button onClick={onClose} className="ml-auto px-3 py-2 border rounded text-sm font-medium hover:bg-gray-100">취소</button>
+          <button
+            onClick={apply}
+            disabled={saving || !from}
+            className="px-5 py-2 bg-zinc-700 text-white rounded font-medium hover:bg-zinc-800 disabled:bg-gray-300 disabled:cursor-not-allowed"
+          >
+            {saving ? '저장중...' : (isOn ? '변경 적용' : '휴직 등록')}
           </button>
         </div>
       </div>
