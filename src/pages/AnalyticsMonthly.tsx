@@ -74,14 +74,11 @@ function computeMonthStats(
   const coldDaysN = Object.keys(coldByDay).length;
   const ambDaysN = Object.keys(ambByDay).length;
 
+  // 품목수는 냉장만 카운트 (상온 제외)
   const itemsByDay: Record<string, Set<string>> = {};
   useEntries.forEach((e) => {
     if (!itemsByDay[e.date]) itemsByDay[e.date] = new Set();
-    itemsByDay[e.date].add(`c:${e.code.toLowerCase()}`);
-  });
-  useAmbient.forEach((a) => {
-    if (!itemsByDay[a.date]) itemsByDay[a.date] = new Set();
-    itemsByDay[a.date].add(`a:${a.productName}`);
+    itemsByDay[e.date].add(e.code.toLowerCase());
   });
   const counts = Object.values(itemsByDay).map((s) => s.size);
   const itemsAvgPerDay = counts.length ? counts.reduce((s, v) => s + v, 0) / counts.length : 0;
@@ -198,15 +195,11 @@ export default function AnalyticsMonthly() {
     const ambientAvg = ambientDays ? ambientTotal / ambientDays : 0;
     const avgPerDay = daysWorked ? total / daysWorked : 0;
 
-    // 일별 평균 품목 수: 작업일별 (item code + product name) 합집합
+    // 일별 평균 품목 수: 냉장 품목만 카운트 (상온 제외)
     const itemsByDay: Record<string, Set<string>> = {};
     entries.forEach((e) => {
       if (!itemsByDay[e.date]) itemsByDay[e.date] = new Set();
-      itemsByDay[e.date].add(`c:${e.code.toLowerCase()}`);
-    });
-    ambient.forEach((a) => {
-      if (!itemsByDay[a.date]) itemsByDay[a.date] = new Set();
-      itemsByDay[a.date].add(`a:${a.productName}`);
+      itemsByDay[e.date].add(e.code.toLowerCase());
     });
     const dailyItemCounts = Object.values(itemsByDay).map((s) => s.size);
     const avgItemsPerDay = dailyItemCounts.length

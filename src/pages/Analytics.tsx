@@ -101,7 +101,7 @@ export default function AnalyticsDaily() {
     const coldActual = items.reduce((s, i) => s + (actualByCode[i.code.toLowerCase()] || 0), 0);
     const ambientTotal = ambient.reduce((s, a) => s + (a.qty || 0), 0);
     const totalActual = coldActual + ambientTotal;
-    const itemCount = items.length + ambient.length;
+    const itemCount = items.length;
     const remaining = items.reduce((s, i) => {
       const a = actualByCode[i.code.toLowerCase()] || 0;
       const surplus = a - (i.totalQty || 0);
