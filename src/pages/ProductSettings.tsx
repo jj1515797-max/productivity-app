@@ -111,7 +111,7 @@ export default function ProductSettings() {
               <table className="w-full text-sm">
                 <thead className="bg-gray-50 text-xs text-gray-500">
                   <tr>
-                    <th className="px-4 py-2 text-left w-32">코드</th>
+                    <th className="px-4 py-2 text-left w-44">코드</th>
                     <th className="px-4 py-2 text-left">품목명</th>
                     <th className="px-4 py-2 text-center w-64">구분</th>
                     <th className="px-4 py-2 text-right w-20"></th>
@@ -123,12 +123,10 @@ export default function ProductSettings() {
                     const isErp = shortCode !== s.code;
                     return (
                     <tr key={s.code} className="border-t hover:bg-slate-50/60">
-                      <td className="px-4 py-2 font-mono text-sm">
-                        {s.code}
+                      <td className="px-4 py-2 font-mono text-sm whitespace-nowrap">
+                        <span>{s.code}</span>
                         {isErp && (
-                          <span className="ml-2 text-[10px] px-1.5 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200">
-                            → {shortCode}
-                          </span>
+                          <span className="ml-2 text-[11px] text-blue-600">→ {shortCode}</span>
                         )}
                       </td>
                       <td className="px-4 py-2 text-gray-700">{s.name || <span className="text-gray-300">-</span>}</td>
