@@ -7,6 +7,7 @@ import Report from './pages/Report';
 import Import from './pages/Import';
 import Analytics from './pages/Analytics';
 import AnalyticsMonthly from './pages/AnalyticsMonthly';
+import Attendance from './pages/Attendance';
 import Logo from './components/Logo';
 import { useTrackVisit } from './lib/presence';
 
@@ -22,7 +23,8 @@ export default function App() {
 }
 
 function MainContainer() {
-  const wide = useLocation().pathname.startsWith('/analytics/monthly');
+  const path = useLocation().pathname;
+  const wide = path.startsWith('/analytics/monthly') || path.startsWith('/attendance');
   return (
     <main className={`flex-1 ${wide ? 'max-w-screen-2xl' : 'max-w-screen-xl'} w-full mx-auto px-4 py-5`}>
       <Routes>
@@ -34,18 +36,20 @@ function MainContainer() {
         <Route path="/import" element={<Import />} />
         <Route path="/analytics" element={<Analytics />} />
         <Route path="/analytics/monthly" element={<AnalyticsMonthly />} />
+        <Route path="/analytics/report" element={<Report />} />
+        <Route path="/attendance" element={<Attendance />} />
       </Routes>
     </main>
   );
 }
 
-type Section = 'dashboard' | 'input' | 'remaining' | 'report' | 'analytics';
+type Section = 'dashboard' | 'input' | 'remaining' | 'analytics' | 'attendance';
 
 function getSection(pathname: string): Section {
   if (pathname.startsWith('/machine') || pathname.startsWith('/external')) return 'input';
   if (pathname.startsWith('/remaining')) return 'remaining';
-  if (pathname.startsWith('/report')) return 'report';
-  if (pathname.startsWith('/analytics')) return 'analytics';
+  if (pathname.startsWith('/analytics') || pathname === '/report') return 'analytics';
+  if (pathname.startsWith('/attendance')) return 'attendance';
   return 'dashboard';
 }
 
@@ -60,11 +64,12 @@ const SUB_TABS: Record<Section, { label: string; to: string; exact?: boolean }[]
     { label: '외포장-3', to: '/external/3' },
   ],
   remaining: [{ label: '잔여량', to: '/remaining' }],
-  report: [{ label: '조회', to: '/report' }],
   analytics: [
     { label: '일별요약', to: '/analytics', exact: true },
     { label: '월별현황', to: '/analytics/monthly' },
+    { label: '금속CCP', to: '/analytics/report' },
   ],
+  attendance: [{ label: '조직도', to: '/attendance' }],
 };
 
 function Header() {
@@ -73,12 +78,12 @@ function Header() {
   const dateLabel = `${today.getMonth() + 1}/${today.getDate()}(${days[today.getDay()]})`;
   const section = getSection(useLocation().pathname);
 
-  const rightLinks: { section: Section; to: string; label: string }[] = [
+  const rightLinks: { section: Section; to: string; label: string; icon?: string }[] = [
     { section: 'dashboard', to: '/', label: '현황' },
     { section: 'input', to: '/machine/1', label: '입력' },
     { section: 'remaining', to: '/remaining', label: '잔여량' },
-    { section: 'report', to: '/report', label: '조회' },
     { section: 'analytics', to: '/analytics', label: '분석' },
+    { section: 'attendance', to: '/attendance', label: '조직도', icon: '📅' },
   ];
 
   return (
@@ -95,19 +100,23 @@ function Header() {
 
       <div className="flex-1" />
 
-      <nav className="flex gap-1">
-        {rightLinks.map((l) => {
+      <nav className="flex gap-1 items-center">
+        {rightLinks.map((l, i) => {
           const active = section === l.section;
+          const showDivider = l.section === 'attendance' && i > 0;
           return (
-            <NavLink
-              key={l.to}
-              to={l.to}
-              className={`px-3 py-1.5 text-sm rounded font-medium transition ${
-                active ? 'bg-white text-blue-700' : 'text-blue-100 hover:bg-blue-800'
-              }`}
-            >
-              {l.label}
-            </NavLink>
+            <span key={l.to} className="flex items-center gap-1">
+              {showDivider && <span className="w-px h-5 bg-blue-400 mx-1.5" aria-hidden />}
+              <NavLink
+                to={l.to}
+                className={`px-3 py-1.5 text-sm rounded font-medium transition flex items-center gap-1.5 ${
+                  active ? 'bg-white text-blue-700' : 'text-blue-100 hover:bg-blue-800'
+                }`}
+              >
+                {l.icon && <span className="text-xs">{l.icon}</span>}
+                {l.label}
+              </NavLink>
+            </span>
           );
         })}
       </nav>

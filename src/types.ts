@@ -40,3 +40,25 @@ export interface AmbientEntry {
   qty: number;
   date: string;
 }
+
+export interface Member {
+  id: string;
+  name: string;
+  dept?: string;
+  active?: boolean;
+  createdAt?: string;
+}
+
+export type AttendanceStatus = '출근' | '연차' | '반차' | '결혼반차' | '병가' | '경조사' | '휴무';
+
+export const ATTENDANCE_STATUSES: AttendanceStatus[] = [
+  '출근', '연차', '반차', '결혼반차', '병가', '경조사', '휴무',
+];
+
+export interface AttendanceRecord {
+  memberId: string;
+  name: string;
+  status: AttendanceStatus;
+  date: string;
+  note?: string;
+}
