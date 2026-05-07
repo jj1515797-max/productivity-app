@@ -334,7 +334,7 @@ export default function AnalyticsMonthly() {
             onClick={() => setLogisticsModalOpen(true)}
             className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-md font-medium text-sm shadow-sm flex items-center gap-2"
           >
-            <span className="w-2 h-2 rounded-full bg-white" /> 잔여량 입력
+            <span className="w-2 h-2 rounded-full bg-white" /> 잔여량 수정
           </button>
           <button
             onClick={() => setAmbientModalOpen(true)}
@@ -672,13 +672,13 @@ function PrevMonthCompare({
     return computeMonthStats(prevData.entries, prevData.ambient, prevData.items, prevLogisticsByDay, current.daysWorked);
   }, [prevData, prevLogisticsByDay, mode, current.daysWorked]);
 
-  const rows: { label: string; cur: number; prv: number; unit: string; bold?: boolean }[] = mode === 'full'
+  const rows: { label: string; cur: number; prv: number; unit: string; bold?: boolean; pp?: boolean }[] = mode === 'full'
     ? [
         { label: '총 생산량', cur: current.total, prv: prev?.total || 0, unit: 'EA', bold: true },
         { label: '냉장 생산량', cur: current.coldTotal, prv: prev?.coldTotal || 0, unit: 'EA' },
         { label: '상온 생산량', cur: current.ambientTotal, prv: prev?.ambientTotal || 0, unit: 'EA' },
         { label: '잔여량', cur: current.totalRemaining, prv: prev?.totalRemaining || 0, unit: 'EA' },
-        { label: '잔여량 비율(%)', cur: current.remainingRatio, prv: prev?.remainingRatio || 0, unit: '%' },
+        { label: '잔여량 비율(%)', cur: current.remainingRatio, prv: prev?.remainingRatio || 0, unit: '%', pp: true },
         { label: '일평균 생산량', cur: current.totalAvg, prv: prev?.totalAvg || 0, unit: 'EA' },
         { label: '일별 평균 품목수', cur: current.itemsAvgPerDay, prv: prev?.itemsAvgPerDay || 0, unit: '개' },
         { label: '작업일 수', cur: current.daysWorked, prv: prev?.daysWorked || 0, unit: '일' },
@@ -688,7 +688,7 @@ function PrevMonthCompare({
         { label: '냉장 생산량', cur: current.coldTotal, prv: prev?.coldTotal || 0, unit: 'EA' },
         { label: '상온 생산량', cur: current.ambientTotal, prv: prev?.ambientTotal || 0, unit: 'EA' },
         { label: '잔여량', cur: current.totalRemaining, prv: prev?.totalRemaining || 0, unit: 'EA' },
-        { label: '잔여량 비율(%)', cur: current.remainingRatio, prv: prev?.remainingRatio || 0, unit: '%' },
+        { label: '잔여량 비율(%)', cur: current.remainingRatio, prv: prev?.remainingRatio || 0, unit: '%', pp: true },
         { label: '일평균 생산량', cur: current.totalAvg, prv: prev?.totalAvg || 0, unit: 'EA' },
         { label: '일별 평균 품목수', cur: current.itemsAvgPerDay, prv: prev?.itemsAvgPerDay || 0, unit: '개' },
       ];
@@ -738,18 +738,23 @@ function PrevMonthCompare({
             const up = diff > 0, down = diff < 0;
             const arrow = up ? '▲' : down ? '▼' : '–';
             const cls = up ? 'text-emerald-600' : down ? 'text-red-600' : 'text-gray-400';
+            const fmt = (v: number) => r.pp ? v.toFixed(2) : Math.round(v).toLocaleString();
             return (
               <tr key={r.label} className={`border-t ${r.bold ? 'bg-slate-50/60' : ''}`}>
                 <td className={`px-3 py-2 text-gray-700 text-xs ${r.bold ? 'font-bold' : ''}`}>{r.label}</td>
                 <td className="px-3 py-2 text-right text-gray-600">
-                  {prev ? Math.round(r.prv).toLocaleString() : <span className="text-gray-300">···</span>}
+                  {prev ? fmt(r.prv) : <span className="text-gray-300">···</span>}
                 </td>
                 <td className={`px-3 py-2 text-right font-bold text-gray-800 ${r.bold ? 'text-base' : ''}`}>
-                  {Math.round(r.cur).toLocaleString()}
+                  {fmt(r.cur)}
                 </td>
                 <td className={`px-3 py-2 text-right text-xs font-semibold ${cls}`}>
                   {prev ? (
-                    <><span>{arrow}</span><span className="ml-0.5">{Math.abs(pct).toFixed(1)}%</span></>
+                    r.pp ? (
+                      <span>{up ? '+' : down ? '−' : ''}{Math.abs(diff).toFixed(2)}%p</span>
+                    ) : (
+                      <><span>{arrow}</span><span className="ml-0.5">{Math.abs(pct).toFixed(1)}%</span></>
+                    )
                   ) : (
                     <span className="text-gray-300">···</span>
                   )}
