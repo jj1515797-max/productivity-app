@@ -285,22 +285,22 @@ export default function AnalyticsMonthly() {
     // 잔여량/비율은 computeMonthStats를 통해 (current도 동일 로직)
     const ms = computeMonthStats(entries, ambient, items, logisticsByDay);
 
-    // 10EA 미만 생산 수량 합계 (일자별 코드 합산이 1~9인 경우만)
+    // 10EA 미만 생산 건수 (일자별 코드합이 1~9 EA 인 건수)
     const actualByDateCode: Record<string, number> = {};
     entries.forEach((e) => {
       const k = `${e.date}|${e.code.toLowerCase()}`;
       actualByDateCode[k] = (actualByDateCode[k] || 0) + qty(e);
     });
-    let under10Sum = 0;
+    let under10Count = 0;
     Object.values(actualByDateCode).forEach((v) => {
-      if (v >= 1 && v < 10) under10Sum += v;
+      if (v >= 1 && v < 10) under10Count++;
     });
 
     return {
       total, coldTotal, ambientTotal,
       totalRemaining: ms.totalRemaining,
       remainingRatio: ms.remainingRatio,
-      under10Sum,
+      under10Count,
       daysWorked, coldDays, ambientDays,
       avgPerDay, coldAvg, ambientAvg,
       avgItemsPerDay,
@@ -367,7 +367,7 @@ export default function AnalyticsMonthly() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Card label="일평균 생산량" value={Math.round(stats.avgPerDay).toLocaleString()} unit="EA" color="purple" sub="냉장 + 상온" />
         <Card label="잔여량 비율" value={stats.remainingRatio.toFixed(2)} unit="%" color="rose" sub={`잔여 ${stats.totalRemaining.toLocaleString()} / 냉장 ${stats.coldTotal.toLocaleString()}`} />
-        <Card label="10EA 미만 생산" value={stats.under10Sum.toLocaleString()} unit="EA" color="amber" sub="일별 코드합 1~9 인 항목 합계" />
+        <Card label="10EA 미만 생산 품목" value={stats.under10Count.toLocaleString()} unit="건" color="amber" sub="일별 1~9 EA 생산 건수 합계" />
         <Card label="일별 평균 품목 수" value={Math.round(stats.avgItemsPerDay).toLocaleString()} unit="개" color="teal" />
       </div>
 
