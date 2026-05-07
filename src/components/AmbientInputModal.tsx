@@ -65,7 +65,7 @@ export default function AmbientInputModal({
   if (!open) return null;
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl max-h-[92vh] overflow-hidden flex flex-col">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl h-[90vh] overflow-hidden flex flex-col">
         <div className="px-6 py-4 border-b flex items-center justify-between bg-gradient-to-r from-orange-50 to-amber-50">
           <div>
             <h3 className="text-lg font-bold text-gray-800">상온 생산량 입력</h3>
