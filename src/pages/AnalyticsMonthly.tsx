@@ -363,7 +363,16 @@ export default function AnalyticsMonthly() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Card label="일평균 생산량" value={Math.round(stats.avgPerDay).toLocaleString()} unit="EA" color="purple" sub="냉장 + 상온" />
         <Card label="잔여량 비율" value={stats.remainingRatio.toFixed(2)} unit="%" color="rose" sub={`잔여 ${stats.totalRemaining.toLocaleString()} / 냉장 ${stats.coldTotal.toLocaleString()}`} />
-        <Card label="10EA 미만 발주 품목" value={stats.under10Count.toLocaleString()} unit="건" color="amber" />
+        <Card
+          label="10EA 미만 생산 품목"
+          value={stats.under10Count.toLocaleString()}
+          unit="건"
+          color="amber"
+          aux={{
+            label: '일평균',
+            value: `${stats.daysWorked > 0 ? (stats.under10Count / stats.daysWorked).toFixed(1) : '0.0'}건`,
+          }}
+        />
         <Card label="일별 평균 품목 수" value={Math.round(stats.avgItemsPerDay).toLocaleString()} unit="개" color="teal" />
       </div>
 
@@ -802,8 +811,8 @@ const COLOR_MAP = {
 } as const;
 
 function Card({
-  label, value, unit, color, sub,
-}: { label: string; value: string; unit: string; color: keyof typeof COLOR_MAP; sub?: string }) {
+  label, value, unit, color, sub, aux,
+}: { label: string; value: string; unit: string; color: keyof typeof COLOR_MAP; sub?: string; aux?: { label: string; value: string } }) {
   const cls = COLOR_MAP[color];
   return (
     <div className={`bg-white border-l-4 ${cls} rounded-lg shadow-sm p-4`}>
@@ -811,9 +820,15 @@ function Card({
         {label}
         {sub && <span className="text-[10px] text-gray-400">({sub})</span>}
       </div>
-      <div className="flex items-baseline gap-1">
+      <div className="flex items-baseline gap-1 flex-wrap">
         <span className={`text-2xl font-bold ${cls}`}>{value}</span>
         <span className="text-xs text-gray-500">{unit}</span>
+        {aux && (
+          <span className="ml-auto text-xs text-gray-500">
+            <span className="text-gray-400">{aux.label}</span>{' '}
+            <span className="font-bold text-gray-700">{aux.value}</span>
+          </span>
+        )}
       </div>
     </div>
   );
