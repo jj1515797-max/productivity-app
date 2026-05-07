@@ -201,6 +201,13 @@ export default function Attendance() {
                 <span className="font-bold text-gray-800">{counts.breakdown[s]}</span>
               </div>
             ))}
+            <div className="flex items-center justify-between">
+              <span className="flex items-center gap-1.5">
+                <span className="w-1.5 h-1.5 rounded-full bg-zinc-500" />
+                <span className="text-gray-600">휴직</span>
+              </span>
+              <span className="font-bold text-gray-800">{counts.onLeaveN}</span>
+            </div>
           </div>
         </div>
       </div>

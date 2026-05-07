@@ -8,6 +8,7 @@ import Import from './pages/Import';
 import Analytics from './pages/Analytics';
 import AnalyticsMonthly from './pages/AnalyticsMonthly';
 import Attendance from './pages/Attendance';
+import ProductivityInput from './pages/ProductivityInput';
 import Logo from './components/Logo';
 import { useTrackVisit } from './lib/presence';
 
@@ -38,6 +39,7 @@ function MainContainer() {
         <Route path="/analytics/monthly" element={<AnalyticsMonthly />} />
         <Route path="/analytics/report" element={<Report />} />
         <Route path="/attendance" element={<Attendance />} />
+        <Route path="/attendance/productivity" element={<ProductivityInput />} />
       </Routes>
     </main>
   );
@@ -69,7 +71,10 @@ const SUB_TABS: Record<Section, { label: string; to: string; exact?: boolean }[]
     { label: '월별현황', to: '/analytics/monthly' },
     { label: '금속CCP', to: '/analytics/report' },
   ],
-  attendance: [{ label: '조직도', to: '/attendance' }],
+  attendance: [
+    { label: '조직도', to: '/attendance', exact: true },
+    { label: '생산성 입력', to: '/attendance/productivity' },
+  ],
 };
 
 function Header() {
