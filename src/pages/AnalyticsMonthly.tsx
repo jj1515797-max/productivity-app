@@ -23,16 +23,21 @@ function prevMonths(month: string, count: number): string[] {
   });
 }
 
-async function fetchMonthLogistics(month: string): Promise<number> {
+async function fetchMonthLogistics(month: string): Promise<Record<string, number>> {
   const [yy, mm] = month.split('-').map(Number);
   const lastDay = new Date(yy, mm, 0).getDate();
   const dates = Array.from({ length: lastDay }, (_, i) => `${month}-${String(i + 1).padStart(2, '0')}`);
   const snaps = await Promise.all(
     dates.map((d) => getDocs(collection(db, 'days', d, 'logistics')))
   );
-  let total = 0;
-  snaps.forEach((s) => s.forEach((d) => { total += (d.data().qty as number) || 0; }));
-  return total;
+  const map: Record<string, number> = {};
+  snaps.forEach((s, i) => {
+    if (s.empty) return;
+    let sum = 0;
+    s.forEach((d) => { sum += (d.data().qty as number) || 0; });
+    map[dates[i]] = sum;
+  });
+  return map;
 }
 
 type MonthStats = {
@@ -44,23 +49,31 @@ type MonthStats = {
   total: number;
   coldTotal: number;
   ambientTotal: number;
-  logisticsTotal: number;
+  totalRemaining: number;
+  remainingRatio: number;
 };
+
+type MonthStatsLite = Omit<MonthStats, never>;
 
 function computeMonthStats(
   entries: MachineEntry[],
   ambient: AmbientEntry[],
-  logisticsTotal: number = 0,
+  items: Item[] = [],
+  logisticsByDay: Record<string, number> = {},
   limitDays?: number,
 ): MonthStats {
   const qty = (e: MachineEntry) => (e.actualProduction || 0) + (e.additionalProduction || 0);
   let useEntries = entries;
   let useAmbient = ambient;
+  let useItems = items;
+  let useLogistics = logisticsByDay;
   if (limitDays !== undefined) {
     const allDates = Array.from(new Set([...entries.map((e) => e.date), ...ambient.map((a) => a.date)])).sort();
     const allowed = new Set(allDates.slice(0, limitDays));
     useEntries = entries.filter((e) => allowed.has(e.date));
     useAmbient = ambient.filter((a) => allowed.has(a.date));
+    useItems = items.filter((i) => allowed.has(i.date));
+    useLogistics = Object.fromEntries(Object.entries(logisticsByDay).filter(([d]) => allowed.has(d)));
   }
   const coldByDay: Record<string, number> = {};
   useEntries.forEach((e) => { coldByDay[e.date] = (coldByDay[e.date] || 0) + qty(e); });
@@ -74,7 +87,7 @@ function computeMonthStats(
   const coldDaysN = Object.keys(coldByDay).length;
   const ambDaysN = Object.keys(ambByDay).length;
 
-  // 품목수는 냉장만 카운트 (상온 제외)
+  // 품목수는 냉장만 카운트
   const itemsByDay: Record<string, Set<string>> = {};
   useEntries.forEach((e) => {
     if (!itemsByDay[e.date]) itemsByDay[e.date] = new Set();
@@ -83,6 +96,32 @@ function computeMonthStats(
   const counts = Object.values(itemsByDay).map((s) => s.size);
   const itemsAvgPerDay = counts.length ? counts.reduce((s, v) => s + v, 0) / counts.length : 0;
 
+  // 잔여량: items+entries로 일별 surplus 계산, logistics 입력이 있는 일자는 override
+  const itemsByDateCode: Record<string, number> = {};
+  useItems.forEach((it) => {
+    const k = `${it.date}|${it.code.toLowerCase()}`;
+    itemsByDateCode[k] = (itemsByDateCode[k] || 0) + (it.totalQty || 0);
+  });
+  const actualByDateCode: Record<string, number> = {};
+  useEntries.forEach((e) => {
+    const k = `${e.date}|${e.code.toLowerCase()}`;
+    actualByDateCode[k] = (actualByDateCode[k] || 0) + qty(e);
+  });
+  const surplusByDay: Record<string, number> = {};
+  Object.entries(itemsByDateCode).forEach(([k, planned]) => {
+    const actual = actualByDateCode[k] || 0;
+    const surplus = Math.max(0, actual - planned);
+    const date = k.split('|')[0];
+    surplusByDay[date] = (surplusByDay[date] || 0) + surplus;
+  });
+  let totalRemaining = 0;
+  const remainDays = new Set<string>([...Object.keys(surplusByDay), ...Object.keys(useLogistics)]);
+  remainDays.forEach((day) => {
+    if (useLogistics[day] !== undefined) totalRemaining += useLogistics[day];
+    else totalRemaining += surplusByDay[day] || 0;
+  });
+  const remainingRatio = coldTotal > 0 ? (totalRemaining / coldTotal) * 100 : 0;
+
   return {
     daysWorked,
     totalAvg: daysWorked ? total / daysWorked : 0,
@@ -90,7 +129,7 @@ function computeMonthStats(
     ambientAvg: ambDaysN ? ambientTotal / ambDaysN : 0,
     itemsAvgPerDay,
     total, coldTotal, ambientTotal,
-    logisticsTotal,
+    totalRemaining, remainingRatio,
   };
 }
 
@@ -98,10 +137,12 @@ export default function AnalyticsMonthly() {
   const [month, setMonth] = useState(thisMonth());
   const [entries, setEntries] = useState<MachineEntry[]>([]);
   const [ambient, setAmbient] = useState<AmbientEntry[]>([]);
-  const [logisticsTotal, setLogisticsTotal] = useState<number>(0);
+  const [items, setItems] = useState<Item[]>([]);
+  const [logisticsByDay, setLogisticsByDay] = useState<Record<string, number>>({});
+  const [prevLogisticsByDay, setPrevLogisticsByDay] = useState<Record<string, number>>({});
   const [nameMap, setNameMap] = useState<Map<string, string>>(new Map());
   const [prev3Avg, setPrev3Avg] = useState<number>(0);
-  const [prevMonthData, setPrevMonthData] = useState<{ entries: MachineEntry[]; ambient: AmbientEntry[]; logisticsTotal: number } | null>(null);
+  const [prevMonthData, setPrevMonthData] = useState<{ entries: MachineEntry[]; ambient: AmbientEntry[]; items: Item[] } | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [ambientModalOpen, setAmbientModalOpen] = useState(false);
@@ -124,9 +165,10 @@ export default function AnalyticsMonthly() {
       .then(([entriesSnap, itemsSnap, ambientSnap]) => {
         if (cancelled) return;
         setEntries(entriesSnap.docs.map((d) => d.data() as MachineEntry));
+        const itemsList = itemsSnap.docs.map((d) => d.data() as Item);
+        setItems(itemsList);
         const map = new Map<string, string>();
-        itemsSnap.forEach((d) => {
-          const it = d.data() as Item;
+        itemsList.forEach((it) => {
           if (it.code && it.name) map.set(it.code.toLowerCase(), it.name);
         });
         setNameMap(map);
@@ -139,33 +181,36 @@ export default function AnalyticsMonthly() {
         if (!cancelled) setLoading(false);
       });
 
-    // logistics는 collectionGroup에 date 필드가 없을 수 있어서 일별로 가져와야 함.
-    // 월별 일자 별로 logistics 합산을 계산
-    fetchMonthLogistics(month).then((total) => {
-      if (!cancelled) setLogisticsTotal(total);
+    setLogisticsByDay({});
+    fetchMonthLogistics(month).then((map) => {
+      if (!cancelled) setLogisticsByDay(map);
     }).catch(() => {});
 
     // 직전 3개월 평균 + 전월 통계 백그라운드 fetch
     setPrevMonthData(null);
+    setPrevLogisticsByDay({});
     const prevMs = prevMonths(month, 3);
     Promise.all(
       prevMs.flatMap((pm) => [
         getDocs(query(collectionGroup(db, 'entries'), where('date', '>=', `${pm}-01`), where('date', '<=', `${pm}-31`))),
         getDocs(query(collectionGroup(db, 'ambient'), where('date', '>=', `${pm}-01`), where('date', '<=', `${pm}-31`))),
+        getDocs(query(collectionGroup(db, 'items'), where('date', '>=', `${pm}-01`), where('date', '<=', `${pm}-31`))),
       ])
     )
       .then(async (snaps) => {
         if (cancelled) return;
         const monthAvgs: number[] = [];
         for (let i = 0; i < prevMs.length; i++) {
-          const ents = snaps[i * 2].docs.map((d) => d.data() as MachineEntry);
-          const ambs = snaps[i * 2 + 1].docs.map((d) => d.data() as AmbientEntry);
+          const ents = snaps[i * 3].docs.map((d) => d.data() as MachineEntry);
+          const ambs = snaps[i * 3 + 1].docs.map((d) => d.data() as AmbientEntry);
           const ms = computeMonthStats(ents, ambs);
           if (ms.daysWorked > 0) monthAvgs.push(ms.totalAvg);
           if (i === 0) {
-            const prevLog = await fetchMonthLogistics(prevMs[0]).catch(() => 0);
+            const prevItems = snaps[i * 3 + 2].docs.map((d) => d.data() as Item);
+            const prevLogMap = await fetchMonthLogistics(prevMs[0]).catch(() => ({} as Record<string, number>));
             if (cancelled) return;
-            setPrevMonthData({ entries: ents, ambient: ambs, logisticsTotal: prevLog });
+            setPrevLogisticsByDay(prevLogMap);
+            setPrevMonthData({ entries: ents, ambient: ambs, items: prevItems });
           }
         }
         setPrev3Avg(monthAvgs.length ? monthAvgs.reduce((s, a) => s + a, 0) / monthAvgs.length : 0);
@@ -237,17 +282,19 @@ export default function AnalyticsMonthly() {
       .sort((a, b) => b.total - a.total)
       .slice(0, 10);
 
-    // 잔여량 비율 = 잔여량(logistics) / 냉장 생산량 (잔여량은 생산량에 포함됨)
-    const remainingRatio = coldTotal > 0 ? (logisticsTotal / coldTotal) * 100 : 0;
+    // 잔여량/비율은 computeMonthStats를 통해 (current도 동일 로직)
+    const ms = computeMonthStats(entries, ambient, items, logisticsByDay);
 
     return {
-      total, coldTotal, ambientTotal, logisticsTotal,
+      total, coldTotal, ambientTotal,
+      totalRemaining: ms.totalRemaining,
+      remainingRatio: ms.remainingRatio,
       daysWorked, coldDays, ambientDays,
       avgPerDay, coldAvg, ambientAvg,
-      avgItemsPerDay, remainingRatio,
+      avgItemsPerDay,
       byMachine, allDays, topCodes,
     };
-  }, [entries, ambient, nameMap, month, logisticsTotal]);
+  }, [entries, ambient, items, nameMap, month, logisticsByDay]);
 
   const shiftMonth = (delta: number) => {
     const [y, m] = month.split('-').map(Number);
@@ -307,40 +354,13 @@ export default function AnalyticsMonthly() {
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Card label="일평균 생산량" value={Math.round(stats.avgPerDay).toLocaleString()} unit="EA" color="purple" sub="냉장 + 상온" />
-        <Card label="잔여량 비율" value={stats.remainingRatio.toFixed(2)} unit="%" color="rose" sub={`잔여 ${stats.logisticsTotal.toLocaleString()} / 냉장 ${stats.coldTotal.toLocaleString()}`} />
-        <Card label="상온 일평균" value={Math.round(stats.ambientAvg).toLocaleString()} unit="EA" color="orange" />
+        <Card label="잔여량 비율" value={stats.remainingRatio.toFixed(2)} unit="%" color="rose" sub={`잔여 ${stats.totalRemaining.toLocaleString()} / 냉장 ${stats.coldTotal.toLocaleString()}`} />
+        <Card label="잔여량 합계" value={stats.totalRemaining.toLocaleString()} unit="EA" color="amber" sub="생산 잔여량 자동 + 입력값 override" />
         <Card label="일별 평균 품목 수" value={Math.round(stats.avgItemsPerDay).toLocaleString()} unit="개" color="teal" />
       </div>
 
-      {/* Top 5 - 차트 위 */}
-      {stats.topCodes.length > 0 && (
-        <div className="bg-white border rounded-lg overflow-hidden">
-          <div className="px-5 py-3 border-b bg-slate-50 font-semibold text-gray-800 text-sm flex items-center justify-between">
-            <span>상위 생산 품목 <span className="text-xs text-gray-500 font-normal">(Top 5 · 냉장)</span></span>
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-5 divide-x divide-gray-100">
-            {stats.topCodes.slice(0, 5).map((row, i) => (
-              <div key={row.code} className="p-4 text-center">
-                <div className="text-[11px] font-bold text-gray-400 mb-1">{i + 1}위</div>
-                <div className="font-mono text-[11px] text-gray-500">{row.code}</div>
-                <div className="text-sm font-medium mt-1 text-gray-800 truncate" title={row.name}>{row.name || '-'}</div>
-                <div className="text-xl font-bold text-blue-700 mt-2">{row.total.toLocaleString()}</div>
-                <div className="text-[10px] text-gray-400 mt-0.5">EA</div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      <DailyChart
-        monthLabel={monthLabel}
-        days={stats.allDays}
-        avg={stats.avgPerDay}
-        prev3Avg={prev3Avg}
-      />
-
+      {/* 호기별 + 전월비교 (차트 위) */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
-        {/* 호기별 생산량 (냉장) */}
         <div className="lg:col-span-5 bg-white border rounded-lg overflow-hidden flex flex-col">
           <div className="px-4 py-3 border-b bg-slate-50 font-semibold text-gray-800 text-sm">
             호기별 생산량 <span className="text-xs text-gray-500 font-normal">(냉장)</span>
@@ -375,7 +395,6 @@ export default function AnalyticsMonthly() {
           </table>
         </div>
 
-        {/* 전월 비교 */}
         <div className="lg:col-span-7">
           <PrevMonthCompare
             month={month}
@@ -390,12 +409,41 @@ export default function AnalyticsMonthly() {
               total: stats.total,
               coldTotal: stats.coldTotal,
               ambientTotal: stats.ambientTotal,
-              logisticsTotal: stats.logisticsTotal,
+              totalRemaining: stats.totalRemaining,
+              remainingRatio: stats.remainingRatio,
             }}
             prevData={prevMonthData}
+            prevLogisticsByDay={prevLogisticsByDay}
           />
         </div>
       </div>
+
+      <DailyChart
+        monthLabel={monthLabel}
+        days={stats.allDays}
+        avg={stats.avgPerDay}
+        prev3Avg={prev3Avg}
+      />
+
+      {/* Top 5 - 맨 아래 */}
+      {stats.topCodes.length > 0 && (
+        <div className="bg-white border rounded-lg overflow-hidden">
+          <div className="px-5 py-3 border-b bg-slate-50 font-semibold text-gray-800 text-sm">
+            상위 생산 품목 <span className="text-xs text-gray-500 font-normal">(Top 5 · 냉장)</span>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-5 divide-x divide-gray-100">
+            {stats.topCodes.slice(0, 5).map((row, i) => (
+              <div key={row.code} className="p-4 text-center">
+                <div className="text-[11px] font-bold text-gray-400 mb-1">{i + 1}위</div>
+                <div className="font-mono text-[11px] text-gray-500">{row.code}</div>
+                <div className="text-sm font-medium mt-1 text-gray-800 truncate" title={row.name}>{row.name || '-'}</div>
+                <div className="text-xl font-bold text-blue-700 mt-2">{row.total.toLocaleString()}</div>
+                <div className="text-[10px] text-gray-400 mt-0.5">EA</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <AmbientInputModal
         open={ambientModalOpen}
@@ -599,13 +647,14 @@ function DailyChart({
 }
 
 function PrevMonthCompare({
-  month, mode, onModeChange, current, prevData,
+  month, mode, onModeChange, current, prevData, prevLogisticsByDay,
 }: {
   month: string;
   mode: 'full' | 'sameDays';
   onModeChange: (m: 'full' | 'sameDays') => void;
-  current: MonthStats;
-  prevData: { entries: MachineEntry[]; ambient: AmbientEntry[]; logisticsTotal: number } | null;
+  current: MonthStatsLite;
+  prevData: { entries: MachineEntry[]; ambient: AmbientEntry[]; items: Item[] } | null;
+  prevLogisticsByDay: Record<string, number>;
 }) {
   const [y, m] = month.split('-').map(Number);
   const prevDate = new Date(y, m - 2, 1);
@@ -618,17 +667,18 @@ function PrevMonthCompare({
   const prev: MonthStats | null = useMemo(() => {
     if (!prevData) return null;
     if (mode === 'full') {
-      return computeMonthStats(prevData.entries, prevData.ambient, prevData.logisticsTotal);
+      return computeMonthStats(prevData.entries, prevData.ambient, prevData.items, prevLogisticsByDay);
     }
-    // sameDays: 전월의 첫 N개 작업일만으로 계산
-    return computeMonthStats(prevData.entries, prevData.ambient, prevData.logisticsTotal, current.daysWorked);
-  }, [prevData, mode, current.daysWorked]);
+    return computeMonthStats(prevData.entries, prevData.ambient, prevData.items, prevLogisticsByDay, current.daysWorked);
+  }, [prevData, prevLogisticsByDay, mode, current.daysWorked]);
 
   const rows: { label: string; cur: number; prv: number; unit: string; bold?: boolean }[] = mode === 'full'
     ? [
         { label: '총 생산량', cur: current.total, prv: prev?.total || 0, unit: 'EA', bold: true },
         { label: '냉장 생산량', cur: current.coldTotal, prv: prev?.coldTotal || 0, unit: 'EA' },
         { label: '상온 생산량', cur: current.ambientTotal, prv: prev?.ambientTotal || 0, unit: 'EA' },
+        { label: '잔여량', cur: current.totalRemaining, prv: prev?.totalRemaining || 0, unit: 'EA' },
+        { label: '잔여량 비율(%)', cur: current.remainingRatio, prv: prev?.remainingRatio || 0, unit: '%' },
         { label: '일평균 생산량', cur: current.totalAvg, prv: prev?.totalAvg || 0, unit: 'EA' },
         { label: '일별 평균 품목수', cur: current.itemsAvgPerDay, prv: prev?.itemsAvgPerDay || 0, unit: '개' },
         { label: '작업일 수', cur: current.daysWorked, prv: prev?.daysWorked || 0, unit: '일' },
@@ -637,6 +687,8 @@ function PrevMonthCompare({
         { label: '총 생산량', cur: current.total, prv: prev?.total || 0, unit: 'EA', bold: true },
         { label: '냉장 생산량', cur: current.coldTotal, prv: prev?.coldTotal || 0, unit: 'EA' },
         { label: '상온 생산량', cur: current.ambientTotal, prv: prev?.ambientTotal || 0, unit: 'EA' },
+        { label: '잔여량', cur: current.totalRemaining, prv: prev?.totalRemaining || 0, unit: 'EA' },
+        { label: '잔여량 비율(%)', cur: current.remainingRatio, prv: prev?.remainingRatio || 0, unit: '%' },
         { label: '일평균 생산량', cur: current.totalAvg, prv: prev?.totalAvg || 0, unit: 'EA' },
         { label: '일별 평균 품목수', cur: current.itemsAvgPerDay, prv: prev?.itemsAvgPerDay || 0, unit: '개' },
       ];
@@ -724,6 +776,7 @@ const COLOR_MAP = {
   rose:   'border-rose-500 text-rose-700',
   indigo: 'border-indigo-500 text-indigo-700',
   teal:   'border-teal-500 text-teal-700',
+  amber:  'border-amber-500 text-amber-700',
 } as const;
 
 function Card({
