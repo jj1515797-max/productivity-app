@@ -672,13 +672,13 @@ function PrevMonthCompare({
     return computeMonthStats(prevData.entries, prevData.ambient, prevData.items, prevLogisticsByDay, current.daysWorked);
   }, [prevData, prevLogisticsByDay, mode, current.daysWorked]);
 
-  const rows: { label: string; cur: number; prv: number; unit: string; bold?: boolean; pp?: boolean }[] = mode === 'full'
+  const rows: { label: string; cur: number; prv: number; unit: string; bold?: boolean; pp?: boolean; inverse?: boolean }[] = mode === 'full'
     ? [
         { label: '총 생산량', cur: current.total, prv: prev?.total || 0, unit: 'EA', bold: true },
         { label: '냉장 생산량', cur: current.coldTotal, prv: prev?.coldTotal || 0, unit: 'EA' },
         { label: '상온 생산량', cur: current.ambientTotal, prv: prev?.ambientTotal || 0, unit: 'EA' },
-        { label: '잔여량', cur: current.totalRemaining, prv: prev?.totalRemaining || 0, unit: 'EA' },
-        { label: '잔여량 비율(%)', cur: current.remainingRatio, prv: prev?.remainingRatio || 0, unit: '%', pp: true },
+        { label: '잔여량', cur: current.totalRemaining, prv: prev?.totalRemaining || 0, unit: 'EA', inverse: true },
+        { label: '잔여량 비율(%)', cur: current.remainingRatio, prv: prev?.remainingRatio || 0, unit: '%', pp: true, inverse: true },
         { label: '일평균 생산량', cur: current.totalAvg, prv: prev?.totalAvg || 0, unit: 'EA' },
         { label: '일별 평균 품목수', cur: current.itemsAvgPerDay, prv: prev?.itemsAvgPerDay || 0, unit: '개' },
         { label: '작업일 수', cur: current.daysWorked, prv: prev?.daysWorked || 0, unit: '일' },
@@ -687,8 +687,8 @@ function PrevMonthCompare({
         { label: '총 생산량', cur: current.total, prv: prev?.total || 0, unit: 'EA', bold: true },
         { label: '냉장 생산량', cur: current.coldTotal, prv: prev?.coldTotal || 0, unit: 'EA' },
         { label: '상온 생산량', cur: current.ambientTotal, prv: prev?.ambientTotal || 0, unit: 'EA' },
-        { label: '잔여량', cur: current.totalRemaining, prv: prev?.totalRemaining || 0, unit: 'EA' },
-        { label: '잔여량 비율(%)', cur: current.remainingRatio, prv: prev?.remainingRatio || 0, unit: '%', pp: true },
+        { label: '잔여량', cur: current.totalRemaining, prv: prev?.totalRemaining || 0, unit: 'EA', inverse: true },
+        { label: '잔여량 비율(%)', cur: current.remainingRatio, prv: prev?.remainingRatio || 0, unit: '%', pp: true, inverse: true },
         { label: '일평균 생산량', cur: current.totalAvg, prv: prev?.totalAvg || 0, unit: 'EA' },
         { label: '일별 평균 품목수', cur: current.itemsAvgPerDay, prv: prev?.itemsAvgPerDay || 0, unit: '개' },
       ];
@@ -737,7 +737,10 @@ function PrevMonthCompare({
             const pct = r.prv > 0 ? (diff / r.prv) * 100 : (r.cur > 0 ? 100 : 0);
             const up = diff > 0, down = diff < 0;
             const arrow = up ? '▲' : down ? '▼' : '–';
-            const cls = up ? 'text-emerald-600' : down ? 'text-red-600' : 'text-gray-400';
+            // inverse: 줄어드는 게 좋은 지표 (잔여량 등) → 색깔 반전
+            const good = r.inverse ? down : up;
+            const bad = r.inverse ? up : down;
+            const cls = good ? 'text-emerald-600' : bad ? 'text-red-600' : 'text-gray-400';
             const fmt = (v: number) => r.pp ? v.toFixed(2) : Math.round(v).toLocaleString();
             return (
               <tr key={r.label} className={`border-t ${r.bold ? 'bg-slate-50/60' : ''}`}>
