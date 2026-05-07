@@ -22,12 +22,60 @@ function prevMonths(month: string, count: number): string[] {
   });
 }
 
+type MonthStats = {
+  daysWorked: number;
+  totalAvg: number;
+  coldAvg: number;
+  ambientAvg: number;
+  itemsAvgPerDay: number;
+  total: number;
+  coldTotal: number;
+  ambientTotal: number;
+};
+
+function computeMonthStats(entries: MachineEntry[], ambient: AmbientEntry[]): MonthStats {
+  const qty = (e: MachineEntry) => (e.actualProduction || 0) + (e.additionalProduction || 0);
+  const coldByDay: Record<string, number> = {};
+  entries.forEach((e) => { coldByDay[e.date] = (coldByDay[e.date] || 0) + qty(e); });
+  const ambByDay: Record<string, number> = {};
+  ambient.forEach((a) => { ambByDay[a.date] = (ambByDay[a.date] || 0) + (a.qty || 0); });
+  const allDays = new Set([...Object.keys(coldByDay), ...Object.keys(ambByDay)]);
+  const coldTotal = Object.values(coldByDay).reduce((s, v) => s + v, 0);
+  const ambientTotal = Object.values(ambByDay).reduce((s, v) => s + v, 0);
+  const total = coldTotal + ambientTotal;
+  const daysWorked = allDays.size;
+  const coldDaysN = Object.keys(coldByDay).length;
+  const ambDaysN = Object.keys(ambByDay).length;
+
+  const itemsByDay: Record<string, Set<string>> = {};
+  entries.forEach((e) => {
+    if (!itemsByDay[e.date]) itemsByDay[e.date] = new Set();
+    itemsByDay[e.date].add(`c:${e.code.toLowerCase()}`);
+  });
+  ambient.forEach((a) => {
+    if (!itemsByDay[a.date]) itemsByDay[a.date] = new Set();
+    itemsByDay[a.date].add(`a:${a.productName}`);
+  });
+  const counts = Object.values(itemsByDay).map((s) => s.size);
+  const itemsAvgPerDay = counts.length ? counts.reduce((s, v) => s + v, 0) / counts.length : 0;
+
+  return {
+    daysWorked,
+    totalAvg: daysWorked ? total / daysWorked : 0,
+    coldAvg: coldDaysN ? coldTotal / coldDaysN : 0,
+    ambientAvg: ambDaysN ? ambientTotal / ambDaysN : 0,
+    itemsAvgPerDay,
+    total, coldTotal, ambientTotal,
+  };
+}
+
 export default function AnalyticsMonthly() {
   const [month, setMonth] = useState(thisMonth());
   const [entries, setEntries] = useState<MachineEntry[]>([]);
   const [ambient, setAmbient] = useState<AmbientEntry[]>([]);
   const [nameMap, setNameMap] = useState<Map<string, string>>(new Map());
   const [prev3Avg, setPrev3Avg] = useState<number>(0);
+  const [prevMonthStats, setPrevMonthStats] = useState<MonthStats | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
@@ -39,7 +87,6 @@ export default function AnalyticsMonthly() {
     setPrev3Avg(0);
     const start = `${month}-01`;
     const end = `${month}-31`;
-    const qty = (e: MachineEntry) => (e.actualProduction || 0) + (e.additionalProduction || 0);
 
     Promise.all([
       getDocs(query(collectionGroup(db, 'entries'), where('date', '>=', start), where('date', '<=', end))),
@@ -64,7 +111,8 @@ export default function AnalyticsMonthly() {
         if (!cancelled) setLoading(false);
       });
 
-    // 직전 3개월 평균은 백그라운드 (냉장+상온 합산)
+    // 직전 3개월 평균 + 전월 통계 백그라운드 fetch
+    setPrevMonthStats(null);
     const prevMs = prevMonths(month, 3);
     Promise.all(
       prevMs.flatMap((pm) => [
@@ -76,16 +124,11 @@ export default function AnalyticsMonthly() {
         if (cancelled) return;
         const monthAvgs: number[] = [];
         for (let i = 0; i < prevMs.length; i++) {
-          const eSnap = snaps[i * 2];
-          const aSnap = snaps[i * 2 + 1];
-          const ents = eSnap.docs.map((d) => d.data() as MachineEntry);
-          const ambs = aSnap.docs.map((d) => d.data() as AmbientEntry);
-          const dayMap: Record<string, number> = {};
-          ents.forEach((e) => { dayMap[e.date] = (dayMap[e.date] || 0) + qty(e); });
-          ambs.forEach((a) => { dayMap[a.date] = (dayMap[a.date] || 0) + (a.qty || 0); });
-          const days = Object.keys(dayMap);
-          const total = Object.values(dayMap).reduce((s, v) => s + v, 0);
-          if (days.length) monthAvgs.push(total / days.length);
+          const ents = snaps[i * 2].docs.map((d) => d.data() as MachineEntry);
+          const ambs = snaps[i * 2 + 1].docs.map((d) => d.data() as AmbientEntry);
+          const ms = computeMonthStats(ents, ambs);
+          if (ms.daysWorked > 0) monthAvgs.push(ms.totalAvg);
+          if (i === 0) setPrevMonthStats(ms);
         }
         setPrev3Avg(monthAvgs.length ? monthAvgs.reduce((s, a) => s + a, 0) / monthAvgs.length : 0);
       })
@@ -221,33 +264,7 @@ export default function AnalyticsMonthly() {
         <Card label="일평균 생산량" value={Math.round(stats.avgPerDay).toLocaleString()} unit="EA" color="purple" sub="냉장 + 상온" />
         <Card label="냉장 일평균" value={Math.round(stats.coldAvg).toLocaleString()} unit="EA" color="blue" />
         <Card label="상온 일평균" value={Math.round(stats.ambientAvg).toLocaleString()} unit="EA" color="orange" />
-        <Card label="일별 평균 품목 수" value={stats.avgItemsPerDay.toFixed(1)} unit="개" color="rose" />
-      </div>
-
-      <div className="bg-white border rounded-lg overflow-hidden">
-        <div className="px-5 py-3 border-b bg-slate-50 font-semibold text-gray-800">호기별 생산량 (냉장)</div>
-        <table className="w-full text-sm">
-          <thead className="bg-gray-50 text-xs text-gray-500">
-            <tr>
-              <th className="px-4 py-2 text-left">호기</th>
-              <th className="px-4 py-2 text-right">총 생산량</th>
-              <th className="px-4 py-2 text-right">입력 건수</th>
-              <th className="px-4 py-2 text-right">비율</th>
-            </tr>
-          </thead>
-          <tbody>
-            {stats.byMachine.map((row) => (
-              <tr key={row.machine} className="border-t">
-                <td className="px-4 py-2 font-medium">{row.machine}</td>
-                <td className="px-4 py-2 text-right font-bold">{row.total.toLocaleString()}</td>
-                <td className="px-4 py-2 text-right text-gray-600">{row.count}</td>
-                <td className="px-4 py-2 text-right text-gray-600">
-                  {stats.coldTotal ? `${((row.total / stats.coldTotal) * 100).toFixed(1)}%` : '-'}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+        <Card label="일별 평균 품목 수" value={Math.round(stats.avgItemsPerDay).toLocaleString()} unit="개" color="rose" />
       </div>
 
       <DailyChart
@@ -257,35 +274,87 @@ export default function AnalyticsMonthly() {
         prev3Avg={prev3Avg}
       />
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-5">
-        <div className="bg-white border rounded-lg overflow-hidden">
-          <div className="px-5 py-3 border-b bg-slate-50 font-semibold text-gray-800">상위 생산 품목 (Top 10) · 냉장</div>
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+        {/* 호기별 생산량 (냉장) */}
+        <div className="lg:col-span-3 bg-white border rounded-lg overflow-hidden flex flex-col">
+          <div className="px-4 py-3 border-b bg-slate-50 font-semibold text-gray-800 text-sm">
+            호기별 생산량 <span className="text-xs text-gray-500 font-normal">(냉장)</span>
+          </div>
+          <table className="w-full text-sm">
+            <thead className="bg-gray-50 text-xs text-gray-500">
+              <tr>
+                <th className="px-3 py-2 text-left">호기</th>
+                <th className="px-3 py-2 text-right">생산량</th>
+                <th className="px-3 py-2 text-right">비율</th>
+              </tr>
+            </thead>
+            <tbody>
+              {stats.byMachine.map((row) => (
+                <tr key={row.machine} className="border-t">
+                  <td className="px-3 py-2 font-medium">{row.machine}</td>
+                  <td className="px-3 py-2 text-right font-bold">{row.total.toLocaleString()}</td>
+                  <td className="px-3 py-2 text-right text-gray-600 text-xs">
+                    {stats.coldTotal ? `${((row.total / stats.coldTotal) * 100).toFixed(1)}%` : '-'}
+                  </td>
+                </tr>
+              ))}
+              <tr className="border-t bg-slate-50">
+                <td className="px-3 py-2 font-semibold text-gray-700">합계</td>
+                <td className="px-3 py-2 text-right font-bold text-blue-700">{stats.coldTotal.toLocaleString()}</td>
+                <td className="px-3 py-2"></td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        {/* Top 10 */}
+        <div className="lg:col-span-5 bg-white border rounded-lg overflow-hidden flex flex-col">
+          <div className="px-4 py-3 border-b bg-slate-50 font-semibold text-gray-800 text-sm">
+            상위 생산 품목 (Top 10) <span className="text-xs text-gray-500 font-normal">· 냉장</span>
+          </div>
           {stats.topCodes.length === 0 ? (
             <div className="p-12 text-center text-gray-400 text-sm">데이터 없음</div>
           ) : (
             <table className="w-full text-sm">
               <thead className="bg-gray-50 text-xs text-gray-500">
                 <tr>
-                  <th className="px-4 py-2 text-left w-12">순위</th>
-                  <th className="px-4 py-2 text-left w-20">코드</th>
-                  <th className="px-4 py-2 text-left">품목명</th>
-                  <th className="px-4 py-2 text-right w-28">총 생산량</th>
+                  <th className="px-3 py-2 text-left w-10">순위</th>
+                  <th className="px-3 py-2 text-left w-20">코드</th>
+                  <th className="px-3 py-2 text-left">품목명</th>
+                  <th className="px-3 py-2 text-right w-24">총 생산량</th>
                 </tr>
               </thead>
               <tbody>
                 {stats.topCodes.map((row, i) => (
                   <tr key={row.code} className="border-t">
-                    <td className="px-4 py-2 font-bold text-gray-500">{i + 1}</td>
-                    <td className="px-4 py-2 font-mono">{row.code}</td>
-                    <td className="px-4 py-2">{row.name || '-'}</td>
-                    <td className="px-4 py-2 text-right font-bold">{row.total.toLocaleString()}</td>
+                    <td className="px-3 py-2 font-bold text-gray-500">{i + 1}</td>
+                    <td className="px-3 py-2 font-mono text-xs">{row.code}</td>
+                    <td className="px-3 py-2">{row.name || '-'}</td>
+                    <td className="px-3 py-2 text-right font-bold">{row.total.toLocaleString()}</td>
                   </tr>
                 ))}
               </tbody>
             </table>
           )}
         </div>
-        <div className="hidden lg:block" />
+
+        {/* 전월 비교 */}
+        <div className="lg:col-span-4">
+          <PrevMonthCompare
+            month={month}
+            current={{
+              daysWorked: stats.daysWorked,
+              totalAvg: stats.avgPerDay,
+              coldAvg: stats.coldAvg,
+              ambientAvg: stats.ambientAvg,
+              itemsAvgPerDay: stats.avgItemsPerDay,
+              total: stats.total,
+              coldTotal: stats.coldTotal,
+              ambientTotal: stats.ambientTotal,
+            }}
+            prev={prevMonthStats}
+          />
+        </div>
       </div>
 
       <AmbientInputModal
@@ -409,12 +478,12 @@ function DailyChart({
                     <rect x={cx - barW / 2} y={yCold} width={barW} height={hCold} fill="#2563eb" rx={2} />
                   )}
                   {d.ambient > 0 && (
-                    <rect x={cx - barW / 2} y={yAmb} width={barW} height={hAmb} fill="#f59e0b" rx={2} />
+                    <rect x={cx - barW / 2} y={yAmb} width={barW} height={hAmb} fill="#ea580c" rx={2} />
                   )}
                   {ambText && (
                     <g>
                       <rect x={cx - ambTW / 2} y={ambLabelY - 9} width={ambTW} height={16}
-                        fill="#fff7ed" fillOpacity={0.95} stroke="#fdba74" strokeWidth={0.6} rx={3} />
+                        fill="#ffedd5" fillOpacity={0.95} stroke="#fb923c" strokeWidth={0.7} rx={3} />
                       <text x={cx} y={ambLabelY + 3} textAnchor="middle" fontSize="11"
                         fill="#9a3412" fontWeight="bold">
                         {ambText}
@@ -450,11 +519,11 @@ function DailyChart({
             {prev3Avg > 0 && (
               <g>
                 <line x1={padL} y1={prev3Y} x2={padL + innerW} y2={prev3Y}
-                  stroke="#dc2626" strokeWidth={2.5} />
+                  stroke="#eab308" strokeWidth={2.5} />
                 <rect x={padL + innerW + 4} y={prev3LabelY - 11} width={92} height={22}
-                  fill="#fef2f2" stroke="#dc2626" rx={2} />
+                  fill="#fefce8" stroke="#eab308" rx={2} />
                 <text x={padL + innerW + 50} y={prev3LabelY + 4} textAnchor="middle" fontSize="12"
-                  fill="#991b1b" fontWeight="bold">
+                  fill="#854d0e" fontWeight="bold">
                   {Math.round(prev3Avg).toLocaleString()}
                 </text>
               </g>
@@ -469,15 +538,98 @@ function DailyChart({
               <span className="w-4 h-4 inline-block bg-blue-600 rounded-sm" /> 냉장
             </span>
             <span className="flex items-center gap-2">
-              <span className="w-4 h-4 inline-block bg-amber-500 rounded-sm" /> 상온
+              <span className="w-4 h-4 inline-block rounded-sm" style={{ backgroundColor: '#ea580c' }} /> 상온
             </span>
             <span className="flex items-center gap-2">
               <span className="w-6 border-t-[2.5px] border-gray-500 inline-block" /> 일 평균 생산량
             </span>
             <span className="flex items-center gap-2">
-              <span className="w-6 border-t-[2.5px] border-red-600 inline-block" /> 직전 3개월 일평균 생산량
+              <span className="w-6 border-t-[2.5px] border-yellow-500 inline-block" /> 직전 3개월 일평균 생산량
             </span>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function PrevMonthCompare({
+  month, current, prev,
+}: {
+  month: string;
+  current: MonthStats;
+  prev: MonthStats | null;
+}) {
+  const [y, m] = month.split('-').map(Number);
+  const prevDate = new Date(y, m - 2, 1);
+  const prevLabel = `${prevDate.getMonth() + 1}월`;
+  const currLabel = `${m}월`;
+
+  const today = new Date();
+  const isCurrentMonth = today.getFullYear() === y && today.getMonth() + 1 === m;
+
+  const rows: { label: string; cur: number; prv: number; unit: string }[] = [
+    { label: '일평균 생산량', cur: current.totalAvg, prv: prev?.totalAvg || 0, unit: 'EA' },
+    { label: '냉장 일평균', cur: current.coldAvg, prv: prev?.coldAvg || 0, unit: 'EA' },
+    { label: '상온 일평균', cur: current.ambientAvg, prv: prev?.ambientAvg || 0, unit: 'EA' },
+    { label: '일별 평균 품목수', cur: current.itemsAvgPerDay, prv: prev?.itemsAvgPerDay || 0, unit: '개' },
+    { label: '작업일 수', cur: current.daysWorked, prv: prev?.daysWorked || 0, unit: '일' },
+  ];
+
+  return (
+    <div className="bg-white border rounded-lg overflow-hidden h-full flex flex-col">
+      <div className="px-4 py-3 border-b bg-amber-50 flex items-center justify-between flex-wrap gap-1">
+        <div>
+          <div className="font-semibold text-gray-800 text-sm">전월 비교</div>
+          <div className="text-[11px] text-amber-700 mt-0.5">일평균 기준 (작업일수 보정)</div>
+        </div>
+        {isCurrentMonth && (
+          <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-200 text-amber-800 font-medium">
+            진행중
+          </span>
+        )}
+      </div>
+      <table className="w-full text-sm">
+        <thead className="bg-gray-50 text-[11px] text-gray-500">
+          <tr>
+            <th className="px-3 py-2 text-left">항목</th>
+            <th className="px-2 py-2 text-right">{prevLabel}</th>
+            <th className="px-2 py-2 text-right">{currLabel}</th>
+            <th className="px-2 py-2 text-right">증감</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => {
+            const diff = r.cur - r.prv;
+            const pct = r.prv > 0 ? (diff / r.prv) * 100 : (r.cur > 0 ? 100 : 0);
+            const up = diff > 0, down = diff < 0;
+            const arrow = up ? '▲' : down ? '▼' : '–';
+            const cls = up ? 'text-emerald-600' : down ? 'text-red-600' : 'text-gray-400';
+            return (
+              <tr key={r.label} className="border-t">
+                <td className="px-3 py-2 text-gray-700 text-xs">{r.label}</td>
+                <td className="px-2 py-2 text-right text-gray-600">
+                  {prev ? Math.round(r.prv).toLocaleString() : <span className="text-gray-300">···</span>}
+                </td>
+                <td className="px-2 py-2 text-right font-bold text-gray-800">{Math.round(r.cur).toLocaleString()}</td>
+                <td className={`px-2 py-2 text-right text-xs font-semibold ${cls}`}>
+                  {prev ? (
+                    <>
+                      <span>{arrow}</span>
+                      <span className="ml-0.5">{Math.abs(pct).toFixed(1)}%</span>
+                    </>
+                  ) : (
+                    <span className="text-gray-300">···</span>
+                  )}
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      {!prev && (
+        <div className="px-4 py-3 text-center text-xs text-gray-400 border-t bg-slate-50">
+          {prevLabel} 데이터 불러오는 중...
         </div>
       )}
     </div>

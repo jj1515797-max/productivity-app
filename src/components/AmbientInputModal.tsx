@@ -12,6 +12,7 @@ export default function AmbientInputModal({
   const [selected, setSelected] = useState<string | null>(null);
   const [qty, setQty] = useState<number>(0);
   const [saving, setSaving] = useState(false);
+  const [search, setSearch] = useState('');
 
   useEffect(() => { if (open) setDate(defaultDate); }, [open, defaultDate]);
 
@@ -83,7 +84,23 @@ export default function AmbientInputModal({
                 onChange={(e) => e.target.value && setDate(e.target.value)}
                 className="border rounded px-3 py-1.5 text-sm"
               />
-              <span className="ml-auto text-sm text-gray-600">
+              <div className="relative flex-1 min-w-[220px]">
+                <input
+                  type="text"
+                  value={search}
+                  onChange={(e) => setSearch(e.target.value)}
+                  placeholder="🔍 품목 검색..."
+                  className="w-full border rounded px-3 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-orange-300"
+                />
+                {search && (
+                  <button
+                    onClick={() => setSearch('')}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 text-sm"
+                    aria-label="검색어 지우기"
+                  >×</button>
+                )}
+              </div>
+              <span className="text-sm text-gray-600 whitespace-nowrap">
                 <span className="font-semibold text-gray-800">{entries.length}</span>개 품목 / 총
                 <span className="font-bold text-orange-600 ml-1">{totalEntries.toLocaleString()}</span> EA
               </span>
@@ -120,14 +137,18 @@ export default function AmbientInputModal({
               <div className="text-sm font-semibold text-gray-700">제품 선택</div>
               {AMBIENT_CATEGORIES.map((cat) => {
                 const style = CATEGORY_STYLES[cat];
-                const list = grouped[cat] || [];
-                if (list.length === 0) return null;
+                const allList = grouped[cat] || [];
+                const list = search
+                  ? allList.filter((p) => p.name.toLowerCase().includes(search.toLowerCase()))
+                  : allList;
+                if (allList.length === 0) return null;
+                if (search && list.length === 0) return null;
                 return (
                   <div key={cat}>
                     <div className="flex items-center gap-2 mb-2">
                       <span className={`inline-block w-3 h-3 rounded-full ${style.chip}`} />
                       <span className="text-xs font-bold text-gray-600">{cat}</span>
-                      <span className="text-xs text-gray-400">({list.length})</span>
+                      <span className="text-xs text-gray-400">({list.length}{search && ` / ${allList.length}`})</span>
                     </div>
                     <div className="grid grid-cols-2 md:grid-cols-3 gap-2">
                       {list.map((p) => {
@@ -152,6 +173,14 @@ export default function AmbientInputModal({
                   </div>
                 );
               })}
+              {search && AMBIENT_CATEGORIES.every((cat) => {
+                const all = grouped[cat] || [];
+                return all.filter((p) => p.name.toLowerCase().includes(search.toLowerCase())).length === 0;
+              }) && (
+                <div className="text-center text-sm text-gray-400 py-8">
+                  '{search}' 검색 결과가 없습니다
+                </div>
+              )}
             </div>
           </div>
         </div>

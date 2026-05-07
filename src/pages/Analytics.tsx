@@ -4,6 +4,7 @@ import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
 import { loadViewDate, saveViewDate } from '../lib/viewDate';
 import type { AmbientEntry, Item } from '../types';
+import { AMBIENT_CATEGORIES, CATEGORY_STYLES, type AmbientCategory } from '../lib/ambientProducts';
 
 const MACHINES = ['1호기', '2호기', '3호기'] as const;
 
@@ -171,6 +172,57 @@ export default function AnalyticsDaily() {
           </div>
         )}
       </div>
+
+      {ambient.length > 0 && (
+        <div className="bg-white border rounded-lg overflow-hidden">
+          <div className="px-5 py-3 border-b bg-orange-50 font-semibold text-orange-800 flex items-center justify-between flex-wrap gap-2">
+            <span className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-orange-500" />
+              상온 생산
+            </span>
+            <span className="text-xs text-orange-700 font-medium">
+              {ambient.length}품목 / 총 {stats.ambientTotal.toLocaleString()} EA
+            </span>
+          </div>
+          <div className="p-4 space-y-4">
+            {AMBIENT_CATEGORIES.map((cat) => {
+              const list = ambient
+                .filter((a) => (a.category as AmbientCategory) === cat)
+                .sort((x, y) => (y.qty || 0) - (x.qty || 0));
+              if (list.length === 0) return null;
+              const style = CATEGORY_STYLES[cat];
+              const subtotal = list.reduce((s, a) => s + (a.qty || 0), 0);
+              return (
+                <div key={cat}>
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className={`inline-block w-2.5 h-2.5 rounded-full ${style.chip}`} />
+                    <span className="text-xs font-bold text-gray-700">{cat}</span>
+                    <span className="text-xs text-gray-400">({list.length})</span>
+                    <span className="ml-auto text-xs text-gray-600">
+                      소계 <span className="font-bold text-orange-700">{subtotal.toLocaleString()}</span> EA
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2">
+                    {list.map((a) => (
+                      <div
+                        key={a.productName}
+                        className={`px-3 py-2 rounded border ${style.soft} ${style.border} flex items-center justify-between`}
+                      >
+                        <span className="text-sm text-gray-800 truncate">
+                          {a.productName.replace(`${cat}_`, '').replace('순수본_', '')}
+                        </span>
+                        <span className="text-sm font-bold text-orange-700 ml-3 whitespace-nowrap">
+                          {(a.qty || 0).toLocaleString()} <span className="text-[10px] text-gray-500">EA</span>
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
