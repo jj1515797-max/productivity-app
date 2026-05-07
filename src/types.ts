@@ -33,3 +33,10 @@ export interface ExternalPackEntry {
   machine: '1호기' | '2호기' | '3호기';
   date: string;
 }
+
+export interface AmbientEntry {
+  productName: string;
+  category: string;
+  qty: number;
+  date: string;
+}

@@ -16,19 +16,26 @@ export default function App() {
     <div className="min-h-screen bg-gray-100 flex flex-col">
       <Header />
       <SubNav />
-      <main className="flex-1 max-w-screen-xl w-full mx-auto px-4 py-5">
-        <Routes>
-          <Route path="/" element={<Dashboard />} />
-          <Route path="/machine/:id" element={<Machine />} />
-          <Route path="/external/:id" element={<ExternalPack />} />
-          <Route path="/remaining" element={<Remaining />} />
-          <Route path="/report" element={<Report />} />
-          <Route path="/import" element={<Import />} />
-          <Route path="/analytics" element={<Analytics />} />
-          <Route path="/analytics/monthly" element={<AnalyticsMonthly />} />
-        </Routes>
-      </main>
+      <MainContainer />
     </div>
+  );
+}
+
+function MainContainer() {
+  const wide = useLocation().pathname.startsWith('/analytics/monthly');
+  return (
+    <main className={`flex-1 ${wide ? 'max-w-screen-2xl' : 'max-w-screen-xl'} w-full mx-auto px-4 py-5`}>
+      <Routes>
+        <Route path="/" element={<Dashboard />} />
+        <Route path="/machine/:id" element={<Machine />} />
+        <Route path="/external/:id" element={<ExternalPack />} />
+        <Route path="/remaining" element={<Remaining />} />
+        <Route path="/report" element={<Report />} />
+        <Route path="/import" element={<Import />} />
+        <Route path="/analytics" element={<Analytics />} />
+        <Route path="/analytics/monthly" element={<AnalyticsMonthly />} />
+      </Routes>
+    </main>
   );
 }
 

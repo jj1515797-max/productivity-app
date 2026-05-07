@@ -3,7 +3,7 @@ import { collection, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
 import { loadViewDate, saveViewDate } from '../lib/viewDate';
-import type { Item } from '../types';
+import type { AmbientEntry, Item } from '../types';
 
 const MACHINES = ['1호기', '2호기', '3호기'] as const;
 
@@ -37,6 +37,7 @@ export default function AnalyticsDaily() {
   const [machineQty, setMachineQty] = useState<Record<string, Record<string, number>>>({
     '1호기': {}, '2호기': {}, '3호기': {},
   });
+  const [ambient, setAmbient] = useState<AmbientEntry[]>([]);
 
   useEffect(() => {
     setItems([]);
@@ -44,6 +45,15 @@ export default function AnalyticsDaily() {
       const list: Item[] = [];
       snap.forEach((d) => list.push(d.data() as Item));
       setItems(list);
+    });
+  }, [viewDate]);
+
+  useEffect(() => {
+    setAmbient([]);
+    return onSnapshot(collection(db, 'days', viewDate, 'ambient'), (snap) => {
+      const list: AmbientEntry[] = [];
+      snap.forEach((d) => list.push(d.data() as AmbientEntry));
+      setAmbient(list);
     });
   }, [viewDate]);
 
@@ -75,8 +85,10 @@ export default function AnalyticsDaily() {
   }, [machineQty]);
 
   const stats = useMemo(() => {
-    const totalActual = items.reduce((s, i) => s + (actualByCode[i.code.toLowerCase()] || 0), 0);
-    const itemCount = items.length;
+    const coldActual = items.reduce((s, i) => s + (actualByCode[i.code.toLowerCase()] || 0), 0);
+    const ambientTotal = ambient.reduce((s, a) => s + (a.qty || 0), 0);
+    const totalActual = coldActual + ambientTotal;
+    const itemCount = items.length + ambient.length;
     const remaining = items.reduce((s, i) => {
       const a = actualByCode[i.code.toLowerCase()] || 0;
       const surplus = a - (i.totalQty || 0);
@@ -90,8 +102,8 @@ export default function AnalyticsDaily() {
     });
     const maxStage = Math.max(1, ...byStage.map((b) => b.total));
 
-    return { totalActual, itemCount, remaining, byStage, maxStage };
-  }, [items, actualByCode]);
+    return { totalActual, coldActual, ambientTotal, itemCount, remaining, byStage, maxStage };
+  }, [items, ambient, actualByCode]);
 
   return (
     <div className="space-y-5">
@@ -121,8 +133,12 @@ export default function AnalyticsDaily() {
         )}
       </div>
 
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
-        <BigCard label="총 생산(EA)" value={stats.totalActual.toLocaleString()} unit="EA" color="blue" />
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+        <BigCard label="총 생산(EA)" value={stats.totalActual.toLocaleString()} unit="EA" color="indigo" />
+        <BigCard label="냉장 생산" value={stats.coldActual.toLocaleString()} unit="EA" color="blue" />
+        <BigCard label="상온 생산" value={stats.ambientTotal.toLocaleString()} unit="EA" color="orange" />
+      </div>
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
         <BigCard label="품목수" value={stats.itemCount.toString()} unit="품목" color="green" />
         <BigCard label="생산성" value="-" unit="" color="orange" />
         <BigCard label="잔여량" value={stats.remaining.toLocaleString()} unit="EA" color="red" />
@@ -164,6 +180,7 @@ const colorMap = {
   green:  { border: 'border-green-500',  text: 'text-green-600' },
   orange: { border: 'border-orange-400', text: 'text-orange-500' },
   red:    { border: 'border-red-400',    text: 'text-red-500' },
+  indigo: { border: 'border-indigo-500', text: 'text-indigo-700' },
 };
 
 function BigCard({ label, value, unit, color }: {
