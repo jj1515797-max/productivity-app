@@ -53,11 +53,18 @@ export interface Member {
   leaveTo?: string;
 }
 
-export type AttendanceStatus = '출근' | '연차' | '반차' | '결혼반차' | '병가' | '경조사' | '휴무';
+export type AttendanceStatus = '출근' | '연차' | '반차' | '반반차' | '결혼반차' | '병가' | '경조사' | '휴무';
 
 export const ATTENDANCE_STATUSES: AttendanceStatus[] = [
-  '출근', '연차', '반차', '결혼반차', '병가', '경조사', '휴무',
+  '출근', '연차', '반차', '반반차', '결혼반차', '병가', '경조사', '휴무',
 ];
+
+/** 연차 환산 일수: 연차=1, 반차=0.5, 반반차=0.25, 결혼반차=0.5, 병가=1, 경조사=1 */
+export const LEAVE_DAY_WEIGHT: Record<AttendanceStatus, number> = {
+  출근: 0, 휴무: 0,
+  연차: 1, 반차: 0.5, 반반차: 0.25,
+  결혼반차: 0.5, 병가: 1, 경조사: 1,
+};
 
 export interface AttendanceRecord {
   memberId: string;
@@ -65,4 +72,10 @@ export interface AttendanceRecord {
   status: AttendanceStatus;
   date: string;
   note?: string;
+}
+
+export interface ProductSetting {
+  code: string;
+  type?: '냄비' | '바트' | null;
+  name?: string;
 }

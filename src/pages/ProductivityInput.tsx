@@ -1,8 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { doc, onSnapshot, setDoc } from 'firebase/firestore';
+import { collection, doc, onSnapshot, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
 import { loadViewDate, saveViewDate } from '../lib/viewDate';
+import type { AttendanceRecord, MachineEntry, Member, ProductSetting } from '../types';
+import { summarizeAttendance } from '../lib/attendance';
 
 type StageKey = 'bg' | 'ck' | 'fl' | 'pk';
 
@@ -61,12 +63,88 @@ export default function ProductivityInput() {
   const [showAdmin, setShowAdmin] = useState(false);
   const [savingFields, setSavingFields] = useState<Set<string>>(new Set());
 
+  // 자동 계산 데이터: 조직도 + 생산 entries + 제품 DB
+  const [members, setMembers] = useState<Member[]>([]);
+  const [attendRecords, setAttendRecords] = useState<Record<string, AttendanceRecord>>({});
+  const [entries, setEntries] = useState<MachineEntry[]>([]);
+  const [productSettings, setProductSettings] = useState<Record<string, ProductSetting>>({});
+
   useEffect(() => {
     setData({});
     return onSnapshot(doc(db, 'productivity', date), (snap) => {
       setData(snap.exists() ? (snap.data() as DayData) : {});
     });
   }, [date]);
+
+  useEffect(() => {
+    return onSnapshot(collection(db, 'members'), (snap) => {
+      const list: Member[] = [];
+      snap.forEach((d) => {
+        const data = d.data() as Member;
+        if (data.active !== false) list.push({ ...data, id: d.id });
+      });
+      setMembers(list);
+    });
+  }, []);
+
+  useEffect(() => {
+    setAttendRecords({});
+    return onSnapshot(collection(db, 'attendance', date, 'records'), (snap) => {
+      const map: Record<string, AttendanceRecord> = {};
+      snap.forEach((d) => { map[d.id] = d.data() as AttendanceRecord; });
+      setAttendRecords(map);
+    });
+  }, [date]);
+
+  useEffect(() => {
+    setEntries([]);
+    const machines = ['1호기', '2호기', '3호기'] as const;
+    const unsubs = machines.map((m) =>
+      onSnapshot(collection(db, 'days', date, 'machines', m, 'entries'), (snap) => {
+        setEntries((prev) => {
+          // 다른 호기 데이터를 지우고 이번 호기만 갱신하기 위해 키 분리 필요 — 간단히 호기별 dedupe
+          const others = prev.filter((e) => e.machine !== m);
+          const list: MachineEntry[] = [];
+          snap.forEach((d) => list.push(d.data() as MachineEntry));
+          return [...others, ...list];
+        });
+      })
+    );
+    return () => unsubs.forEach((u) => u());
+  }, [date]);
+
+  useEffect(() => {
+    return onSnapshot(collection(db, 'productSettings'), (snap) => {
+      const map: Record<string, ProductSetting> = {};
+      snap.forEach((d) => { map[d.id] = d.data() as ProductSetting; });
+      setProductSettings(map);
+    });
+  }, []);
+
+  // 자동 계산 결과
+  const attendanceSummary = useMemo(
+    () => summarizeAttendance(members, attendRecords, date),
+    [members, attendRecords, date]
+  );
+
+  const productionByType = useMemo(() => {
+    let pot = 0, bat = 0;
+    entries.forEach((e) => {
+      const code = e.code;
+      const setting = productSettings[code] || productSettings[code.toUpperCase()] || productSettings[code.toLowerCase()];
+      const qty = (e.actualProduction || 0) + (e.additionalProduction || 0);
+      if (setting?.type === '냄비') pot += qty;
+      else if (setting?.type === '바트') bat += qty;
+    });
+    return { pot, bat };
+  }, [entries, productSettings]);
+
+  const auto = {
+    attend: attendanceSummary.workforceN,
+    leave: attendanceSummary.leaveDays,
+    pot: productionByType.pot,
+    bat: productionByType.bat,
+  };
 
   const save = async (field: keyof DayData, value: any) => {
     setSavingFields((s) => new Set(s).add(field));
@@ -198,37 +276,49 @@ export default function ProductivityInput() {
         <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-sm overflow-hidden">
             <div className="px-5 py-4 border-b bg-gradient-to-r from-slate-50 to-gray-50 flex items-center justify-between">
-              <h3 className="font-bold text-gray-800 flex items-center gap-2">⚙️ 관리자 입력</h3>
+              <div>
+                <h3 className="font-bold text-gray-800 flex items-center gap-2">⚙️ 관리자 입력</h3>
+                <div className="text-[11px] text-gray-500 mt-0.5">조직도/생산 데이터에서 자동 계산됩니다 (필요시 수정)</div>
+              </div>
               <button onClick={() => setShowAdmin(false)} className="w-7 h-7 rounded-full hover:bg-gray-200 text-gray-500">×</button>
             </div>
             <div className="p-5 space-y-3">
-              <NumberRow
+              <AutoNumberRow
                 label="출근인원"
                 value={data.attend}
+                autoValue={auto.attend}
                 onSave={(v) => save('attend', v)}
                 saving={savingFields.has('attend')}
                 unit="명"
+                hint="총원 − 휴직 − 휴무"
               />
-              <NumberRow
+              <AutoNumberRow
                 label="연차"
                 value={data.leave}
+                autoValue={auto.leave}
                 onSave={(v) => save('leave', v)}
                 saving={savingFields.has('leave')}
                 unit="명"
+                allowDecimal
+                hint="연차 1·반차 0.5·반반차 0.25"
               />
-              <NumberRow
+              <AutoNumberRow
                 label="냄비 수량"
                 value={data.pot}
+                autoValue={auto.pot}
                 onSave={(v) => save('pot', v)}
                 saving={savingFields.has('pot')}
                 unit="개"
+                hint="제품DB 냄비 종 합계"
               />
-              <NumberRow
+              <AutoNumberRow
                 label="바트 수량"
                 value={data.bat}
+                autoValue={auto.bat}
                 onSave={(v) => save('bat', v)}
                 saving={savingFields.has('bat')}
                 unit="개"
+                hint="제품DB 바트 종 합계"
               />
             </div>
             <div className="px-5 py-3 border-t bg-slate-50">
@@ -240,6 +330,73 @@ export default function ProductivityInput() {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+function AutoNumberRow({
+  label, value, autoValue, onSave, saving, unit, hint, allowDecimal,
+}: {
+  label: string;
+  value?: number;
+  autoValue: number;
+  onSave: (v: number | null) => void;
+  saving: boolean;
+  unit: string;
+  hint?: string;
+  allowDecimal?: boolean;
+}) {
+  const overridden = value !== undefined && value !== null;
+  const displayed = overridden ? (value as number) : autoValue;
+  const [local, setLocal] = useState<string>(displayed !== undefined ? String(displayed) : '');
+  useEffect(() => {
+    setLocal(displayed !== undefined ? String(displayed) : '');
+  }, [displayed]);
+
+  const fmt = (v: number) => allowDecimal ? v.toString() : String(Math.round(v));
+
+  return (
+    <div className="space-y-1">
+      <div className="flex items-center justify-between gap-2">
+        <div className="flex items-baseline gap-2 flex-1 min-w-0">
+          <label className="font-semibold text-gray-700 text-sm">{label}</label>
+          {overridden ? (
+            <span className="text-[10px] text-orange-600 font-bold">수동</span>
+          ) : (
+            <span className="text-[10px] text-emerald-600 font-bold">자동</span>
+          )}
+        </div>
+        <div className="flex items-center gap-1.5">
+          <input
+            type="number"
+            inputMode={allowDecimal ? 'decimal' : 'numeric'}
+            step={allowDecimal ? '0.25' : '1'}
+            value={local}
+            onChange={(e) => setLocal(e.target.value)}
+            onBlur={() => {
+              if (local.trim() === '') { onSave(null); return; }
+              const v = Number(local);
+              if (!isNaN(v)) {
+                // 자동값과 같으면 override 제거
+                if (v === autoValue) onSave(null);
+                else onSave(v);
+              }
+            }}
+            className="w-24 border rounded-md px-3 py-2 text-base text-center font-bold focus:outline-none focus:ring-2 focus:ring-blue-300"
+          />
+          <span className="text-xs text-gray-500 w-6">{unit}</span>
+          <span className={`text-[10px] w-3 ${saving ? 'text-emerald-500' : 'text-transparent'}`}>●</span>
+        </div>
+      </div>
+      <div className="flex items-center justify-between text-[11px] text-gray-500 pl-1">
+        <span>{hint}</span>
+        {overridden && (
+          <button
+            onClick={() => { setLocal(fmt(autoValue)); onSave(null); }}
+            className="text-blue-600 hover:underline"
+          >자동값 ({fmt(autoValue)}{unit})으로 복원</button>
+        )}
+      </div>
     </div>
   );
 }
