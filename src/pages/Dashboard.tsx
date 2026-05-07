@@ -37,6 +37,7 @@ export default function Dashboard() {
     const day = new Date().getDay();
     return day === 0 || day === 6;
   });
+  const [hasSample, setHasSample] = useState(false);
 
   // 각 호기의 실제 생산량: { code: qty }
   const [machineQty, setMachineQty] = useState<Record<string, Record<string, number>>>({
@@ -102,7 +103,8 @@ export default function Dashboard() {
       return isNaN(n) ? 0 : n;
     };
 
-    const minCols = isWeekend ? 5 : 6;
+    const useSample = !isWeekend && hasSample;
+    const minCols = isWeekend ? 5 : (useSample ? 7 : 6);
     const rows = pasteText
       .split('\n')
       .map((r) => r.split('\t'))
@@ -114,7 +116,8 @@ export default function Dashboard() {
     setShowPaste(false);
 
     if (!rows.length) {
-      setTimeout(() => alert(`붙여넣을 데이터가 없습니다 (${isWeekend ? '주말' : '평일'} 모드: ${minCols}열 필요)\n\n붙여넣은 첫 줄: ${text.split('\n')[0]?.slice(0, 80) || '(비어있음)'}`), 50);
+      const modeLabel = isWeekend ? '주말' : (useSample ? '평일+샘플' : '평일');
+      setTimeout(() => alert(`붙여넣을 데이터가 없습니다 (${modeLabel} 모드: ${minCols}열 필요)\n\n붙여넣은 첫 줄: ${text.split('\n')[0]?.slice(0, 80) || '(비어있음)'}`), 50);
       return;
     }
 
@@ -122,13 +125,17 @@ export default function Dashboard() {
       const batch = writeBatch(db);
       for (const cols of rows) {
         const code = cols[0].trim();
+        const totalQty = isWeekend
+          ? num(cols[4])
+          : useSample ? num(cols[6]) : num(cols[5]);
         const item: Item = {
           id: code, code,
           name: cols[1]?.trim() || '',
           orderQty: num(cols[2]),
           coupang: num(cols[3]),
           marketKurly: isWeekend ? 0 : num(cols[4]),
-          totalQty: isWeekend ? num(cols[4]) : num(cols[5]),
+          sample: useSample ? num(cols[5]) : 0,
+          totalQty,
           actualProduction: 0,
           date: viewDate,
         };
@@ -148,6 +155,7 @@ export default function Dashboard() {
   };
 
   const hasKurly = items.some((i) => i.marketKurly > 0);
+  const hasSampleCol = items.some((i) => (i.sample || 0) > 0);
 
   return (
     <div className="space-y-5">
@@ -210,30 +218,55 @@ export default function Dashboard() {
             <h2 className="font-semibold text-gray-800">ERP 데이터 붙여넣기</h2>
             <button onClick={() => setShowPaste(false)} className="text-gray-400 hover:text-gray-600 text-lg">✕</button>
           </div>
-          <div className="flex items-center gap-2 bg-gray-50 rounded-md p-1 w-max">
-            <button
-              onClick={() => setIsWeekend(false)}
-              className={`px-4 py-1.5 text-sm rounded transition ${!isWeekend ? 'bg-blue-900 text-white font-medium' : 'text-gray-500 hover:text-gray-800'}`}
-            >
-              평일 (쿠팡+컬리)
-            </button>
-            <button
-              onClick={() => setIsWeekend(true)}
-              className={`px-4 py-1.5 text-sm rounded transition ${isWeekend ? 'bg-blue-900 text-white font-medium' : 'text-gray-500 hover:text-gray-800'}`}
-            >
-              주말 (쿠팡만)
-            </button>
+          <div className="flex items-center gap-3 flex-wrap">
+            <div className="flex items-center gap-2 bg-gray-50 rounded-md p-1 w-max">
+              <button
+                onClick={() => { setIsWeekend(false); }}
+                className={`px-4 py-1.5 text-sm rounded transition ${!isWeekend ? 'bg-blue-900 text-white font-medium' : 'text-gray-500 hover:text-gray-800'}`}
+              >
+                평일 (쿠팡+컬리)
+              </button>
+              <button
+                onClick={() => { setIsWeekend(true); setHasSample(false); }}
+                className={`px-4 py-1.5 text-sm rounded transition ${isWeekend ? 'bg-blue-900 text-white font-medium' : 'text-gray-500 hover:text-gray-800'}`}
+              >
+                주말 (쿠팡만)
+              </button>
+            </div>
+            {!isWeekend && (
+              <label
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-md border cursor-pointer select-none transition ${
+                  hasSample ? 'bg-amber-50 border-amber-300' : 'border-gray-200 hover:bg-gray-50'
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={hasSample}
+                  onChange={(e) => setHasSample(e.target.checked)}
+                  className="w-4 h-4"
+                />
+                <span className={`text-sm font-medium ${hasSample ? 'text-amber-700' : 'text-gray-600'}`}>
+                  샘플 포함 (7열)
+                </span>
+              </label>
+            )}
           </div>
           <p className="text-xs text-gray-500">
             열 순서: {isWeekend
               ? '코드 / 품목명 / 주문수량 / 쿠팡 / 총수량 (5열)'
-              : '코드 / 품목명 / 주문수량 / 쿠팡 / 마켓컬리 / 총수량 (6열)'}
+              : (hasSample
+                ? '코드 / 품목명 / 주문수량 / 쿠팡 / 마켓컬리 / 샘플 / 총수량 (7열)'
+                : '코드 / 품목명 / 주문수량 / 쿠팡 / 마켓컬리 / 총수량 (6열)')}
           </p>
           <textarea
             value={pasteText}
             onChange={(e) => setPasteText(e.target.value)}
             className="w-full h-40 border border-gray-200 rounded-md p-3 font-mono text-xs resize-none focus:outline-none focus:ring-2 focus:ring-blue-900"
-            placeholder={isWeekend ? 'A01\t순수쌀미음\t17\t-\t17' : 'A01\t순수쌀미음\t17\t-\t-\t17'}
+            placeholder={isWeekend
+              ? 'A01\t순수쌀미음\t17\t-\t17'
+              : (hasSample
+                ? 'A01\t순수쌀미음\t17\t-\t-\t2\t19'
+                : 'A01\t순수쌀미음\t17\t-\t-\t17')}
           />
           <div className="flex gap-2">
             <button onClick={onPaste} className="bg-blue-900 text-white px-5 py-2 rounded text-sm font-medium hover:bg-blue-800 transition">
@@ -262,6 +295,7 @@ export default function Dashboard() {
                   <th className="px-4 py-3 text-right font-medium">주문수량</th>
                   <th className="px-4 py-3 text-right font-medium text-orange-600">쿠팡</th>
                   {hasKurly && <th className="px-4 py-3 text-right font-medium text-blue-600">마켓컬리</th>}
+                  {hasSampleCol && <th className="px-4 py-3 text-right font-medium text-amber-600">샘플</th>}
                   <th className="px-4 py-3 text-right font-medium">총수량</th>
                   <th className="px-4 py-3 text-right font-medium">실제 생산량</th>
                   <th className="px-4 py-3 text-right font-medium">±</th>
@@ -284,6 +318,7 @@ export default function Dashboard() {
                       <td className="px-4 py-3 text-right text-gray-600">{it.orderQty || '-'}</td>
                       <td className="px-4 py-3 text-right text-orange-600 font-medium">{it.coupang || '-'}</td>
                       {hasKurly && <td className="px-4 py-3 text-right text-blue-600 font-medium">{it.marketKurly || '-'}</td>}
+                      {hasSampleCol && <td className="px-4 py-3 text-right text-amber-600 font-medium">{it.sample || '-'}</td>}
                       <td className="px-4 py-3 text-right font-semibold text-gray-800">{it.totalQty}</td>
                       <td className="px-4 py-3 text-right text-gray-700 font-medium">{actual || '-'}</td>
                       <td className={`px-4 py-3 text-right font-bold ${diff > 0 ? 'text-green-600' : diff < 0 ? 'text-red-500' : 'text-gray-400'}`}>

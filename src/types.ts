@@ -5,6 +5,7 @@ export interface Item {
   orderQty: number;
   coupang: number;
   marketKurly: number;
+  sample?: number;
   totalQty: number;
   actualProduction: number;
   coolingEndTime?: string;
