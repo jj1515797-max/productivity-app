@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useState } from 'react';
-import { collectionGroup, getDocs, query, where } from 'firebase/firestore';
+import { collection, collectionGroup, getDocs, query, where } from 'firebase/firestore';
 import { db } from '../firebase';
 import type { AmbientEntry, Item, MachineEntry } from '../types';
 import AmbientInputModal from '../components/AmbientInputModal';
+import LogisticsInputModal from '../components/LogisticsInputModal';
 import { todayKey } from '../lib/dateUtil';
 
 const MACHINES: MachineEntry['machine'][] = ['1호기', '2호기', '3호기'];
@@ -22,6 +23,18 @@ function prevMonths(month: string, count: number): string[] {
   });
 }
 
+async function fetchMonthLogistics(month: string): Promise<number> {
+  const [yy, mm] = month.split('-').map(Number);
+  const lastDay = new Date(yy, mm, 0).getDate();
+  const dates = Array.from({ length: lastDay }, (_, i) => `${month}-${String(i + 1).padStart(2, '0')}`);
+  const snaps = await Promise.all(
+    dates.map((d) => getDocs(collection(db, 'days', d, 'logistics')))
+  );
+  let total = 0;
+  snaps.forEach((s) => s.forEach((d) => { total += (d.data().qty as number) || 0; }));
+  return total;
+}
+
 type MonthStats = {
   daysWorked: number;
   totalAvg: number;
@@ -31,14 +44,28 @@ type MonthStats = {
   total: number;
   coldTotal: number;
   ambientTotal: number;
+  logisticsTotal: number;
 };
 
-function computeMonthStats(entries: MachineEntry[], ambient: AmbientEntry[]): MonthStats {
+function computeMonthStats(
+  entries: MachineEntry[],
+  ambient: AmbientEntry[],
+  logisticsTotal: number = 0,
+  limitDays?: number,
+): MonthStats {
   const qty = (e: MachineEntry) => (e.actualProduction || 0) + (e.additionalProduction || 0);
+  let useEntries = entries;
+  let useAmbient = ambient;
+  if (limitDays !== undefined) {
+    const allDates = Array.from(new Set([...entries.map((e) => e.date), ...ambient.map((a) => a.date)])).sort();
+    const allowed = new Set(allDates.slice(0, limitDays));
+    useEntries = entries.filter((e) => allowed.has(e.date));
+    useAmbient = ambient.filter((a) => allowed.has(a.date));
+  }
   const coldByDay: Record<string, number> = {};
-  entries.forEach((e) => { coldByDay[e.date] = (coldByDay[e.date] || 0) + qty(e); });
+  useEntries.forEach((e) => { coldByDay[e.date] = (coldByDay[e.date] || 0) + qty(e); });
   const ambByDay: Record<string, number> = {};
-  ambient.forEach((a) => { ambByDay[a.date] = (ambByDay[a.date] || 0) + (a.qty || 0); });
+  useAmbient.forEach((a) => { ambByDay[a.date] = (ambByDay[a.date] || 0) + (a.qty || 0); });
   const allDays = new Set([...Object.keys(coldByDay), ...Object.keys(ambByDay)]);
   const coldTotal = Object.values(coldByDay).reduce((s, v) => s + v, 0);
   const ambientTotal = Object.values(ambByDay).reduce((s, v) => s + v, 0);
@@ -48,11 +75,11 @@ function computeMonthStats(entries: MachineEntry[], ambient: AmbientEntry[]): Mo
   const ambDaysN = Object.keys(ambByDay).length;
 
   const itemsByDay: Record<string, Set<string>> = {};
-  entries.forEach((e) => {
+  useEntries.forEach((e) => {
     if (!itemsByDay[e.date]) itemsByDay[e.date] = new Set();
     itemsByDay[e.date].add(`c:${e.code.toLowerCase()}`);
   });
-  ambient.forEach((a) => {
+  useAmbient.forEach((a) => {
     if (!itemsByDay[a.date]) itemsByDay[a.date] = new Set();
     itemsByDay[a.date].add(`a:${a.productName}`);
   });
@@ -66,6 +93,7 @@ function computeMonthStats(entries: MachineEntry[], ambient: AmbientEntry[]): Mo
     ambientAvg: ambDaysN ? ambientTotal / ambDaysN : 0,
     itemsAvgPerDay,
     total, coldTotal, ambientTotal,
+    logisticsTotal,
   };
 }
 
@@ -73,12 +101,15 @@ export default function AnalyticsMonthly() {
   const [month, setMonth] = useState(thisMonth());
   const [entries, setEntries] = useState<MachineEntry[]>([]);
   const [ambient, setAmbient] = useState<AmbientEntry[]>([]);
+  const [logisticsTotal, setLogisticsTotal] = useState<number>(0);
   const [nameMap, setNameMap] = useState<Map<string, string>>(new Map());
   const [prev3Avg, setPrev3Avg] = useState<number>(0);
-  const [prevMonthStats, setPrevMonthStats] = useState<MonthStats | null>(null);
+  const [prevMonthData, setPrevMonthData] = useState<{ entries: MachineEntry[]; ambient: AmbientEntry[]; logisticsTotal: number } | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [modalOpen, setModalOpen] = useState(false);
+  const [ambientModalOpen, setAmbientModalOpen] = useState(false);
+  const [logisticsModalOpen, setLogisticsModalOpen] = useState(false);
+  const [compareMode, setCompareMode] = useState<'full' | 'sameDays'>('full');
 
   useEffect(() => {
     let cancelled = false;
@@ -111,8 +142,14 @@ export default function AnalyticsMonthly() {
         if (!cancelled) setLoading(false);
       });
 
+    // logistics는 collectionGroup에 date 필드가 없을 수 있어서 일별로 가져와야 함.
+    // 월별 일자 별로 logistics 합산을 계산
+    fetchMonthLogistics(month).then((total) => {
+      if (!cancelled) setLogisticsTotal(total);
+    }).catch(() => {});
+
     // 직전 3개월 평균 + 전월 통계 백그라운드 fetch
-    setPrevMonthStats(null);
+    setPrevMonthData(null);
     const prevMs = prevMonths(month, 3);
     Promise.all(
       prevMs.flatMap((pm) => [
@@ -120,7 +157,7 @@ export default function AnalyticsMonthly() {
         getDocs(query(collectionGroup(db, 'ambient'), where('date', '>=', `${pm}-01`), where('date', '<=', `${pm}-31`))),
       ])
     )
-      .then((snaps) => {
+      .then(async (snaps) => {
         if (cancelled) return;
         const monthAvgs: number[] = [];
         for (let i = 0; i < prevMs.length; i++) {
@@ -128,7 +165,11 @@ export default function AnalyticsMonthly() {
           const ambs = snaps[i * 2 + 1].docs.map((d) => d.data() as AmbientEntry);
           const ms = computeMonthStats(ents, ambs);
           if (ms.daysWorked > 0) monthAvgs.push(ms.totalAvg);
-          if (i === 0) setPrevMonthStats(ms);
+          if (i === 0) {
+            const prevLog = await fetchMonthLogistics(prevMs[0]).catch(() => 0);
+            if (cancelled) return;
+            setPrevMonthData({ entries: ents, ambient: ambs, logisticsTotal: prevLog });
+          }
         }
         setPrev3Avg(monthAvgs.length ? monthAvgs.reduce((s, a) => s + a, 0) / monthAvgs.length : 0);
       })
@@ -203,14 +244,17 @@ export default function AnalyticsMonthly() {
       .sort((a, b) => b.total - a.total)
       .slice(0, 10);
 
+    // 잔여량 비율 = 잔여량(logistics) / 냉장 생산량 (잔여량은 생산량에 포함됨)
+    const remainingRatio = coldTotal > 0 ? (logisticsTotal / coldTotal) * 100 : 0;
+
     return {
-      total, coldTotal, ambientTotal,
+      total, coldTotal, ambientTotal, logisticsTotal,
       daysWorked, coldDays, ambientDays,
       avgPerDay, coldAvg, ambientAvg,
-      avgItemsPerDay,
+      avgItemsPerDay, remainingRatio,
       byMachine, allDays, topCodes,
     };
-  }, [entries, ambient, nameMap, month]);
+  }, [entries, ambient, nameMap, month, logisticsTotal]);
 
   const shiftMonth = (delta: number) => {
     const [y, m] = month.split('-').map(Number);
@@ -245,12 +289,20 @@ export default function AnalyticsMonthly() {
         />
         {loading && <span className="text-sm text-gray-500">불러오는 중...</span>}
         {err && <span className="text-sm text-red-500">에러: {err}</span>}
-        <button
-          onClick={() => setModalOpen(true)}
-          className="ml-auto px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white rounded-md font-medium text-sm shadow-sm flex items-center gap-2"
-        >
-          <span className="w-2 h-2 rounded-full bg-white" /> 상온 입력
-        </button>
+        <div className="ml-auto flex items-center gap-2">
+          <button
+            onClick={() => setLogisticsModalOpen(true)}
+            className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-md font-medium text-sm shadow-sm flex items-center gap-2"
+          >
+            <span className="w-2 h-2 rounded-full bg-white" /> 잔여량 입력
+          </button>
+          <button
+            onClick={() => setAmbientModalOpen(true)}
+            className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white rounded-md font-medium text-sm shadow-sm flex items-center gap-2"
+          >
+            <span className="w-2 h-2 rounded-full bg-white" /> 상온 입력
+          </button>
+        </div>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -262,10 +314,30 @@ export default function AnalyticsMonthly() {
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <Card label="일평균 생산량" value={Math.round(stats.avgPerDay).toLocaleString()} unit="EA" color="purple" sub="냉장 + 상온" />
-        <Card label="냉장 일평균" value={Math.round(stats.coldAvg).toLocaleString()} unit="EA" color="blue" />
+        <Card label="잔여량 비율" value={stats.remainingRatio.toFixed(2)} unit="%" color="rose" sub={`잔여 ${stats.logisticsTotal.toLocaleString()} / 냉장 ${stats.coldTotal.toLocaleString()}`} />
         <Card label="상온 일평균" value={Math.round(stats.ambientAvg).toLocaleString()} unit="EA" color="orange" />
-        <Card label="일별 평균 품목 수" value={Math.round(stats.avgItemsPerDay).toLocaleString()} unit="개" color="rose" />
+        <Card label="일별 평균 품목 수" value={Math.round(stats.avgItemsPerDay).toLocaleString()} unit="개" color="teal" />
       </div>
+
+      {/* Top 5 - 차트 위 */}
+      {stats.topCodes.length > 0 && (
+        <div className="bg-white border rounded-lg overflow-hidden">
+          <div className="px-5 py-3 border-b bg-slate-50 font-semibold text-gray-800 text-sm flex items-center justify-between">
+            <span>상위 생산 품목 <span className="text-xs text-gray-500 font-normal">(Top 5 · 냉장)</span></span>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-5 divide-x divide-gray-100">
+            {stats.topCodes.slice(0, 5).map((row, i) => (
+              <div key={row.code} className="p-4 text-center">
+                <div className="text-[11px] font-bold text-gray-400 mb-1">{i + 1}위</div>
+                <div className="font-mono text-[11px] text-gray-500">{row.code}</div>
+                <div className="text-sm font-medium mt-1 text-gray-800 truncate" title={row.name}>{row.name || '-'}</div>
+                <div className="text-xl font-bold text-blue-700 mt-2">{row.total.toLocaleString()}</div>
+                <div className="text-[10px] text-gray-400 mt-0.5">EA</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       <DailyChart
         monthLabel={monthLabel}
@@ -276,72 +348,46 @@ export default function AnalyticsMonthly() {
 
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
         {/* 호기별 생산량 (냉장) */}
-        <div className="lg:col-span-3 bg-white border rounded-lg overflow-hidden flex flex-col">
+        <div className="lg:col-span-5 bg-white border rounded-lg overflow-hidden flex flex-col">
           <div className="px-4 py-3 border-b bg-slate-50 font-semibold text-gray-800 text-sm">
             호기별 생산량 <span className="text-xs text-gray-500 font-normal">(냉장)</span>
           </div>
           <table className="w-full text-sm">
             <thead className="bg-gray-50 text-xs text-gray-500">
               <tr>
-                <th className="px-3 py-2 text-left">호기</th>
-                <th className="px-3 py-2 text-right">생산량</th>
-                <th className="px-3 py-2 text-right">비율</th>
+                <th className="px-4 py-2 text-left">호기</th>
+                <th className="px-4 py-2 text-right">생산량</th>
+                <th className="px-4 py-2 text-right">입력 건수</th>
+                <th className="px-4 py-2 text-right">비율</th>
               </tr>
             </thead>
             <tbody>
               {stats.byMachine.map((row) => (
                 <tr key={row.machine} className="border-t">
-                  <td className="px-3 py-2 font-medium">{row.machine}</td>
-                  <td className="px-3 py-2 text-right font-bold">{row.total.toLocaleString()}</td>
-                  <td className="px-3 py-2 text-right text-gray-600 text-xs">
+                  <td className="px-4 py-2 font-medium">{row.machine}</td>
+                  <td className="px-4 py-2 text-right font-bold">{row.total.toLocaleString()}</td>
+                  <td className="px-4 py-2 text-right text-gray-600 text-xs">{row.count}</td>
+                  <td className="px-4 py-2 text-right text-gray-600 text-xs">
                     {stats.coldTotal ? `${((row.total / stats.coldTotal) * 100).toFixed(1)}%` : '-'}
                   </td>
                 </tr>
               ))}
               <tr className="border-t bg-slate-50">
-                <td className="px-3 py-2 font-semibold text-gray-700">합계</td>
-                <td className="px-3 py-2 text-right font-bold text-blue-700">{stats.coldTotal.toLocaleString()}</td>
-                <td className="px-3 py-2"></td>
+                <td className="px-4 py-2 font-semibold text-gray-700">합계</td>
+                <td className="px-4 py-2 text-right font-bold text-blue-700">{stats.coldTotal.toLocaleString()}</td>
+                <td className="px-4 py-2 text-right text-xs text-gray-600">{stats.byMachine.reduce((s, r) => s + r.count, 0)}</td>
+                <td className="px-4 py-2 text-right text-xs text-gray-500">100%</td>
               </tr>
             </tbody>
           </table>
         </div>
 
-        {/* Top 10 */}
-        <div className="lg:col-span-5 bg-white border rounded-lg overflow-hidden flex flex-col">
-          <div className="px-4 py-3 border-b bg-slate-50 font-semibold text-gray-800 text-sm">
-            상위 생산 품목 (Top 10) <span className="text-xs text-gray-500 font-normal">· 냉장</span>
-          </div>
-          {stats.topCodes.length === 0 ? (
-            <div className="p-12 text-center text-gray-400 text-sm">데이터 없음</div>
-          ) : (
-            <table className="w-full text-sm">
-              <thead className="bg-gray-50 text-xs text-gray-500">
-                <tr>
-                  <th className="px-3 py-2 text-left w-10">순위</th>
-                  <th className="px-3 py-2 text-left w-20">코드</th>
-                  <th className="px-3 py-2 text-left">품목명</th>
-                  <th className="px-3 py-2 text-right w-24">총 생산량</th>
-                </tr>
-              </thead>
-              <tbody>
-                {stats.topCodes.map((row, i) => (
-                  <tr key={row.code} className="border-t">
-                    <td className="px-3 py-2 font-bold text-gray-500">{i + 1}</td>
-                    <td className="px-3 py-2 font-mono text-xs">{row.code}</td>
-                    <td className="px-3 py-2">{row.name || '-'}</td>
-                    <td className="px-3 py-2 text-right font-bold">{row.total.toLocaleString()}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-        </div>
-
         {/* 전월 비교 */}
-        <div className="lg:col-span-4">
+        <div className="lg:col-span-7">
           <PrevMonthCompare
             month={month}
+            mode={compareMode}
+            onModeChange={setCompareMode}
             current={{
               daysWorked: stats.daysWorked,
               totalAvg: stats.avgPerDay,
@@ -351,15 +397,21 @@ export default function AnalyticsMonthly() {
               total: stats.total,
               coldTotal: stats.coldTotal,
               ambientTotal: stats.ambientTotal,
+              logisticsTotal: stats.logisticsTotal,
             }}
-            prev={prevMonthStats}
+            prevData={prevMonthData}
           />
         </div>
       </div>
 
       <AmbientInputModal
-        open={modalOpen}
-        onClose={() => setModalOpen(false)}
+        open={ambientModalOpen}
+        onClose={() => setAmbientModalOpen(false)}
+        defaultDate={defaultModalDate}
+      />
+      <LogisticsInputModal
+        open={logisticsModalOpen}
+        onClose={() => setLogisticsModalOpen(false)}
         defaultDate={defaultModalDate}
       />
     </div>
@@ -554,11 +606,13 @@ function DailyChart({
 }
 
 function PrevMonthCompare({
-  month, current, prev,
+  month, mode, onModeChange, current, prevData,
 }: {
   month: string;
+  mode: 'full' | 'sameDays';
+  onModeChange: (m: 'full' | 'sameDays') => void;
   current: MonthStats;
-  prev: MonthStats | null;
+  prevData: { entries: MachineEntry[]; ambient: AmbientEntry[]; logisticsTotal: number } | null;
 }) {
   const [y, m] = month.split('-').map(Number);
   const prevDate = new Date(y, m - 2, 1);
@@ -568,34 +622,68 @@ function PrevMonthCompare({
   const today = new Date();
   const isCurrentMonth = today.getFullYear() === y && today.getMonth() + 1 === m;
 
-  const rows: { label: string; cur: number; prv: number; unit: string }[] = [
-    { label: '일평균 생산량', cur: current.totalAvg, prv: prev?.totalAvg || 0, unit: 'EA' },
-    { label: '냉장 일평균', cur: current.coldAvg, prv: prev?.coldAvg || 0, unit: 'EA' },
-    { label: '상온 일평균', cur: current.ambientAvg, prv: prev?.ambientAvg || 0, unit: 'EA' },
-    { label: '일별 평균 품목수', cur: current.itemsAvgPerDay, prv: prev?.itemsAvgPerDay || 0, unit: '개' },
-    { label: '작업일 수', cur: current.daysWorked, prv: prev?.daysWorked || 0, unit: '일' },
-  ];
+  const prev: MonthStats | null = useMemo(() => {
+    if (!prevData) return null;
+    if (mode === 'full') {
+      return computeMonthStats(prevData.entries, prevData.ambient, prevData.logisticsTotal);
+    }
+    // sameDays: 전월의 첫 N개 작업일만으로 계산
+    return computeMonthStats(prevData.entries, prevData.ambient, prevData.logisticsTotal, current.daysWorked);
+  }, [prevData, mode, current.daysWorked]);
+
+  const rows: { label: string; cur: number; prv: number; unit: string; bold?: boolean }[] = mode === 'full'
+    ? [
+        { label: '총 생산량', cur: current.total, prv: prev?.total || 0, unit: 'EA', bold: true },
+        { label: '냉장 생산량', cur: current.coldTotal, prv: prev?.coldTotal || 0, unit: 'EA' },
+        { label: '상온 생산량', cur: current.ambientTotal, prv: prev?.ambientTotal || 0, unit: 'EA' },
+        { label: '일평균 생산량', cur: current.totalAvg, prv: prev?.totalAvg || 0, unit: 'EA' },
+        { label: '일별 평균 품목수', cur: current.itemsAvgPerDay, prv: prev?.itemsAvgPerDay || 0, unit: '개' },
+        { label: '작업일 수', cur: current.daysWorked, prv: prev?.daysWorked || 0, unit: '일' },
+      ]
+    : [
+        { label: '총 생산량', cur: current.total, prv: prev?.total || 0, unit: 'EA', bold: true },
+        { label: '냉장 생산량', cur: current.coldTotal, prv: prev?.coldTotal || 0, unit: 'EA' },
+        { label: '상온 생산량', cur: current.ambientTotal, prv: prev?.ambientTotal || 0, unit: 'EA' },
+        { label: '일평균 생산량', cur: current.totalAvg, prv: prev?.totalAvg || 0, unit: 'EA' },
+        { label: '일별 평균 품목수', cur: current.itemsAvgPerDay, prv: prev?.itemsAvgPerDay || 0, unit: '개' },
+      ];
 
   return (
     <div className="bg-white border rounded-lg overflow-hidden h-full flex flex-col">
-      <div className="px-4 py-3 border-b bg-amber-50 flex items-center justify-between flex-wrap gap-1">
-        <div>
-          <div className="font-semibold text-gray-800 text-sm">전월 비교</div>
-          <div className="text-[11px] text-amber-700 mt-0.5">일평균 기준 (작업일수 보정)</div>
-        </div>
+      <div className="px-4 py-3 border-b bg-amber-50 flex items-center justify-between flex-wrap gap-2">
+        <div className="font-semibold text-gray-800 text-sm">전월 비교</div>
         {isCurrentMonth && (
           <span className="text-[10px] px-2 py-0.5 rounded-full bg-amber-200 text-amber-800 font-medium">
-            진행중
+            진행중 ({current.daysWorked}일)
           </span>
         )}
+      </div>
+      <div className="px-4 pt-3 pb-1 border-b bg-white flex items-center gap-1">
+        <button
+          onClick={() => onModeChange('full')}
+          className={`px-3 py-1.5 text-xs rounded font-medium ${
+            mode === 'full' ? 'bg-amber-500 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+          }`}
+        >📅 월 전체</button>
+        <button
+          onClick={() => onModeChange('sameDays')}
+          className={`px-3 py-1.5 text-xs rounded font-medium ${
+            mode === 'sameDays' ? 'bg-amber-500 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'
+          }`}
+        >⚖️ 동일 작업일수</button>
+        <span className="ml-2 text-[11px] text-gray-500">
+          {mode === 'full'
+            ? '월 누계 비교 (현재월은 진행 중)'
+            : `전월의 첫 ${current.daysWorked}일과 비교`}
+        </span>
       </div>
       <table className="w-full text-sm">
         <thead className="bg-gray-50 text-[11px] text-gray-500">
           <tr>
             <th className="px-3 py-2 text-left">항목</th>
-            <th className="px-2 py-2 text-right">{prevLabel}</th>
-            <th className="px-2 py-2 text-right">{currLabel}</th>
-            <th className="px-2 py-2 text-right">증감</th>
+            <th className="px-3 py-2 text-right">{prevLabel}</th>
+            <th className="px-3 py-2 text-right">{currLabel}</th>
+            <th className="px-3 py-2 text-right">증감</th>
           </tr>
         </thead>
         <tbody>
@@ -606,18 +694,17 @@ function PrevMonthCompare({
             const arrow = up ? '▲' : down ? '▼' : '–';
             const cls = up ? 'text-emerald-600' : down ? 'text-red-600' : 'text-gray-400';
             return (
-              <tr key={r.label} className="border-t">
-                <td className="px-3 py-2 text-gray-700 text-xs">{r.label}</td>
-                <td className="px-2 py-2 text-right text-gray-600">
+              <tr key={r.label} className={`border-t ${r.bold ? 'bg-slate-50/60' : ''}`}>
+                <td className={`px-3 py-2 text-gray-700 text-xs ${r.bold ? 'font-bold' : ''}`}>{r.label}</td>
+                <td className="px-3 py-2 text-right text-gray-600">
                   {prev ? Math.round(r.prv).toLocaleString() : <span className="text-gray-300">···</span>}
                 </td>
-                <td className="px-2 py-2 text-right font-bold text-gray-800">{Math.round(r.cur).toLocaleString()}</td>
-                <td className={`px-2 py-2 text-right text-xs font-semibold ${cls}`}>
+                <td className={`px-3 py-2 text-right font-bold text-gray-800 ${r.bold ? 'text-base' : ''}`}>
+                  {Math.round(r.cur).toLocaleString()}
+                </td>
+                <td className={`px-3 py-2 text-right text-xs font-semibold ${cls}`}>
                   {prev ? (
-                    <>
-                      <span>{arrow}</span>
-                      <span className="ml-0.5">{Math.abs(pct).toFixed(1)}%</span>
-                    </>
+                    <><span>{arrow}</span><span className="ml-0.5">{Math.abs(pct).toFixed(1)}%</span></>
                   ) : (
                     <span className="text-gray-300">···</span>
                   )}
@@ -643,6 +730,7 @@ const COLOR_MAP = {
   orange: 'border-orange-500 text-orange-700',
   rose:   'border-rose-500 text-rose-700',
   indigo: 'border-indigo-500 text-indigo-700',
+  teal:   'border-teal-500 text-teal-700',
 } as const;
 
 function Card({

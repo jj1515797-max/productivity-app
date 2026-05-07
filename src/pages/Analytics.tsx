@@ -8,11 +8,23 @@ import { AMBIENT_CATEGORIES, CATEGORY_STYLES, type AmbientCategory } from '../li
 
 const MACHINES = ['1호기', '2호기', '3호기'] as const;
 
-const STAGE_LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I'];
+const STAGE_LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'F500', 'G', 'H', 'I'];
 const STAGE_COLOR = [
   'bg-blue-500', 'bg-green-500', 'bg-orange-500', 'bg-purple-500',
-  'bg-pink-500', 'bg-teal-500', 'bg-amber-500', 'bg-rose-500', 'bg-indigo-500',
+  'bg-pink-500', 'bg-teal-500', 'bg-cyan-500', 'bg-amber-500', 'bg-rose-500', 'bg-indigo-500',
 ];
+
+function getStage(code: string): string | null {
+  const m = code.match(/^([A-Za-z])(\d+)/);
+  if (!m) {
+    const c = code.charAt(0).toUpperCase();
+    return STAGE_LETTERS.includes(c) ? c : null;
+  }
+  const letter = m[1].toUpperCase();
+  const num = parseInt(m[2], 10);
+  if (letter === 'F') return num >= 500 ? 'F500' : 'F';
+  return letter;
+}
 
 function shiftDate(dateStr: string, delta: number): string {
   const [y, m, d] = dateStr.split('-').map(Number);
@@ -97,7 +109,7 @@ export default function AnalyticsDaily() {
     }, 0);
 
     const byStage = STAGE_LETTERS.map((letter, idx) => {
-      const stageItems = items.filter((it) => it.code.charAt(0).toUpperCase() === letter);
+      const stageItems = items.filter((it) => getStage(it.code) === letter);
       const total = stageItems.reduce((sum, it) => sum + (actualByCode[it.code.toLowerCase()] || 0), 0);
       return { letter, color: STAGE_COLOR[idx], total, count: stageItems.length };
     });
@@ -143,34 +155,6 @@ export default function AnalyticsDaily() {
         <BigCard label="품목수" value={stats.itemCount.toString()} unit="품목" color="green" />
         <BigCard label="생산성" value="-" unit="" color="orange" />
         <BigCard label="잔여량" value={stats.remaining.toLocaleString()} unit="EA" color="red" />
-      </div>
-
-      <div className="bg-white border rounded-lg overflow-hidden">
-        <div className="px-5 py-3 border-b bg-slate-50 font-semibold text-gray-800">단계별 생산량</div>
-        {stats.itemCount === 0 ? (
-          <div className="p-12 text-center text-gray-400 text-sm">선택한 날짜에 생산 데이터가 없습니다</div>
-        ) : (
-          <div className="p-5 space-y-3">
-            {stats.byStage.map((s) => (
-              <div key={s.letter} className="flex items-center gap-3">
-                <div className="w-14 flex items-center justify-center">
-                  <span className="w-8 h-8 flex items-center justify-center rounded-full bg-gray-100 text-gray-700 text-sm font-bold">{s.letter}</span>
-                </div>
-                <div className="flex-1 bg-gray-100 rounded h-7 overflow-hidden">
-                  <div
-                    className={`${s.color} h-full transition-all`}
-                    style={{ width: `${(s.total / stats.maxStage) * 100}%` }}
-                  />
-                </div>
-                <div className="w-36 text-right">
-                  <span className="font-bold text-gray-800">{s.total.toLocaleString()}</span>
-                  <span className="text-xs text-gray-500 ml-1">EA</span>
-                  <span className="text-xs text-gray-400 ml-2">({s.count}품목)</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
       </div>
 
       {ambient.length > 0 && (
@@ -223,6 +207,34 @@ export default function AnalyticsDaily() {
           </div>
         </div>
       )}
+
+      <div className="bg-white border rounded-lg overflow-hidden">
+        <div className="px-5 py-3 border-b bg-slate-50 font-semibold text-gray-800">단계별 생산량</div>
+        {stats.itemCount === 0 ? (
+          <div className="p-12 text-center text-gray-400 text-sm">선택한 날짜에 생산 데이터가 없습니다</div>
+        ) : (
+          <div className="p-5 space-y-3">
+            {stats.byStage.map((s) => (
+              <div key={s.letter} className="flex items-center gap-3">
+                <div className="w-14 flex items-center justify-center">
+                  <span className="px-2 h-8 min-w-8 flex items-center justify-center rounded-full bg-gray-100 text-gray-700 text-xs font-bold">{s.letter}</span>
+                </div>
+                <div className="flex-1 bg-gray-100 rounded h-7 overflow-hidden">
+                  <div
+                    className={`${s.color} h-full transition-all`}
+                    style={{ width: `${(s.total / stats.maxStage) * 100}%` }}
+                  />
+                </div>
+                <div className="w-36 text-right">
+                  <span className="font-bold text-gray-800">{s.total.toLocaleString()}</span>
+                  <span className="text-xs text-gray-500 ml-1">EA</span>
+                  <span className="text-xs text-gray-400 ml-2">({s.count}품목)</span>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
