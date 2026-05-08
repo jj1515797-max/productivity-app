@@ -3,7 +3,7 @@ import { collection, doc, onSnapshot, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
 import { loadViewDate, saveViewDate } from '../lib/viewDate';
-import type { AttendanceRecord, MachineEntry, Member, ProductSetting } from '../types';
+import type { AttendanceRecord, Item, MachineEntry, Member, ProductSetting } from '../types';
 import { summarizeAttendance } from '../lib/attendance';
 import { convertErpCode, normalizeCode } from '../lib/codeUtil';
 
@@ -68,6 +68,7 @@ export default function ProductivityInput() {
   const [members, setMembers] = useState<Member[]>([]);
   const [attendRecords, setAttendRecords] = useState<Record<string, AttendanceRecord>>({});
   const [entries, setEntries] = useState<MachineEntry[]>([]);
+  const [items, setItems] = useState<Item[]>([]);
   const [productSettings, setProductSettings] = useState<Record<string, ProductSetting>>({});
 
   useEffect(() => {
@@ -103,7 +104,6 @@ export default function ProductivityInput() {
     const unsubs = machines.map((m) =>
       onSnapshot(collection(db, 'days', date, 'machines', m, 'entries'), (snap) => {
         setEntries((prev) => {
-          // 다른 호기 데이터를 지우고 이번 호기만 갱신하기 위해 키 분리 필요 — 간단히 호기별 dedupe
           const others = prev.filter((e) => e.machine !== m);
           const list: MachineEntry[] = [];
           snap.forEach((d) => list.push(d.data() as MachineEntry));
@@ -112,6 +112,15 @@ export default function ProductivityInput() {
       })
     );
     return () => unsubs.forEach((u) => u());
+  }, [date]);
+
+  useEffect(() => {
+    setItems([]);
+    return onSnapshot(collection(db, 'days', date, 'items'), (snap) => {
+      const list: Item[] = [];
+      snap.forEach((d) => list.push(d.data() as Item));
+      setItems(list);
+    });
   }, [date]);
 
   useEffect(() => {
@@ -138,20 +147,23 @@ export default function ProductivityInput() {
     return map;
   }, [productSettings]);
 
+  // items 의 totalQty 기준 (당일 생산 예정 총수량)
   const productionByType = useMemo(() => {
-    let pot = 0, bat = 0, untyped = 0, untypedCodes = new Set<string>();
-    entries.forEach((e) => {
-      const code = e.code;
+    let pot = 0, bat = 0, untyped = 0;
+    const untypedCodes = new Set<string>();
+    items.forEach((it) => {
+      const code = it.code;
       const setting =
         settingsByNormalized.get(normalizeCode(code)) ||
         settingsByNormalized.get(normalizeCode(convertErpCode(code)));
-      const qty = (e.actualProduction || 0) + (e.additionalProduction || 0);
+      const qty = it.totalQty || 0;
+      if (qty <= 0) return;
       if (setting?.type === '냄비') pot += qty;
       else if (setting?.type === '바트') bat += qty;
       else { untyped += qty; untypedCodes.add(code); }
     });
-    return { pot, bat, untyped, untypedCodes: Array.from(untypedCodes) };
-  }, [entries, settingsByNormalized]);
+    return { pot, bat, untyped, untypedCodes: Array.from(untypedCodes), itemCount: items.length };
+  }, [items, settingsByNormalized]);
 
   const auto = {
     attend: attendanceSummary.workforceN,
@@ -297,10 +309,10 @@ export default function ProductivityInput() {
               <button onClick={() => setShowAdmin(false)} className="w-7 h-7 rounded-full hover:bg-gray-200 text-gray-500">×</button>
             </div>
             <div className="p-5 space-y-3">
-              {/* 생산 매칭 진단 */}
-              {entries.length > 0 && (
+              {/* 매칭 진단 (당일 발주 총수량 기준) */}
+              {items.length > 0 && (
                 <div className="text-[11px] bg-blue-50 border border-blue-200 rounded p-2 text-blue-800 leading-relaxed">
-                  오늘 생산 <b>{entries.length}건</b> · 냄비 매칭 <b>{auto.pot.toLocaleString()}EA</b> · 바트 매칭 <b>{auto.bat.toLocaleString()}EA</b>
+                  오늘 발주 <b>{items.length}품목</b> · 냄비 <b>{auto.pot.toLocaleString()}EA</b> · 바트 <b>{auto.bat.toLocaleString()}EA</b>
                   {productionByType.untyped > 0 && (
                     <div className="mt-1 text-orange-700">
                       ⚠ 미분류 <b>{productionByType.untyped.toLocaleString()}EA</b> ({productionByType.untypedCodes.slice(0, 8).join(', ')}{productionByType.untypedCodes.length > 8 ? ' …' : ''})
@@ -309,9 +321,9 @@ export default function ProductivityInput() {
                   )}
                 </div>
               )}
-              {entries.length === 0 && (
+              {items.length === 0 && (
                 <div className="text-[11px] bg-gray-50 border rounded p-2 text-gray-500">
-                  오늘 생산 입력이 아직 없습니다 — 입력되면 자동으로 합산됩니다
+                  오늘 발주 데이터가 아직 없습니다 — 현황에서 ERP 데이터를 등록해주세요
                 </div>
               )}
               <AutoNumberRow
