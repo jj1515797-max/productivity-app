@@ -3,7 +3,7 @@ import { collection, doc, onSnapshot, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
 import { loadViewDate, saveViewDate } from '../lib/viewDate';
-import type { AttendanceRecord, Item, MachineEntry, Member, ProductSetting } from '../types';
+import type { AttendanceRecord, Item, Member, ProductSetting } from '../types';
 import { summarizeAttendance } from '../lib/attendance';
 import { convertErpCode, normalizeCode } from '../lib/codeUtil';
 
@@ -64,10 +64,9 @@ export default function ProductivityInput() {
   const [showAdmin, setShowAdmin] = useState(false);
   const [savingFields, setSavingFields] = useState<Set<string>>(new Set());
 
-  // 자동 계산 데이터: 조직도 + 생산 entries + 제품 DB
+  // 자동 계산 데이터: 조직도 + 발주 items + 제품 DB
   const [members, setMembers] = useState<Member[]>([]);
   const [attendRecords, setAttendRecords] = useState<Record<string, AttendanceRecord>>({});
-  const [entries, setEntries] = useState<MachineEntry[]>([]);
   const [items, setItems] = useState<Item[]>([]);
   const [productSettings, setProductSettings] = useState<Record<string, ProductSetting>>({});
 
@@ -96,22 +95,6 @@ export default function ProductivityInput() {
       snap.forEach((d) => { map[d.id] = d.data() as AttendanceRecord; });
       setAttendRecords(map);
     });
-  }, [date]);
-
-  useEffect(() => {
-    setEntries([]);
-    const machines = ['1호기', '2호기', '3호기'] as const;
-    const unsubs = machines.map((m) =>
-      onSnapshot(collection(db, 'days', date, 'machines', m, 'entries'), (snap) => {
-        setEntries((prev) => {
-          const others = prev.filter((e) => e.machine !== m);
-          const list: MachineEntry[] = [];
-          snap.forEach((d) => list.push(d.data() as MachineEntry));
-          return [...others, ...list];
-        });
-      })
-    );
-    return () => unsubs.forEach((u) => u());
   }, [date]);
 
   useEffect(() => {
