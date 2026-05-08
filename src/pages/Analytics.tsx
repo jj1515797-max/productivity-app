@@ -5,6 +5,7 @@ import { todayKey } from '../lib/dateUtil';
 import { loadViewDate, saveViewDate } from '../lib/viewDate';
 import type { AmbientEntry, Item } from '../types';
 import { AMBIENT_CATEGORIES, CATEGORY_STYLES, type AmbientCategory } from '../lib/ambientProducts';
+import ProcessTimeline from '../components/ProcessTimeline';
 
 const MACHINES = ['1호기', '2호기', '3호기'] as const;
 
@@ -156,6 +157,8 @@ export default function AnalyticsDaily() {
         <BigCard label="생산성" value="-" unit="" color="orange" />
         <BigCard label="잔여량" value={stats.remaining.toLocaleString()} unit="EA" color="red" />
       </div>
+
+      <ProcessTimeline date={viewDate} />
 
       {ambient.length > 0 && (
         <div className="bg-white border rounded-lg overflow-hidden">

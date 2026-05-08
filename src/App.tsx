@@ -38,6 +38,7 @@ function MainContainer() {
         <Route path="/import" element={<Import />} />
         <Route path="/analytics" element={<Analytics />} />
         <Route path="/analytics/monthly" element={<AnalyticsMonthly />} />
+        <Route path="/analytics/remaining" element={<Remaining />} />
         <Route path="/analytics/report" element={<Report />} />
         <Route path="/analytics/settings" element={<ProductSettings />} />
         <Route path="/attendance" element={<Attendance />} />
@@ -47,12 +48,11 @@ function MainContainer() {
   );
 }
 
-type Section = 'dashboard' | 'input' | 'remaining' | 'analytics' | 'attendance';
+type Section = 'dashboard' | 'input' | 'analytics' | 'attendance';
 
 function getSection(pathname: string): Section {
   if (pathname.startsWith('/machine') || pathname.startsWith('/external')) return 'input';
-  if (pathname.startsWith('/remaining')) return 'remaining';
-  if (pathname.startsWith('/analytics') || pathname === '/report') return 'analytics';
+  if (pathname.startsWith('/analytics') || pathname === '/report' || pathname === '/remaining') return 'analytics';
   if (pathname.startsWith('/attendance')) return 'attendance';
   return 'dashboard';
 }
@@ -67,10 +67,10 @@ const SUB_TABS: Record<Section, { label: string; to: string; exact?: boolean }[]
     { label: '외포장-2', to: '/external/2' },
     { label: '외포장-3', to: '/external/3' },
   ],
-  remaining: [{ label: '잔여량', to: '/remaining' }],
   analytics: [
     { label: '일별요약', to: '/analytics', exact: true },
     { label: '월별현황', to: '/analytics/monthly' },
+    { label: '잔여량', to: '/analytics/remaining' },
     { label: '금속CCP', to: '/analytics/report' },
     { label: '설정', to: '/analytics/settings' },
   ],
@@ -89,7 +89,6 @@ function Header() {
   const rightLinks: { section: Section; to: string; label: string; icon?: string }[] = [
     { section: 'dashboard', to: '/', label: '현황' },
     { section: 'input', to: '/machine/1', label: '입력' },
-    { section: 'remaining', to: '/remaining', label: '잔여량' },
     { section: 'analytics', to: '/analytics', label: '분석' },
     { section: 'attendance', to: '/attendance', label: '조직도', icon: '📅' },
   ];
