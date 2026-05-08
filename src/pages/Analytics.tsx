@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
-import { collection, onSnapshot } from 'firebase/firestore';
+import { collection, doc, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
 import { loadViewDate, saveViewDate } from '../lib/viewDate';
-import type { AmbientEntry, Item } from '../types';
+import type { AmbientEntry, AttendanceRecord, Item, Member } from '../types';
 import { AMBIENT_CATEGORIES, CATEGORY_STYLES, type AmbientCategory } from '../lib/ambientProducts';
+import { summarizeAttendance } from '../lib/attendance';
 import ProcessTimeline from '../components/ProcessTimeline';
 
 const MACHINES = ['1호기', '2호기', '3호기'] as const;
@@ -52,6 +53,9 @@ export default function AnalyticsDaily() {
     '1호기': {}, '2호기': {}, '3호기': {},
   });
   const [ambient, setAmbient] = useState<AmbientEntry[]>([]);
+  const [productivity, setProductivity] = useState<{ attend?: number; leave?: number }>({});
+  const [members, setMembers] = useState<Member[]>([]);
+  const [attendRecords, setAttendRecords] = useState<Record<string, AttendanceRecord>>({});
 
   useEffect(() => {
     setItems([]);
@@ -68,6 +72,33 @@ export default function AnalyticsDaily() {
       const list: AmbientEntry[] = [];
       snap.forEach((d) => list.push(d.data() as AmbientEntry));
       setAmbient(list);
+    });
+  }, [viewDate]);
+
+  useEffect(() => {
+    setProductivity({});
+    return onSnapshot(doc(db, 'productivity', viewDate), (snap) => {
+      setProductivity(snap.exists() ? (snap.data() as { attend?: number; leave?: number }) : {});
+    });
+  }, [viewDate]);
+
+  useEffect(() => {
+    return onSnapshot(collection(db, 'members'), (snap) => {
+      const list: Member[] = [];
+      snap.forEach((d) => {
+        const data = d.data() as Member;
+        if (data.active !== false) list.push({ ...data, id: d.id });
+      });
+      setMembers(list);
+    });
+  }, []);
+
+  useEffect(() => {
+    setAttendRecords({});
+    return onSnapshot(collection(db, 'attendance', viewDate, 'records'), (snap) => {
+      const map: Record<string, AttendanceRecord> = {};
+      snap.forEach((d) => { map[d.id] = d.data() as AttendanceRecord; });
+      setAttendRecords(map);
     });
   }, [viewDate]);
 
@@ -116,8 +147,21 @@ export default function AnalyticsDaily() {
     });
     const maxStage = Math.max(1, ...byStage.map((b) => b.total));
 
-    return { totalActual, coldActual, ambientTotal, itemCount, remaining, byStage, maxStage };
-  }, [items, ambient, actualByCode]);
+    // 냉장 발주 총수량 (items.totalQty 합계)
+    const coldOrdered = items.reduce((s, i) => s + (i.totalQty || 0), 0);
+
+    // 출근인원 / 연차 (수동 우선, 없으면 조직도 자동 계산)
+    const summary = summarizeAttendance(members, attendRecords, viewDate);
+    const attend = productivity.attend ?? summary.workforceN;
+    const leave = productivity.leave ?? summary.leaveDays;
+    const denom = attend + leave;
+    const productivityValue = denom > 0 && coldOrdered > 0 ? coldOrdered / denom : null;
+
+    return {
+      totalActual, coldActual, ambientTotal, itemCount, remaining, byStage, maxStage,
+      coldOrdered, attend, leave, productivityValue,
+    };
+  }, [items, ambient, actualByCode, members, attendRecords, productivity, viewDate]);
 
   return (
     <div className="space-y-5">
@@ -154,7 +198,12 @@ export default function AnalyticsDaily() {
       </div>
       <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
         <BigCard label="품목수" value={stats.itemCount.toString()} unit="품목" color="green" />
-        <BigCard label="생산성" value="-" unit="" color="orange" />
+        <BigCard
+          label="생산성"
+          value={stats.productivityValue !== null ? stats.productivityValue.toFixed(1) : '-'}
+          unit={stats.productivityValue !== null ? 'EA/MH' : ''}
+          color="orange"
+        />
         <BigCard label="잔여량" value={stats.remaining.toLocaleString()} unit="EA" color="red" />
       </div>
 
