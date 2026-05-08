@@ -139,7 +139,7 @@ export default function ProductivityInput() {
   }, [productSettings]);
 
   const productionByType = useMemo(() => {
-    let pot = 0, bat = 0;
+    let pot = 0, bat = 0, untyped = 0, untypedCodes = new Set<string>();
     entries.forEach((e) => {
       const code = e.code;
       const setting =
@@ -148,8 +148,9 @@ export default function ProductivityInput() {
       const qty = (e.actualProduction || 0) + (e.additionalProduction || 0);
       if (setting?.type === '냄비') pot += qty;
       else if (setting?.type === '바트') bat += qty;
+      else { untyped += qty; untypedCodes.add(code); }
     });
-    return { pot, bat };
+    return { pot, bat, untyped, untypedCodes: Array.from(untypedCodes) };
   }, [entries, settingsByNormalized]);
 
   const auto = {
@@ -296,6 +297,23 @@ export default function ProductivityInput() {
               <button onClick={() => setShowAdmin(false)} className="w-7 h-7 rounded-full hover:bg-gray-200 text-gray-500">×</button>
             </div>
             <div className="p-5 space-y-3">
+              {/* 생산 매칭 진단 */}
+              {entries.length > 0 && (
+                <div className="text-[11px] bg-blue-50 border border-blue-200 rounded p-2 text-blue-800 leading-relaxed">
+                  오늘 생산 <b>{entries.length}건</b> · 냄비 매칭 <b>{auto.pot.toLocaleString()}EA</b> · 바트 매칭 <b>{auto.bat.toLocaleString()}EA</b>
+                  {productionByType.untyped > 0 && (
+                    <div className="mt-1 text-orange-700">
+                      ⚠ 미분류 <b>{productionByType.untyped.toLocaleString()}EA</b> ({productionByType.untypedCodes.slice(0, 8).join(', ')}{productionByType.untypedCodes.length > 8 ? ' …' : ''})
+                      <div className="text-[10px] mt-0.5">분석 → 설정 → 제품DB에서 냄비/바트로 분류해주세요</div>
+                    </div>
+                  )}
+                </div>
+              )}
+              {entries.length === 0 && (
+                <div className="text-[11px] bg-gray-50 border rounded p-2 text-gray-500">
+                  오늘 생산 입력이 아직 없습니다 — 입력되면 자동으로 합산됩니다
+                </div>
+              )}
               <AutoNumberRow
                 label="출근인원"
                 value={data.attend}
@@ -361,12 +379,18 @@ function AutoNumberRow({
 }) {
   const overridden = value !== undefined && value !== null;
   const displayed = overridden ? (value as number) : autoValue;
-  const [local, setLocal] = useState<string>(displayed !== undefined ? String(displayed) : '');
-  useEffect(() => {
-    setLocal(displayed !== undefined ? String(displayed) : '');
-  }, [displayed]);
-
   const fmt = (v: number) => allowDecimal ? v.toString() : String(Math.round(v));
+
+  // autoValue 가 0 이고 수동 입력 안된 상태면 입력창은 비우고 placeholder 로만 안내
+  const showEmptyInput = !overridden && autoValue === 0;
+  const [local, setLocal] = useState<string>(showEmptyInput ? '' : fmt(displayed));
+  const [focused, setFocused] = useState(false);
+
+  // 포커스 안 된 동안에만 외부 값 변경을 동기화 (타이핑 중 덮어쓰기 방지)
+  useEffect(() => {
+    if (focused) return;
+    setLocal(showEmptyInput ? '' : fmt(displayed));
+  }, [displayed, showEmptyInput, focused]);
 
   return (
     <div className="space-y-1">
@@ -381,16 +405,18 @@ function AutoNumberRow({
         </div>
         <div className="flex items-center gap-1.5">
           <input
-            type="number"
+            type="text"
             inputMode={allowDecimal ? 'decimal' : 'numeric'}
-            step={allowDecimal ? '0.25' : '1'}
             value={local}
+            placeholder={showEmptyInput ? '0' : ''}
+            onFocus={(e) => { setFocused(true); e.currentTarget.select(); }}
             onChange={(e) => setLocal(e.target.value)}
             onBlur={() => {
-              if (local.trim() === '') { onSave(null); return; }
-              const v = Number(local);
+              setFocused(false);
+              const trimmed = local.trim();
+              if (trimmed === '') { onSave(null); return; }
+              const v = Number(trimmed);
               if (!isNaN(v)) {
-                // 자동값과 같으면 override 제거
                 if (v === autoValue) onSave(null);
                 else onSave(v);
               }
