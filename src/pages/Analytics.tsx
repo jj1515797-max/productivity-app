@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { collection, doc, onSnapshot } from 'firebase/firestore';
+import { collection, doc, getDocs, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
 import { loadViewDate, saveViewDate } from '../lib/viewDate';
@@ -82,15 +82,16 @@ export default function AnalyticsDaily() {
     });
   }, [viewDate]);
 
+  // 인원 마스터는 자주 안 바뀌므로 1회 fetch (생산성 계산용)
   useEffect(() => {
-    return onSnapshot(collection(db, 'members'), (snap) => {
+    getDocs(collection(db, 'members')).then((snap) => {
       const list: Member[] = [];
       snap.forEach((d) => {
         const data = d.data() as Member;
         if (data.active !== false) list.push({ ...data, id: d.id });
       });
       setMembers(list);
-    });
+    }).catch(() => {});
   }, []);
 
   useEffect(() => {

@@ -186,34 +186,26 @@ export default function AnalyticsMonthly() {
       if (!cancelled) setLogisticsByDay(map);
     }).catch(() => {});
 
-    // 직전 3개월 평균 + 전월 통계 백그라운드 fetch
+    // 전월 통계 백그라운드 fetch (직전 1개월만 — 읽기 부하 감소)
     setPrevMonthData(null);
     setPrevLogisticsByDay({});
-    const prevMs = prevMonths(month, 3);
-    Promise.all(
-      prevMs.flatMap((pm) => [
-        getDocs(query(collectionGroup(db, 'entries'), where('date', '>=', `${pm}-01`), where('date', '<=', `${pm}-31`))),
-        getDocs(query(collectionGroup(db, 'ambient'), where('date', '>=', `${pm}-01`), where('date', '<=', `${pm}-31`))),
-        getDocs(query(collectionGroup(db, 'items'), where('date', '>=', `${pm}-01`), where('date', '<=', `${pm}-31`))),
-      ])
-    )
+    const prevM = prevMonths(month, 1)[0];
+    Promise.all([
+      getDocs(query(collectionGroup(db, 'entries'), where('date', '>=', `${prevM}-01`), where('date', '<=', `${prevM}-31`))),
+      getDocs(query(collectionGroup(db, 'ambient'), where('date', '>=', `${prevM}-01`), where('date', '<=', `${prevM}-31`))),
+      getDocs(query(collectionGroup(db, 'items'), where('date', '>=', `${prevM}-01`), where('date', '<=', `${prevM}-31`))),
+    ])
       .then(async (snaps) => {
         if (cancelled) return;
-        const monthAvgs: number[] = [];
-        for (let i = 0; i < prevMs.length; i++) {
-          const ents = snaps[i * 3].docs.map((d) => d.data() as MachineEntry);
-          const ambs = snaps[i * 3 + 1].docs.map((d) => d.data() as AmbientEntry);
-          const ms = computeMonthStats(ents, ambs);
-          if (ms.daysWorked > 0) monthAvgs.push(ms.totalAvg);
-          if (i === 0) {
-            const prevItems = snaps[i * 3 + 2].docs.map((d) => d.data() as Item);
-            const prevLogMap = await fetchMonthLogistics(prevMs[0]).catch(() => ({} as Record<string, number>));
-            if (cancelled) return;
-            setPrevLogisticsByDay(prevLogMap);
-            setPrevMonthData({ entries: ents, ambient: ambs, items: prevItems });
-          }
-        }
-        setPrev3Avg(monthAvgs.length ? monthAvgs.reduce((s, a) => s + a, 0) / monthAvgs.length : 0);
+        const ents = snaps[0].docs.map((d) => d.data() as MachineEntry);
+        const ambs = snaps[1].docs.map((d) => d.data() as AmbientEntry);
+        const prevItems = snaps[2].docs.map((d) => d.data() as Item);
+        const prevLogMap = await fetchMonthLogistics(prevM).catch(() => ({} as Record<string, number>));
+        if (cancelled) return;
+        setPrevLogisticsByDay(prevLogMap);
+        setPrevMonthData({ entries: ents, ambient: ambs, items: prevItems });
+        const ms = computeMonthStats(ents, ambs);
+        setPrev3Avg(ms.daysWorked > 0 ? ms.totalAvg : 0);
       })
       .catch(() => {});
 
