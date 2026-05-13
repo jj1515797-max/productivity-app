@@ -286,13 +286,13 @@ function AddMovementModal({
     const name = selectedMat?.name || matSearch.trim();
     if (!name) { alert('원재료를 선택하거나 입력하세요'); return; }
     const q = Number(qty);
-    if (isNaN(q) || q <= 0) { alert('수량을 입력하세요'); return; }
+    if (isNaN(q) || q <= 0) { alert('중량을 입력하세요'); return; }
     setSaving(true);
     try {
       const payload: Record<string, unknown> = {
         type, warehouse, materialName: name,
         qty: q,
-        unit: selectedMat?.unit || 'kg',
+        unit: 'g',
         done: false, date,
         createdAt: new Date().toISOString(),
       };
@@ -394,11 +394,14 @@ function AddMovementModal({
             </div>
           )}
 
-          {/* 수량 */}
+          {/* 중량 */}
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">수량</label>
-              <input type="number" inputMode="decimal" value={qty} onChange={(e) => setQty(e.target.value)} placeholder="0" className="w-full border rounded-md px-3 py-2 text-base text-center font-bold" />
+              <label className="block text-xs font-medium text-gray-600 mb-1">중량 <span className="text-gray-400">(g)</span></label>
+              <div className="relative">
+                <input type="number" inputMode="decimal" value={qty} onChange={(e) => setQty(e.target.value)} placeholder="0" className="w-full border rounded-md px-3 py-2 pr-8 text-base text-center font-bold" />
+                <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-gray-400">g</span>
+              </div>
             </div>
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1">{type === '출고' ? '가는 곳 (선택)' : '온 곳 (선택)'}</label>
