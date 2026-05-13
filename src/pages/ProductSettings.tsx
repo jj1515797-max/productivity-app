@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { collection, deleteDoc, doc, onSnapshot, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
+import { collection, deleteDoc, doc, getCountFromServer, onSnapshot, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import type { Material, ProductSetting } from '../types';
 import { convertErpCode } from '../lib/codeUtil';
@@ -18,24 +18,35 @@ export default function ProductSettings() {
   const [showMaterialDB, setShowMaterialDB] = useState(false);
   const [showBulk, setShowBulk] = useState(false);
   const [materials, setMaterials] = useState<Material[]>([]);
+  // 헤더에 표시할 총개수만 가볍게 (count aggregation = 1읽기)
+  const [productCount, setProductCount] = useState<number | null>(null);
+  const [materialCount, setMaterialCount] = useState<number | null>(null);
 
   useEffect(() => {
+    getCountFromServer(collection(db, 'productSettings')).then((s) => setProductCount(s.data().count)).catch(() => {});
+    getCountFromServer(collection(db, 'materials')).then((s) => setMaterialCount(s.data().count)).catch(() => {});
+  }, []);
+
+  // 섹션이 펼쳐졌을 때만 구독 (읽기 부하 절감)
+  useEffect(() => {
+    if (!showProductDB) return;
     return onSnapshot(collection(db, 'productSettings'), (snap) => {
       const list: ProductSetting[] = [];
       snap.forEach((d) => list.push({ ...(d.data() as ProductSetting), code: d.id }));
       list.sort((a, b) => a.code.localeCompare(b.code));
       setSettings(list);
     });
-  }, []);
+  }, [showProductDB]);
 
   useEffect(() => {
+    if (!showMaterialDB) return;
     return onSnapshot(collection(db, 'materials'), (snap) => {
       const list: Material[] = [];
       snap.forEach((d) => list.push({ ...(d.data() as Material), id: d.id }));
       list.sort((a, b) => (a.category || '').localeCompare(b.category || '') || a.name.localeCompare(b.name));
       setMaterials(list);
     });
-  }, []);
+  }, [showMaterialDB]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -68,7 +79,7 @@ export default function ProductSettings() {
       <Section
         icon="📦"
         title="제품 DB"
-        badge={`${counts.total}개`}
+        badge={productCount !== null ? `${productCount}개` : '...'}
         open={showProductDB}
         onToggle={() => setShowProductDB(!showProductDB)}
       >
@@ -189,7 +200,7 @@ export default function ProductSettings() {
       <Section
         icon="🥕"
         title="원재료 DB"
-        badge={`${materials.length}개`}
+        badge={materialCount !== null ? `${materialCount}개` : '...'}
         open={showMaterialDB}
         onToggle={() => setShowMaterialDB(!showMaterialDB)}
       >
