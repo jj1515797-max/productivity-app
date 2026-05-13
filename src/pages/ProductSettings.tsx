@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
-import { collection, deleteDoc, doc, onSnapshot, setDoc, writeBatch } from 'firebase/firestore';
+import { collection, deleteDoc, doc, onSnapshot, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
-import type { ProductSetting } from '../types';
+import type { Material, ProductSetting } from '../types';
 import { convertErpCode } from '../lib/codeUtil';
 
 type ProdType = '냄비' | '바트';
@@ -14,8 +14,10 @@ const TYPE_STYLE: Record<ProdType, { chip: string; soft: string; text: string; b
 export default function ProductSettings() {
   const [settings, setSettings] = useState<ProductSetting[]>([]);
   const [search, setSearch] = useState('');
-  const [showProductDB, setShowProductDB] = useState(true);
+  const [showProductDB, setShowProductDB] = useState(false);
+  const [showMaterialDB, setShowMaterialDB] = useState(false);
   const [showBulk, setShowBulk] = useState(false);
+  const [materials, setMaterials] = useState<Material[]>([]);
 
   useEffect(() => {
     return onSnapshot(collection(db, 'productSettings'), (snap) => {
@@ -23,6 +25,15 @@ export default function ProductSettings() {
       snap.forEach((d) => list.push({ ...(d.data() as ProductSetting), code: d.id }));
       list.sort((a, b) => a.code.localeCompare(b.code));
       setSettings(list);
+    });
+  }, []);
+
+  useEffect(() => {
+    return onSnapshot(collection(db, 'materials'), (snap) => {
+      const list: Material[] = [];
+      snap.forEach((d) => list.push({ ...(d.data() as Material), id: d.id }));
+      list.sort((a, b) => (a.category || '').localeCompare(b.category || '') || a.name.localeCompare(b.name));
+      setMaterials(list);
     });
   }, []);
 
@@ -174,6 +185,17 @@ export default function ProductSettings() {
         </div>
       </Section>
 
+      {/* 원재료 DB 섹션 */}
+      <Section
+        icon="🥕"
+        title="원재료 DB"
+        badge={`${materials.length}개`}
+        open={showMaterialDB}
+        onToggle={() => setShowMaterialDB(!showMaterialDB)}
+      >
+        <MaterialDB materials={materials} />
+      </Section>
+
       {/* 일괄 입력 모달 */}
       {showBulk && (
         <BulkModal
@@ -312,6 +334,267 @@ function BulkModal({
           >
             {saving ? '저장중...' : '저장'}
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ============ 원재료 DB ============
+function MaterialDB({ materials }: { materials: Material[] }) {
+  const [search, setSearch] = useState('');
+  const [showBulk, setShowBulk] = useState(false);
+  const [editId, setEditId] = useState<string | null>(null);
+  const [draftName, setDraftName] = useState('');
+  const [draftCat, setDraftCat] = useState('');
+  const [draftSpecs, setDraftSpecs] = useState<string[]>([]);
+  const [newSpec, setNewSpec] = useState('');
+  const [adding, setAdding] = useState(false);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return materials;
+    return materials.filter((m) =>
+      m.name.toLowerCase().includes(q) ||
+      (m.category || '').toLowerCase().includes(q) ||
+      (m.specs || []).some((s) => s.toLowerCase().includes(q))
+    );
+  }, [materials, search]);
+
+  const grouped = useMemo(() => {
+    const map = new Map<string, Material[]>();
+    filtered.forEach((m) => {
+      const k = m.category || '미분류';
+      if (!map.has(k)) map.set(k, []);
+      map.get(k)!.push(m);
+    });
+    return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+  }, [filtered]);
+
+  const startEdit = (m: Material) => {
+    setEditId(m.id);
+    setDraftName(m.name);
+    setDraftCat(m.category || '');
+    setDraftSpecs([...(m.specs || [])]);
+    setNewSpec('');
+    setAdding(false);
+  };
+  const startAdd = () => {
+    setEditId(null);
+    setAdding(true);
+    setDraftName('');
+    setDraftCat('');
+    setDraftSpecs([]);
+    setNewSpec('');
+  };
+  const cancel = () => { setEditId(null); setAdding(false); };
+
+  const addSpecToDraft = () => {
+    const s = newSpec.trim();
+    if (!s || draftSpecs.includes(s)) { setNewSpec(''); return; }
+    setDraftSpecs([...draftSpecs, s]);
+    setNewSpec('');
+  };
+  const removeSpecFromDraft = (s: string) => setDraftSpecs(draftSpecs.filter((x) => x !== s));
+
+  const saveDraft = async () => {
+    if (!draftName.trim()) return;
+    if (adding) {
+      const ref = doc(collection(db, 'materials'));
+      await setDoc(ref, { name: draftName.trim(), category: draftCat.trim(), specs: draftSpecs });
+    } else if (editId) {
+      await updateDoc(doc(db, 'materials', editId), {
+        name: draftName.trim(), category: draftCat.trim(), specs: draftSpecs,
+      });
+    }
+    cancel();
+  };
+
+  const remove = async (m: Material) => {
+    if (!confirm(`'${m.name}' 원재료를 삭제할까요?`)) return;
+    await deleteDoc(doc(db, 'materials', m.id));
+  };
+
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="relative flex-1 min-w-[240px]">
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="🔍 원재료명·분류·규격 검색..."
+            className="w-full border rounded-md px-3 py-2 text-sm"
+          />
+          {search && (
+            <button onClick={() => setSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">×</button>
+          )}
+        </div>
+        <button onClick={() => setShowBulk(true)} className="px-3 py-2 border rounded-md font-medium text-sm hover:bg-gray-100">📋 일괄 입력</button>
+        <button onClick={startAdd} className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-md font-medium text-sm">+ 추가</button>
+      </div>
+
+      {/* 추가/수정 폼 */}
+      {(adding || editId) && (
+        <div className="border-2 border-emerald-300 bg-emerald-50/40 rounded-lg p-4 space-y-3">
+          <div className="font-semibold text-emerald-800 text-sm">{adding ? '원재료 추가' : '원재료 수정'}</div>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">원재료명</label>
+              <input value={draftName} onChange={(e) => setDraftName(e.target.value)} placeholder="예: 당근" className="w-full border rounded-md px-3 py-2 text-sm" autoFocus />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-600 mb-1">분류 (선택)</label>
+              <input value={draftCat} onChange={(e) => setDraftCat(e.target.value)} placeholder="예: 채소, 육류, 곡물" className="w-full border rounded-md px-3 py-2 text-sm" />
+            </div>
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-600 mb-1.5">규격</label>
+            <div className="flex flex-wrap items-center gap-2 mb-2">
+              {draftSpecs.length === 0 && <span className="text-xs text-gray-400">규격 없음 (선택)</span>}
+              {draftSpecs.map((s) => (
+                <span key={s} className="inline-flex items-center gap-1 px-2.5 py-1 bg-white border border-gray-300 rounded-full text-xs">
+                  {s}
+                  <button onClick={() => removeSpecFromDraft(s)} className="text-gray-400 hover:text-red-600 ml-0.5">×</button>
+                </span>
+              ))}
+            </div>
+            <div className="flex gap-2">
+              <input
+                value={newSpec}
+                onChange={(e) => setNewSpec(e.target.value)}
+                onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); addSpecToDraft(); } }}
+                placeholder="예: 3mm  (입력 후 추가)"
+                className="flex-1 border rounded-md px-3 py-2 text-sm"
+              />
+              <button onClick={addSpecToDraft} className="px-3 py-2 bg-gray-700 text-white rounded-md text-sm font-medium hover:bg-gray-800">규격 추가</button>
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button onClick={cancel} className="px-3 py-2 border rounded text-sm font-medium hover:bg-white">취소</button>
+            <button onClick={saveDraft} disabled={!draftName.trim()} className="ml-auto px-5 py-2 bg-emerald-600 text-white rounded font-medium hover:bg-emerald-700 disabled:bg-gray-300">저장</button>
+          </div>
+        </div>
+      )}
+
+      {/* 목록 */}
+      {materials.length === 0 ? (
+        <div className="p-12 text-center text-gray-400 text-sm border rounded-lg">등록된 원재료가 없습니다 — + 추가 또는 📋 일괄 입력</div>
+      ) : grouped.length === 0 ? (
+        <div className="p-8 text-center text-gray-400 text-sm border rounded-lg">'{search}' 검색 결과가 없습니다</div>
+      ) : (
+        <div className="space-y-3">
+          {grouped.map(([cat, list]) => (
+            <div key={cat} className="border rounded-lg overflow-hidden">
+              <div className="px-4 py-2 bg-slate-50 border-b text-xs font-semibold text-gray-700">{cat} <span className="text-gray-400 font-normal">{list.length}</span></div>
+              <table className="w-full text-sm">
+                <tbody>
+                  {list.map((m) => (
+                    <tr key={m.id} className="border-t hover:bg-slate-50/60">
+                      <td className="px-4 py-2 font-medium text-gray-800 w-40">{m.name}</td>
+                      <td className="px-4 py-2">
+                        <div className="flex flex-wrap gap-1.5">
+                          {(m.specs || []).length === 0 ? (
+                            <span className="text-xs text-gray-300">규격 없음</span>
+                          ) : (
+                            (m.specs || []).map((s) => (
+                              <span key={s} className="px-2 py-0.5 bg-gray-100 text-gray-700 rounded text-xs">{s}</span>
+                            ))
+                          )}
+                        </div>
+                      </td>
+                      <td className="px-4 py-2 text-right w-28">
+                        <button onClick={() => startEdit(m)} className="text-xs text-blue-600 hover:underline mr-3">수정</button>
+                        <button onClick={() => remove(m)} className="text-xs text-red-500 hover:underline">삭제</button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {showBulk && <MaterialBulkModal onClose={() => setShowBulk(false)} />}
+    </div>
+  );
+}
+
+function MaterialBulkModal({ onClose }: { onClose: () => void }) {
+  const [text, setText] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const lines = text.trim().split('\n').map((l) => l.trim()).filter(Boolean);
+  const parsed = lines.map((line) => {
+    const parts = line.split(/[,\t]/).map((s) => s.trim());
+    const name = parts[0] || '';
+    const category = parts[1] || '';
+    const specsRaw = parts[2] || '';
+    const specs = specsRaw ? specsRaw.split(/[|/]/).map((s) => s.trim()).filter(Boolean) : [];
+    return { name, category, specs, valid: name.length > 0 };
+  });
+  const validRows = parsed.filter((p) => p.valid);
+
+  const save = async () => {
+    if (validRows.length === 0) return;
+    setSaving(true);
+    try {
+      const batch = writeBatch(db);
+      validRows.forEach((row) => {
+        const ref = doc(collection(db, 'materials'));
+        batch.set(ref, { name: row.name, category: row.category, specs: row.specs });
+      });
+      await batch.commit();
+      alert(`${validRows.length}개 추가됨`);
+      onClose();
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl h-[85vh] overflow-hidden flex flex-col">
+        <div className="px-5 py-4 border-b bg-gradient-to-r from-emerald-50 to-green-50 flex items-center justify-between">
+          <div>
+            <h3 className="font-bold text-gray-800">원재료 일괄 입력</h3>
+            <div className="text-xs text-gray-500 mt-0.5">한 줄에 한 원재료</div>
+          </div>
+          <button onClick={onClose} className="w-7 h-7 rounded-full hover:bg-gray-200 text-gray-500">×</button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          <div className="bg-emerald-50 border border-emerald-200 rounded p-3 text-xs text-emerald-800 leading-relaxed">
+            <b>형식:</b> 원재료명, 분류, 규격 — 콤마 또는 탭 구분. 규격은 여러 개면 <code className="bg-white px-1 rounded">|</code> 또는 <code className="bg-white px-1 rounded">/</code> 로 구분.<br />
+            예: <code className="bg-white px-1.5 py-0.5 rounded">당근, 채소, 3mm|5mm|7mm</code> · <code className="bg-white px-1.5 py-0.5 rounded">양파, 채소</code>
+          </div>
+          <textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder={"당근, 채소, 3mm|5mm|7mm\n양파, 채소, 5mm\n한우, 육류\n쌀, 곡물"}
+            className="w-full h-56 border rounded-md p-3 text-sm font-mono"
+          />
+          {parsed.length > 0 && (
+            <div>
+              <div className="text-sm font-semibold text-gray-700 mb-2">미리보기 ({validRows.length}/{parsed.length})</div>
+              <div className="border rounded max-h-56 overflow-y-auto">
+                <table className="w-full text-xs">
+                  <thead className="bg-gray-50 text-gray-500"><tr><th className="px-3 py-1.5 text-left w-32">원재료</th><th className="px-3 py-1.5 text-left w-20">분류</th><th className="px-3 py-1.5 text-left">규격</th></tr></thead>
+                  <tbody>
+                    {parsed.map((p, i) => (
+                      <tr key={i} className={`border-t ${!p.valid ? 'bg-red-50 text-red-600' : ''}`}>
+                        <td className="px-3 py-1 font-medium">{p.name || '(없음)'}</td>
+                        <td className="px-3 py-1 text-gray-500">{p.category || '미분류'}</td>
+                        <td className="px-3 py-1">{p.specs.length ? p.specs.join(', ') : <span className="text-gray-400">-</span>}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+        <div className="px-5 py-3 border-t bg-slate-50 flex items-center gap-2">
+          <button onClick={onClose} className="px-3 py-2 border rounded text-sm font-medium hover:bg-gray-100">취소</button>
+          <span className="ml-auto text-xs text-gray-500">{validRows.length}개 저장 예정</span>
+          <button onClick={save} disabled={validRows.length === 0 || saving} className="px-5 py-2 bg-emerald-600 text-white rounded font-medium hover:bg-emerald-700 disabled:bg-gray-300">{saving ? '저장중...' : '저장'}</button>
         </div>
       </div>
     </div>
