@@ -288,16 +288,21 @@ function AddMovementModal({
     if (isNaN(q) || q <= 0) { alert('수량을 입력하세요'); return; }
     setSaving(true);
     try {
-      await addDoc(collection(db, 'inventory', date, 'movements'), {
+      const payload: Record<string, unknown> = {
         type, warehouse, materialName: name,
-        spec: spec || undefined,
-        qty: q, unit: selectedMat?.unit || 'kg',
-        counterpart: counterpart.trim() || undefined,
-        note: note.trim() || undefined,
-        done: false, date, createdAt: new Date().toISOString(),
-      });
+        qty: q,
+        unit: selectedMat?.unit || 'kg',
+        done: false, date,
+        createdAt: new Date().toISOString(),
+      };
+      if (spec.trim()) payload.spec = spec.trim();
+      if (counterpart.trim()) payload.counterpart = counterpart.trim();
+      if (note.trim()) payload.note = note.trim();
+      await addDoc(collection(db, 'inventory', date, 'movements'), payload);
       // 폼 일부 리셋 (연속 등록 편의)
       setSelectedMat(null); setMatSearch(''); setSpec(''); setQty(''); setCounterpart(''); setNote('');
+    } catch (err) {
+      alert(`저장 실패: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setSaving(false);
     }
@@ -305,7 +310,7 @@ function AddMovementModal({
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg max-h-[92vh] overflow-hidden flex flex-col">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg h-[92vh] overflow-hidden flex flex-col">
         <div className="px-5 py-4 border-b bg-gradient-to-r from-blue-50 to-indigo-50 flex items-center justify-between">
           <h3 className="font-bold text-gray-800">입출고 등록 <span className="text-xs text-gray-500 font-normal">{date}</span></h3>
           <button onClick={onClose} className="w-7 h-7 rounded-full hover:bg-gray-200 text-gray-500">×</button>
