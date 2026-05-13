@@ -80,3 +80,34 @@ export interface ProductSetting {
   type?: '냄비' | '바트' | null;
   name?: string;
 }
+
+export interface Material {
+  id: string;
+  name: string;
+  category?: string;
+  specs?: string[];   // ['3mm', '5mm', '7mm']
+  unit?: string;      // 'kg' 등
+}
+
+export const WAREHOUSES = [1, 2, 3, 4, 5, 6, 7] as const;
+
+export interface InventoryMovement {
+  type: '입고' | '출고';
+  warehouse: number;          // 1-7
+  materialName: string;
+  spec?: string;
+  qty: number;
+  unit?: string;
+  counterpart?: string;       // 출고→가는곳 / 입고→온곳 (자유 입력)
+  note?: string;
+  done?: boolean;
+  date: string;
+  createdAt?: string;
+}
+
+export interface InventoryRequest {
+  text: string;
+  done?: boolean;
+  date: string;
+  createdAt?: string;
+}

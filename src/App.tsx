@@ -10,6 +10,7 @@ import AnalyticsMonthly from './pages/AnalyticsMonthly';
 import Attendance from './pages/Attendance';
 import ProductivityInput from './pages/ProductivityInput';
 import ProductSettings from './pages/ProductSettings';
+import Inventory from './pages/Inventory';
 import Logo from './components/Logo';
 import { useTrackVisit } from './lib/presence';
 
@@ -26,7 +27,7 @@ export default function App() {
 
 function MainContainer() {
   const path = useLocation().pathname;
-  const wide = path.startsWith('/analytics/monthly') || path.startsWith('/attendance');
+  const wide = path.startsWith('/analytics/monthly') || path.startsWith('/attendance') || path.startsWith('/inventory');
   return (
     <main className={`flex-1 ${wide ? 'max-w-screen-2xl' : 'max-w-screen-xl'} w-full mx-auto px-4 py-5`}>
       <Routes>
@@ -43,17 +44,19 @@ function MainContainer() {
         <Route path="/analytics/settings" element={<ProductSettings />} />
         <Route path="/attendance" element={<Attendance />} />
         <Route path="/attendance/productivity" element={<ProductivityInput />} />
+        <Route path="/inventory" element={<Inventory />} />
       </Routes>
     </main>
   );
 }
 
-type Section = 'dashboard' | 'input' | 'analytics' | 'attendance';
+type Section = 'dashboard' | 'input' | 'analytics' | 'attendance' | 'inventory';
 
 function getSection(pathname: string): Section {
   if (pathname.startsWith('/machine') || pathname.startsWith('/external')) return 'input';
   if (pathname.startsWith('/analytics') || pathname === '/report' || pathname === '/remaining') return 'analytics';
   if (pathname.startsWith('/attendance')) return 'attendance';
+  if (pathname.startsWith('/inventory')) return 'inventory';
   return 'dashboard';
 }
 
@@ -78,6 +81,7 @@ const SUB_TABS: Record<Section, { label: string; to: string; exact?: boolean }[]
     { label: '조직도', to: '/attendance', exact: true },
     { label: '생산성 입력', to: '/attendance/productivity' },
   ],
+  inventory: [{ label: '재고관리', to: '/inventory' }],
 };
 
 function Header() {
@@ -91,6 +95,7 @@ function Header() {
     { section: 'input', to: '/machine/1', label: '입력' },
     { section: 'analytics', to: '/analytics', label: '분석' },
     { section: 'attendance', to: '/attendance', label: '조직도', icon: '📅' },
+    { section: 'inventory', to: '/inventory', label: '재고관리', icon: '📦' },
   ];
 
   return (
