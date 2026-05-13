@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { collection, doc, onSnapshot, setDoc } from 'firebase/firestore';
+import { collection, doc, getDocs, onSnapshot, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
 import { loadViewDate, saveViewDate } from '../lib/viewDate';
@@ -106,12 +106,13 @@ export default function ProductivityInput() {
     });
   }, [date]);
 
+  // 제품DB는 자주 안 바뀌므로 1회 fetch로 부하 감소
   useEffect(() => {
-    return onSnapshot(collection(db, 'productSettings'), (snap) => {
+    getDocs(collection(db, 'productSettings')).then((snap) => {
       const map: Record<string, ProductSetting> = {};
       snap.forEach((d) => { map[d.id] = d.data() as ProductSetting; });
       setProductSettings(map);
-    });
+    }).catch(() => {});
   }, []);
 
   // 자동 계산 결과

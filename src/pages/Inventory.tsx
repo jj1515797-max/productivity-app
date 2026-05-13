@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { addDoc, collection, deleteDoc, doc, onSnapshot, updateDoc } from 'firebase/firestore';
+import { addDoc, collection, deleteDoc, doc, getDocs, onSnapshot, updateDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
 import { loadViewDate, saveViewDate } from '../lib/viewDate';
@@ -32,13 +32,14 @@ export default function Inventory() {
   const [showAdd, setShowAdd] = useState(false);
   const [newRequest, setNewRequest] = useState('');
 
+  // 원재료 마스터는 자주 안 바뀌므로 1회 fetch
   useEffect(() => {
-    return onSnapshot(collection(db, 'materials'), (snap) => {
+    getDocs(collection(db, 'materials')).then((snap) => {
       const list: Material[] = [];
       snap.forEach((d) => list.push({ ...(d.data() as Material), id: d.id }));
       list.sort((a, b) => a.name.localeCompare(b.name));
       setMaterials(list);
-    });
+    }).catch(() => {});
   }, []);
 
   useEffect(() => {
