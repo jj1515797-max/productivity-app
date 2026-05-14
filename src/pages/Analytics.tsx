@@ -53,6 +53,7 @@ export default function AnalyticsDaily() {
     '1호기': {}, '2호기': {}, '3호기': {},
   });
   const [ambient, setAmbient] = useState<AmbientEntry[]>([]);
+  const [logisticsTotal, setLogisticsTotal] = useState<{ total: number; hasData: boolean }>({ total: 0, hasData: false });
   const [productivity, setProductivity] = useState<{ attend?: number; leave?: number }>({});
   const [members, setMembers] = useState<Member[]>([]);
   const [attendRecords, setAttendRecords] = useState<Record<string, AttendanceRecord>>({});
@@ -79,6 +80,20 @@ export default function AnalyticsDaily() {
     setProductivity({});
     return onSnapshot(doc(db, 'productivity', viewDate), (snap) => {
       setProductivity(snap.exists() ? (snap.data() as { attend?: number; leave?: number }) : {});
+    });
+  }, [viewDate]);
+
+  // 잔여량 (물류) 구독 — 잔여량 수정 후 즉시 반영
+  useEffect(() => {
+    setLogisticsTotal({ total: 0, hasData: false });
+    return onSnapshot(collection(db, 'days', viewDate, 'logistics'), (snap) => {
+      let total = 0;
+      let count = 0;
+      snap.forEach((d) => {
+        total += (d.data().qty as number) || 0;
+        count++;
+      });
+      setLogisticsTotal({ total, hasData: count > 0 });
     });
   }, [viewDate]);
 
@@ -135,11 +150,14 @@ export default function AnalyticsDaily() {
     const ambientTotal = ambient.reduce((s, a) => s + (a.qty || 0), 0);
     const totalActual = coldActual + ambientTotal;
     const itemCount = items.length;
-    const remaining = items.reduce((s, i) => {
-      const a = actualByCode[i.code.toLowerCase()] || 0;
-      const surplus = a - (i.totalQty || 0);
-      return s + (surplus > 0 ? surplus : 0);
-    }, 0);
+    // 잔여량: 물류 입력값(잔여량 수정)이 있으면 그 값, 없으면 (실제생산 - 발주량) 자동 계산
+    const remaining = logisticsTotal.hasData
+      ? logisticsTotal.total
+      : items.reduce((s, i) => {
+          const a = actualByCode[i.code.toLowerCase()] || 0;
+          const surplus = a - (i.totalQty || 0);
+          return s + (surplus > 0 ? surplus : 0);
+        }, 0);
 
     const byStage = STAGE_LETTERS.map((letter, idx) => {
       const stageItems = items.filter((it) => getStage(it.code) === letter);
@@ -162,7 +180,7 @@ export default function AnalyticsDaily() {
       totalActual, coldActual, ambientTotal, itemCount, remaining, byStage, maxStage,
       coldOrdered, attend, leave, productivityValue,
     };
-  }, [items, ambient, actualByCode, members, attendRecords, productivity, viewDate]);
+  }, [items, ambient, actualByCode, members, attendRecords, productivity, viewDate, logisticsTotal]);
 
   return (
     <div className="space-y-5">
