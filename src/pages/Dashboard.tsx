@@ -73,6 +73,21 @@ export default function Dashboard() {
     return () => unsubs.forEach((u) => u());
   }, [viewDate]);
 
+  // 잔여량 (물류) 구독 — 잔여량 수정값을 ± 컬럼에 반영
+  const [logisticsByCode, setLogisticsByCode] = useState<Record<string, number>>({});
+  useEffect(() => {
+    setLogisticsByCode({});
+    return onSnapshot(collection(db, 'days', viewDate, 'logistics'), (snap) => {
+      const map: Record<string, number> = {};
+      snap.forEach((d) => {
+        const key = (d.id || '').toLowerCase().replace(/[-\s]/g, '');
+        map[key] = (d.data().qty as number) || 0;
+      });
+      setLogisticsByCode(map);
+    });
+  }, [viewDate]);
+  const hasLogistics = Object.keys(logisticsByCode).length > 0;
+
   // 코드별 실제 생산량 합계 (전 호기 합산)
   const actualByCode = useMemo(() => {
     const result: Record<string, number> = {};
@@ -305,7 +320,10 @@ export default function Dashboard() {
               <tbody className="divide-y divide-gray-100">
                 {items.map((it) => {
                   const actual = actualByCode[it.code.toLowerCase()] || 0;
-                  const diff = actual - it.totalQty;
+                  // 잔여량 수정값(logistics) 우선, 없으면 actual - totalQty
+                  const normCode = it.code.toLowerCase().replace(/[-\s]/g, '');
+                  const logQty = hasLogistics ? logisticsByCode[normCode] : undefined;
+                  const diff = logQty !== undefined ? logQty : (actual - it.totalQty);
                   const done = actual >= it.totalQty && it.totalQty > 0;
                   const inProgress = actual > 0 && actual < it.totalQty;
                   return (
@@ -322,8 +340,9 @@ export default function Dashboard() {
                       <td className="px-4 py-3 text-right font-semibold text-gray-800">{it.totalQty}</td>
                       <td className="px-4 py-3 text-right text-gray-700 font-medium">{actual || '-'}</td>
                       <td className={`px-4 py-3 text-right font-bold ${diff > 0 ? 'text-green-600' : diff < 0 ? 'text-red-500' : 'text-gray-400'}`}>
-                        {/* 생산 시작 전이면 ± 숨김 */}
-                        {actual === 0 ? '' : diff > 0 ? `+${diff}` : diff < 0 ? diff : '✓'}
+                        {logQty !== undefined
+                          ? (logQty > 0 ? `+${logQty}` : logQty === 0 ? '✓' : logQty)
+                          : (actual === 0 ? '' : diff > 0 ? `+${diff}` : diff < 0 ? diff : '✓')}
                       </td>
                       <td className="px-4 py-3 text-center text-xs text-gray-400">{it.coolingEndTime || '-'}</td>
                     </tr>
