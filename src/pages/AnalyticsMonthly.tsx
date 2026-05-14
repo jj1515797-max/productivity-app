@@ -561,7 +561,7 @@ export default function AnalyticsMonthly() {
       />
       <LogisticsInputModal
         open={logisticsModalOpen}
-        onClose={() => setLogisticsModalOpen(false)}
+        onClose={() => { setLogisticsModalOpen(false); forceRefresh(); }}
         defaultDate={defaultModalDate}
       />
     </div>

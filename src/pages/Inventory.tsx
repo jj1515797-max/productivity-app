@@ -429,10 +429,8 @@ function MoveList({
 }
 
 function formatShortDate(d: string): string {
-  // 2026-05-15 → "26.5.15" 또는 "5/15" (현재년도면)
+  // 2026-11-12 → "26.11.12" (연도 항상 표시)
   const [y, m, day] = d.split('-').map(Number);
-  const thisYear = new Date().getFullYear();
-  if (y === thisYear) return `${m}/${day}`;
   return `${String(y).slice(2)}.${m}.${day}`;
 }
 

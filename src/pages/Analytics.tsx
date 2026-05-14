@@ -202,7 +202,7 @@ export default function AnalyticsDaily() {
         <BigCard
           label="생산성"
           value={stats.productivityValue !== null ? Math.round(stats.productivityValue).toLocaleString() : '-'}
-          unit={stats.productivityValue !== null ? 'EA/MH' : ''}
+          unit=""
           color="orange"
         />
         <BigCard label="잔여량" value={stats.remaining.toLocaleString()} unit="EA" color="red" />
