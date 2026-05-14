@@ -396,27 +396,44 @@ function MoveList({
         <div className="px-3 py-4 text-center text-xs text-gray-300">없음</div>
       ) : (
         <div className="divide-y divide-gray-100">
-          {items.map((mv) => (
-            <div key={mv.id} className={`px-3 py-2 flex items-start gap-2 ${mv.done ? 'opacity-50' : ''}`}>
-              <button onClick={() => onToggle(mv)} className="mt-0.5">
-                <span className={`w-4 h-4 inline-flex items-center justify-center rounded border text-[10px] ${mv.done ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-gray-300'}`}>{mv.done ? '✓' : ''}</span>
-              </button>
-              <div className="flex-1 min-w-0">
-                <div className={`text-sm font-medium ${mv.done ? 'line-through text-gray-400' : 'text-gray-800'}`}>
-                  {mv.materialName}
-                  {mv.spec && <span className="ml-1.5 text-xs px-1.5 py-0.5 bg-gray-100 rounded text-gray-600">{mv.spec}</span>}
-                  <span className="ml-2 font-bold">{mv.qty.toLocaleString()}{mv.unit || ''}</span>
+          {items.map((mv) => {
+            const dateField = mv.type === '입고' ? mv.incomingDate : mv.expiryDate;
+            const dateLabelText = mv.type === '입고' ? '입고일자' : '소비기한';
+            const dateChipColor = mv.type === '입고' ? 'bg-emerald-50 border-emerald-200 text-emerald-700' : 'bg-rose-50 border-rose-200 text-rose-700';
+            return (
+              <div key={mv.id} className={`px-3 py-2 flex items-start gap-2 ${mv.done ? 'opacity-50' : ''}`}>
+                <button onClick={() => onToggle(mv)} className="mt-0.5 flex-shrink-0">
+                  <span className={`w-4 h-4 inline-flex items-center justify-center rounded border text-[10px] ${mv.done ? 'bg-emerald-500 border-emerald-500 text-white' : 'border-gray-300'}`}>{mv.done ? '✓' : ''}</span>
+                </button>
+                <div className="flex-1 min-w-0">
+                  <div className={`text-sm font-medium ${mv.done ? 'line-through text-gray-400' : 'text-gray-800'}`}>
+                    {mv.materialName}
+                    {mv.spec && <span className="ml-1.5 text-xs px-1.5 py-0.5 bg-gray-100 rounded text-gray-600">{mv.spec}</span>}
+                    <span className="ml-2 font-bold">{mv.qty.toLocaleString()}{mv.unit || ''}</span>
+                  </div>
                 </div>
-                {mv.counterpart && <div className="text-[11px] text-gray-500 mt-0.5">{title === '출고' ? '→ ' : '← '}{mv.counterpart}</div>}
-                {mv.note && <div className="text-[11px] text-gray-400 mt-0.5">{mv.note}</div>}
+                {dateField && (
+                  <div className={`text-center border rounded-md px-2 py-1 flex-shrink-0 ${dateChipColor}`}>
+                    <div className="text-[9px] font-bold opacity-80 leading-tight">{dateLabelText}</div>
+                    <div className="text-[11px] font-mono font-bold leading-tight mt-0.5">{formatShortDate(dateField)}</div>
+                  </div>
+                )}
+                <button onClick={() => onRemove(mv)} className="text-gray-300 hover:text-red-500 text-xs flex-shrink-0">×</button>
               </div>
-              <button onClick={() => onRemove(mv)} className="text-gray-300 hover:text-red-500 text-xs">×</button>
-            </div>
-          ))}
+            );
+          })}
         </div>
       )}
     </div>
   );
+}
+
+function formatShortDate(d: string): string {
+  // 2026-05-15 → "26.5.15" 또는 "5/15" (현재년도면)
+  const [y, m, day] = d.split('-').map(Number);
+  const thisYear = new Date().getFullYear();
+  if (y === thisYear) return `${m}/${day}`;
+  return `${String(y).slice(2)}.${m}.${day}`;
 }
 
 function AddMovementModal({
@@ -428,9 +445,12 @@ function AddMovementModal({
   const [selectedMat, setSelectedMat] = useState<Material | null>(null);
   const [spec, setSpec] = useState('');
   const [qty, setQty] = useState('');
-  const [counterpart, setCounterpart] = useState('');
-  const [note, setNote] = useState('');
+  const [incomingDate, setIncomingDate] = useState(date);   // 입고일자 기본=현재 보고있는 날짜
+  const [expiryDate, setExpiryDate] = useState('');         // 소비기한 (출고)
   const [saving, setSaving] = useState(false);
+
+  // 모드/날짜 변경 시 입고일자 초기화
+  useEffect(() => { setIncomingDate(date); }, [date]);
 
   const matResults = useMemo(() => {
     const q = matSearch.trim().toLowerCase();
@@ -455,17 +475,30 @@ function AddMovementModal({
         createdAt: new Date().toISOString(),
       };
       if (spec.trim()) payload.spec = spec.trim();
-      if (counterpart.trim()) payload.counterpart = counterpart.trim();
-      if (note.trim()) payload.note = note.trim();
+      if (type === '입고' && incomingDate) payload.incomingDate = incomingDate;
+      if (type === '출고' && expiryDate) payload.expiryDate = expiryDate;
       await addDoc(collection(db, 'inventory', date, 'movements'), payload);
-      // 폼 일부 리셋 (연속 등록 편의)
-      setSelectedMat(null); setMatSearch(''); setSpec(''); setQty(''); setCounterpart(''); setNote('');
+      // 폼 리셋 (날짜는 유지 — 연속 등록 편의)
+      setSelectedMat(null); setMatSearch(''); setSpec(''); setQty('');
     } catch (err) {
       alert(`저장 실패: ${err instanceof Error ? err.message : String(err)}`);
     } finally {
       setSaving(false);
     }
   };
+
+  // 빠른 소비기한 버튼: 오늘, +1주, +1개월, +3개월, +6개월
+  const expiryQuick = (label: string, days: number) => (
+    <button
+      onClick={() => {
+        const [yy, mm, dd] = date.split('-').map(Number);
+        const d = new Date(yy, mm - 1, dd + days);
+        setExpiryDate(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
+      }}
+      type="button"
+      className="px-2.5 py-1 rounded-md border bg-white text-xs font-medium text-gray-700 hover:bg-amber-50 hover:border-amber-300"
+    >{label}</button>
+  );
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
@@ -553,23 +586,46 @@ function AddMovementModal({
           )}
 
           {/* 중량 */}
-          <div className="grid grid-cols-2 gap-3">
-            <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">중량 <span className="text-gray-400">(g)</span></label>
-              <div className="relative">
-                <input type="number" inputMode="decimal" value={qty} onChange={(e) => setQty(e.target.value)} placeholder="0" className="w-full border rounded-md px-3 py-2 pr-8 text-base text-center font-bold" />
-                <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-gray-400">g</span>
-              </div>
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-gray-600 mb-1">{type === '출고' ? '가는 곳 (선택)' : '온 곳 (선택)'}</label>
-              <input value={counterpart} onChange={(e) => setCounterpart(e.target.value)} placeholder={type === '출고' ? '예: 생산라인, 3번창고' : '예: 거래처A'} className="w-full border rounded-md px-3 py-2 text-sm" />
-            </div>
-          </div>
           <div>
-            <label className="block text-xs font-medium text-gray-600 mb-1">메모 (선택)</label>
-            <input value={note} onChange={(e) => setNote(e.target.value)} placeholder="추가 메모" className="w-full border rounded-md px-3 py-2 text-sm" />
+            <label className="block text-xs font-medium text-gray-600 mb-1">중량 <span className="text-gray-400">(g)</span></label>
+            <div className="relative max-w-[180px]">
+              <input type="number" inputMode="decimal" value={qty} onChange={(e) => setQty(e.target.value)} placeholder="0" className="w-full border rounded-md px-3 py-2 pr-8 text-base text-center font-bold" />
+              <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-gray-400">g</span>
+            </div>
           </div>
+
+          {/* 입고일자 / 소비기한 */}
+          {type === '입고' ? (
+            <div>
+              <label className="block text-xs font-medium text-emerald-700 mb-1.5">📅 입고일자</label>
+              <input
+                type="date"
+                value={incomingDate}
+                onChange={(e) => setIncomingDate(e.target.value)}
+                className="w-full border-2 border-emerald-200 rounded-md px-3 py-2 text-base font-medium text-emerald-800 bg-emerald-50"
+              />
+              <p className="text-[11px] text-gray-500 mt-1">기본값은 오늘 — 다른 날짜도 선택 가능합니다.</p>
+            </div>
+          ) : (
+            <div>
+              <label className="block text-xs font-medium text-rose-700 mb-1.5">⏰ 소비기한</label>
+              <div className="flex flex-wrap gap-1.5 mb-2">
+                {expiryQuick('오늘', 0)}
+                {expiryQuick('+1주', 7)}
+                {expiryQuick('+1개월', 30)}
+                {expiryQuick('+3개월', 90)}
+                {expiryQuick('+6개월', 180)}
+                {expiryQuick('+1년', 365)}
+              </div>
+              <input
+                type="date"
+                value={expiryDate}
+                onChange={(e) => setExpiryDate(e.target.value)}
+                className="w-full border-2 border-rose-200 rounded-md px-3 py-2 text-base font-medium text-rose-800 bg-rose-50"
+              />
+              <p className="text-[11px] text-gray-500 mt-1">위 버튼으로 빠르게 또는 직접 선택</p>
+            </div>
+          )}
         </div>
         <div className="px-5 py-3 border-t bg-slate-50 flex items-center gap-2">
           <button onClick={onClose} className="px-3 py-2 border rounded text-sm font-medium hover:bg-gray-100">닫기</button>

@@ -101,7 +101,13 @@ export interface InventoryMovement {
   spec?: string;
   qty: number;
   unit?: string;
-  counterpart?: string;       // 출고→가는곳 / 입고→온곳 (자유 입력)
+  /** 입고일자 (입고 시 사용) */
+  incomingDate?: string;
+  /** 소비기한 (출고 시 사용) */
+  expiryDate?: string;
+  /** @deprecated UI 제거됨, 구버전 호환용 */
+  counterpart?: string;
+  /** @deprecated UI 제거됨, 구버전 호환용 */
   note?: string;
   done?: boolean;
   date: string;
