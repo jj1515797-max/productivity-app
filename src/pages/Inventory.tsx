@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { addDoc, collection, deleteDoc, doc, getDocs, onSnapshot, updateDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
@@ -18,8 +18,36 @@ function dateLabel(dateStr: string): string {
   return `${y}-${String(m).padStart(2, '0')}-${String(d).padStart(2, '0')} (${days[date.getDay()]})`;
 }
 
+// 비프음 (Web Audio API — 외부 파일 없이)
+function playBeep() {
+  try {
+    const Ctx = window.AudioContext || (window as any).webkitAudioContext;
+    const ctx = new Ctx();
+    const make = (freq: number, start: number, dur: number) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = 'sine';
+      osc.frequency.value = freq;
+      gain.gain.setValueAtTime(0, ctx.currentTime + start);
+      gain.gain.linearRampToValueAtTime(0.4, ctx.currentTime + start + 0.02);
+      gain.gain.linearRampToValueAtTime(0, ctx.currentTime + start + dur);
+      osc.connect(gain); gain.connect(ctx.destination);
+      osc.start(ctx.currentTime + start);
+      osc.stop(ctx.currentTime + start + dur + 0.05);
+    };
+    // 띵-띵-띵
+    make(880, 0, 0.18);
+    make(1175, 0.22, 0.18);
+    make(880, 0.44, 0.25);
+    setTimeout(() => ctx.close(), 1200);
+  } catch {}
+}
+
 type Mv = InventoryMovement & { id: string };
 type Rq = InventoryRequest & { id: string };
+
+const NOTIFY_KEY = 'inventoryNotifyEnabled';
+const LASTSEEN_KEY = 'inventoryLastSeenReq';
 
 export default function Inventory() {
   const [date, setDate] = useState(loadViewDate);
@@ -31,6 +59,31 @@ export default function Inventory() {
   const [selectedWh, setSelectedWh] = useState<number | 'all'>('all');
   const [showAdd, setShowAdd] = useState(false);
   const [newRequest, setNewRequest] = useState('');
+
+  // 자재관리자 알림 (이 디바이스에만 저장)
+  const [notifyEnabled, setNotifyEnabled] = useState<boolean>(() => localStorage.getItem(NOTIFY_KEY) === '1');
+  const [alertItems, setAlertItems] = useState<Rq[]>([]);
+  const lastSeenRef = useRef<string>(localStorage.getItem(LASTSEEN_KEY) || new Date().toISOString());
+  const initialLoadRef = useRef<Set<string>>(new Set());
+  const initialDoneRef = useRef<boolean>(false);
+  const originalTitleRef = useRef<string>('');
+
+  // 페이지 진입 시 현재 시각 기준으로 lastSeen 초기화 (기존 요청은 알림 안 가게)
+  useEffect(() => {
+    initialDoneRef.current = false;
+    initialLoadRef.current = new Set();
+  }, [date]);
+
+  // 탭 제목 복원/관리
+  useEffect(() => {
+    if (!originalTitleRef.current) originalTitleRef.current = document.title;
+    if (alertItems.length > 0) {
+      document.title = `🔔 새 요청사항 (${alertItems.length})`;
+    } else {
+      document.title = originalTitleRef.current;
+    }
+    return () => { document.title = originalTitleRef.current; };
+  }, [alertItems.length]);
 
   // 원재료 마스터는 자주 안 바뀌므로 1회 fetch
   useEffect(() => {
@@ -58,9 +111,49 @@ export default function Inventory() {
       const list: Rq[] = [];
       snap.forEach((d) => list.push({ ...(d.data() as InventoryRequest), id: d.id }));
       list.sort((a, b) => (a.createdAt || '').localeCompare(b.createdAt || ''));
+
+      // 첫 스냅샷은 알림 무시 (기존 데이터 로드)
+      if (!initialDoneRef.current) {
+        list.forEach((r) => initialLoadRef.current.add(r.id));
+        initialDoneRef.current = true;
+        setRequests(list);
+        return;
+      }
+
+      // 알림 트리거: 자재관리자 모드 + 처음 보는 신규 요청 + lastSeen 이후
+      if (notifyEnabled) {
+        const fresh = list.filter((r) =>
+          !initialLoadRef.current.has(r.id) &&
+          (!r.createdAt || r.createdAt > lastSeenRef.current)
+        );
+        // 이미 처리한 ID 표기
+        fresh.forEach((r) => initialLoadRef.current.add(r.id));
+        if (fresh.length > 0) {
+          setAlertItems((prev) => {
+            const existingIds = new Set(prev.map((p) => p.id));
+            const merged = [...prev, ...fresh.filter((f) => !existingIds.has(f.id))];
+            return merged;
+          });
+          playBeep();
+          // OS 알림 (권한 있을 때만, 백그라운드 탭에서도 동작)
+          if ('Notification' in window && Notification.permission === 'granted') {
+            try {
+              const n = new Notification('🔔 새 재고 요청사항', {
+                body: fresh.map((f) => `· ${f.text}`).join('\n').slice(0, 200),
+                tag: 'inv-req',
+              });
+              n.onclick = () => { window.focus(); n.close(); };
+            } catch {}
+          }
+        }
+      } else {
+        // 알림 꺼져있어도 ID 추적은 해야 다음에 켰을 때 과거 항목 안 뜸
+        list.forEach((r) => initialLoadRef.current.add(r.id));
+      }
+
       setRequests(list);
     });
-  }, [date]);
+  }, [date, notifyEnabled]);
 
   const isToday = date === todayKey();
 
@@ -102,6 +195,28 @@ export default function Inventory() {
   };
   const removeReq = async (r: Rq) => {
     await deleteDoc(doc(db, 'inventory', date, 'requests', r.id));
+  };
+
+  const toggleNotify = async () => {
+    const next = !notifyEnabled;
+    if (next && 'Notification' in window && Notification.permission === 'default') {
+      try { await Notification.requestPermission(); } catch {}
+    }
+    setNotifyEnabled(next);
+    localStorage.setItem(NOTIFY_KEY, next ? '1' : '0');
+    // 켜는 순간 기준점 갱신 (이미 있는 요청은 알림 X)
+    const now = new Date().toISOString();
+    lastSeenRef.current = now;
+    localStorage.setItem(LASTSEEN_KEY, now);
+    // 한번 무음 비프(브라우저가 사용자 인터랙션 후에만 소리 허용 — 사전 unlock)
+    if (next) playBeep();
+  };
+
+  const dismissAlert = () => {
+    const now = new Date().toISOString();
+    lastSeenRef.current = now;
+    localStorage.setItem(LASTSEEN_KEY, now);
+    setAlertItems([]);
   };
 
   const visibleWarehouses = selectedWh === 'all' ? [...WAREHOUSES] : [selectedWh];
@@ -169,11 +284,24 @@ export default function Inventory() {
 
         {/* 요청사항 */}
         <div className="bg-white border rounded-lg overflow-hidden h-fit">
-          <div className="px-4 py-3 border-b bg-amber-50 font-semibold text-amber-800 flex items-center gap-2">
-            📝 요청사항
-            {requests.filter((r) => !r.done).length > 0 && (
-              <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-200 text-amber-800">{requests.filter((r) => !r.done).length}</span>
-            )}
+          <div className="px-4 py-3 border-b bg-amber-50 flex items-center gap-2 flex-wrap">
+            <span className="font-semibold text-amber-800 flex items-center gap-1.5">
+              📝 요청사항
+              {requests.filter((r) => !r.done).length > 0 && (
+                <span className="text-[10px] px-1.5 py-0.5 rounded-full bg-amber-200 text-amber-800">{requests.filter((r) => !r.done).length}</span>
+              )}
+            </span>
+            <label
+              className={`ml-auto inline-flex items-center gap-1.5 px-2 py-1 rounded-md cursor-pointer select-none text-[11px] font-medium transition border ${
+                notifyEnabled
+                  ? 'bg-rose-50 border-rose-300 text-rose-700'
+                  : 'bg-white border-gray-200 text-gray-500 hover:bg-gray-50'
+              }`}
+              title="자재관리자: 새 요청사항이 등록되면 이 화면에 알림이 뜹니다"
+            >
+              <input type="checkbox" checked={notifyEnabled} onChange={toggleNotify} className="w-3.5 h-3.5" />
+              {notifyEnabled ? '🔔 자재관리자 ON' : '🔔 자재관리자'}
+            </label>
           </div>
           <div className="p-3 space-y-2">
             <div className="flex gap-2">
@@ -212,6 +340,36 @@ export default function Inventory() {
           materials={materials}
           onClose={() => setShowAdd(false)}
         />
+      )}
+
+      {/* 자재관리자 알림 오버레이 */}
+      {alertItems.length > 0 && (
+        <div
+          onClick={dismissAlert}
+          className="fixed inset-0 bg-rose-900/70 backdrop-blur-sm flex items-center justify-center z-[100] p-6 cursor-pointer animate-[pulse_1.5s_ease-in-out_infinite]"
+        >
+          <div className="bg-white rounded-2xl shadow-2xl max-w-2xl w-full overflow-hidden">
+            <div className="px-8 py-5 bg-gradient-to-r from-rose-500 to-orange-500 text-white">
+              <div className="flex items-center gap-3">
+                <span className="text-5xl animate-bounce">🔔</span>
+                <div>
+                  <div className="text-2xl font-bold">새 요청사항 {alertItems.length}건</div>
+                  <div className="text-rose-100 text-sm mt-0.5">자재관리자 확인 필요</div>
+                </div>
+              </div>
+            </div>
+            <div className="p-6 space-y-2 max-h-[50vh] overflow-y-auto">
+              {alertItems.map((r) => (
+                <div key={r.id} className="px-4 py-3 bg-amber-50 border-l-4 border-amber-400 rounded text-gray-800 text-base">
+                  {r.text}
+                </div>
+              ))}
+            </div>
+            <div className="px-6 py-4 bg-slate-50 text-center text-sm text-gray-500 border-t">
+              화면 어디든 클릭하면 닫힙니다
+            </div>
+          </div>
+        </div>
       )}
     </div>
   );
