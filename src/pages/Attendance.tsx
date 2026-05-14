@@ -44,6 +44,7 @@ export default function Attendance() {
   const [editDept, setEditDept] = useState('');
   const [leaveTarget, setLeaveTarget] = useState<Member | null>(null);
   const [openStatusFor, setOpenStatusFor] = useState<string | null>(null);
+  const [popoverPos, setPopoverPos] = useState<{ x: number; y: number; width: number } | null>(null);
 
   // 팝오버 외부 클릭 시 닫기
   useEffect(() => {
@@ -52,11 +53,21 @@ export default function Attendance() {
       const t = e.target as HTMLElement;
       if (!t.closest('[data-status-popover]') && !t.closest('[data-status-trigger]')) {
         setOpenStatusFor(null);
+        setPopoverPos(null);
       }
     };
     document.addEventListener('mousedown', handler);
     return () => document.removeEventListener('mousedown', handler);
   }, [openStatusFor]);
+
+  const openStatusPopover = (e: React.MouseEvent<HTMLButtonElement>, mid: string) => {
+    if (openStatusFor === mid) {
+      setOpenStatusFor(null); setPopoverPos(null); return;
+    }
+    const r = e.currentTarget.getBoundingClientRect();
+    setPopoverPos({ x: r.left, y: r.bottom + 4, width: r.width });
+    setOpenStatusFor(mid);
+  };
 
   useEffect(() => {
     return onSnapshot(collection(db, 'members'), (snap) => {
@@ -289,7 +300,6 @@ export default function Attendance() {
                   const label = formatStatusLabel(statuses);
                   const isEdit = editing === m.id;
                   const cardBg = onLeave ? 'bg-zinc-100' : color.soft;
-                  const popoverOpen = openStatusFor === m.id;
                   return (
                     <div key={m.id} className={`p-3 ${cardBg} relative group`}>
                       {isEdit ? (
@@ -355,36 +365,12 @@ export default function Attendance() {
                             <div className="relative">
                               <button
                                 data-status-trigger
-                                onClick={() => setOpenStatusFor(popoverOpen ? null : m.id)}
+                                onClick={(e) => openStatusPopover(e, m.id)}
                                 className={`w-full px-2 py-1.5 rounded border-2 ${color.border} ${color.text} bg-white font-semibold text-sm cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-200 text-left flex items-center justify-between gap-1`}
                               >
                                 <span className="truncate">{label}</span>
                                 <span className="text-xs flex-shrink-0">▼</span>
                               </button>
-                              {popoverOpen && (
-                                <div
-                                  data-status-popover
-                                  className="absolute z-30 left-0 right-0 mt-1 bg-white border rounded-lg shadow-xl p-2 space-y-0.5"
-                                >
-                                  {ATTENDANCE_STATUSES.filter((s) => s !== '출근').map((s) => {
-                                    const checked = statuses.includes(s);
-                                    const stColor = STATUS_COLOR[s];
-                                    return (
-                                      <label key={s} className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer hover:bg-gray-50 ${checked ? stColor.soft : ''}`}>
-                                        <input type="checkbox" checked={checked} onChange={() => toggleStatus(m, s)} className="w-3.5 h-3.5" />
-                                        <span className={`w-1.5 h-1.5 rounded-full ${stColor.chip}`} />
-                                        <span className={`text-sm ${checked ? `${stColor.text} font-semibold` : 'text-gray-700'}`}>{s}</span>
-                                      </label>
-                                    );
-                                  })}
-                                  <div className="border-t pt-1 mt-1 flex items-center justify-between text-[11px] px-1">
-                                    {statuses.length > 0 ? (
-                                      <button onClick={() => setStatuses(m, [])} className="text-blue-600 hover:underline">→ 출근으로</button>
-                                    ) : <span className="text-gray-400">체크 없으면 출근</span>}
-                                    <button onClick={() => setOpenStatusFor(null)} className="text-gray-500 hover:text-gray-800">완료</button>
-                                  </div>
-                                </div>
-                              )}
                             </div>
                           )}
                         </>
@@ -427,6 +413,39 @@ export default function Attendance() {
           }}
         />
       )}
+
+      {/* 상태 팝오버 (fixed — overflow 회피) */}
+      {openStatusFor && popoverPos && (() => {
+        const m = members.find((mm) => mm.id === openStatusFor);
+        if (!m) return null;
+        const statuses = getStatuses(records[m.id]);
+        return (
+          <div
+            data-status-popover
+            style={{ position: 'fixed', left: popoverPos.x, top: popoverPos.y, width: Math.max(200, popoverPos.width), zIndex: 60 }}
+            className="bg-white border rounded-lg shadow-2xl p-2 space-y-0.5"
+          >
+            <div className="px-2 py-1 text-[11px] font-bold text-gray-500 border-b mb-1">{m.name} · 휴가 선택</div>
+            {ATTENDANCE_STATUSES.filter((s) => s !== '출근').map((s) => {
+              const checked = statuses.includes(s);
+              const stColor = STATUS_COLOR[s];
+              return (
+                <label key={s} className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer hover:bg-gray-50 ${checked ? stColor.soft : ''}`}>
+                  <input type="checkbox" checked={checked} onChange={() => toggleStatus(m, s)} className="w-3.5 h-3.5" />
+                  <span className={`w-1.5 h-1.5 rounded-full ${stColor.chip}`} />
+                  <span className={`text-sm ${checked ? `${stColor.text} font-semibold` : 'text-gray-700'}`}>{s}</span>
+                </label>
+              );
+            })}
+            <div className="border-t pt-1 mt-1 flex items-center justify-between text-[11px] px-1">
+              {statuses.length > 0 ? (
+                <button onClick={() => setStatuses(m, [])} className="text-blue-600 hover:underline">→ 출근으로</button>
+              ) : <span className="text-gray-400">체크 없으면 출근</span>}
+              <button onClick={() => { setOpenStatusFor(null); setPopoverPos(null); }} className="text-gray-500 hover:text-gray-800">완료</button>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
