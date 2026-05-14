@@ -70,7 +70,10 @@ export const LEAVE_DAY_WEIGHT: Record<AttendanceStatus, number> = {
 export interface AttendanceRecord {
   memberId: string;
   name: string;
-  status: AttendanceStatus;
+  /** 단일 상태 (구버전 호환) */
+  status?: AttendanceStatus;
+  /** 복합 상태 (반차+반반차 등) — 우선 사용. 비어있으면 출근 처리 */
+  statuses?: AttendanceStatus[];
   date: string;
   note?: string;
 }
@@ -98,7 +101,13 @@ export interface InventoryMovement {
   spec?: string;
   qty: number;
   unit?: string;
-  counterpart?: string;       // 출고→가는곳 / 입고→온곳 (자유 입력)
+  /** 입고일자 (입고 시 사용) */
+  incomingDate?: string;
+  /** 소비기한 (출고 시 사용) */
+  expiryDate?: string;
+  /** @deprecated UI 제거됨, 구버전 호환용 */
+  counterpart?: string;
+  /** @deprecated UI 제거됨, 구버전 호환용 */
   note?: string;
   done?: boolean;
   date: string;
