@@ -40,6 +40,31 @@ async function fetchMonthLogistics(month: string): Promise<Record<string, number
   return map;
 }
 
+// ===== localStorage 캐시 (Firestore 읽기 절감) =====
+const CACHE_PREFIX = 'analyticsMonthly:';
+function getCache<T>(key: string, ttlMs: number): { data: T; ts: number } | null {
+  try {
+    const raw = localStorage.getItem(CACHE_PREFIX + key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { ts: number; data: T };
+    if (Date.now() - parsed.ts > ttlMs) return null;
+    return parsed;
+  } catch { return null; }
+}
+function setCache<T>(key: string, data: T) {
+  try {
+    localStorage.setItem(CACHE_PREFIX + key, JSON.stringify({ ts: Date.now(), data }));
+  } catch {}
+}
+function clearCache(key: string) {
+  try { localStorage.removeItem(CACHE_PREFIX + key); } catch {}
+}
+
+function thisMonthKey(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
 type MonthStats = {
   daysWorked: number;
   totalAvg: number;
@@ -148,69 +173,121 @@ export default function AnalyticsMonthly() {
   const [ambientModalOpen, setAmbientModalOpen] = useState(false);
   const [logisticsModalOpen, setLogisticsModalOpen] = useState(false);
   const [compareMode, setCompareMode] = useState<'full' | 'sameDays'>('full');
+  const [cacheInfo, setCacheInfo] = useState<{ age: number; isCached: boolean }>({ age: 0, isCached: false });
+  const [refreshTick, setRefreshTick] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
     setErr(null);
     setPrev3Avg(0);
-    const start = `${month}-01`;
-    const end = `${month}-31`;
 
-    Promise.all([
-      getDocs(query(collectionGroup(db, 'entries'), where('date', '>=', start), where('date', '<=', end))),
-      getDocs(query(collectionGroup(db, 'items'), where('date', '>=', start), where('date', '<=', end))),
-      getDocs(query(collectionGroup(db, 'ambient'), where('date', '>=', start), where('date', '<=', end))),
-    ])
-      .then(([entriesSnap, itemsSnap, ambientSnap]) => {
-        if (cancelled) return;
-        setEntries(entriesSnap.docs.map((d) => d.data() as MachineEntry));
-        const itemsList = itemsSnap.docs.map((d) => d.data() as Item);
-        setItems(itemsList);
-        const map = new Map<string, string>();
-        itemsList.forEach((it) => {
-          if (it.code && it.name) map.set(it.code.toLowerCase(), it.name);
-        });
-        setNameMap(map);
-        setAmbient(ambientSnap.docs.map((d) => d.data() as AmbientEntry));
-      })
-      .catch((e) => {
-        if (!cancelled) setErr(e.message || String(e));
-      })
-      .finally(() => {
-        if (!cancelled) setLoading(false);
+    // 현재월: 진행중이라 짧은 TTL, 과거월은 길게 (데이터 확정)
+    const isCurrent = month === thisMonthKey();
+    const ttlCurrent = isCurrent ? 5 * 60 * 1000 : 24 * 60 * 60 * 1000;  // 5분 / 24시간
+    const ttlPrev = 24 * 60 * 60 * 1000;                                  // 24시간
+
+    type Snapshot = {
+      entries: MachineEntry[];
+      items: Item[];
+      ambient: AmbientEntry[];
+      logistics: Record<string, number>;
+    };
+
+    const cacheKey = `m:${month}`;
+    const cached = refreshTick === 0 ? getCache<Snapshot>(cacheKey, ttlCurrent) : null;
+    if (cached) {
+      // 캐시 히트 — Firestore 읽기 0건
+      setEntries(cached.data.entries);
+      setItems(cached.data.items);
+      setAmbient(cached.data.ambient);
+      setLogisticsByDay(cached.data.logistics);
+      const map = new Map<string, string>();
+      cached.data.items.forEach((it) => {
+        if (it.code && it.name) map.set(it.code.toLowerCase(), it.name);
       });
+      setNameMap(map);
+      setCacheInfo({ age: Date.now() - cached.ts, isCached: true });
+      setLoading(false);
+    } else {
+      setCacheInfo({ age: 0, isCached: false });
+      const start = `${month}-01`;
+      const end = `${month}-31`;
+      Promise.all([
+        getDocs(query(collectionGroup(db, 'entries'), where('date', '>=', start), where('date', '<=', end))),
+        getDocs(query(collectionGroup(db, 'items'), where('date', '>=', start), where('date', '<=', end))),
+        getDocs(query(collectionGroup(db, 'ambient'), where('date', '>=', start), where('date', '<=', end))),
+        fetchMonthLogistics(month),
+      ])
+        .then(([entriesSnap, itemsSnap, ambientSnap, logMap]) => {
+          if (cancelled) return;
+          const ents = entriesSnap.docs.map((d) => d.data() as MachineEntry);
+          const its = itemsSnap.docs.map((d) => d.data() as Item);
+          const ambs = ambientSnap.docs.map((d) => d.data() as AmbientEntry);
+          setEntries(ents);
+          setItems(its);
+          setAmbient(ambs);
+          setLogisticsByDay(logMap);
+          const map = new Map<string, string>();
+          its.forEach((it) => { if (it.code && it.name) map.set(it.code.toLowerCase(), it.name); });
+          setNameMap(map);
+          setCache(cacheKey, { entries: ents, items: its, ambient: ambs, logistics: logMap });
+        })
+        .catch((e) => { if (!cancelled) setErr(e.message || String(e)); })
+        .finally(() => { if (!cancelled) setLoading(false); });
+    }
 
-    setLogisticsByDay({});
-    fetchMonthLogistics(month).then((map) => {
-      if (!cancelled) setLogisticsByDay(map);
-    }).catch(() => {});
-
-    // 전월 통계 백그라운드 fetch (직전 1개월만 — 읽기 부하 감소)
+    // 전월 데이터 (확정 데이터라 길게 캐시)
     setPrevMonthData(null);
     setPrevLogisticsByDay({});
     const prevM = prevMonths(month, 1)[0];
-    Promise.all([
-      getDocs(query(collectionGroup(db, 'entries'), where('date', '>=', `${prevM}-01`), where('date', '<=', `${prevM}-31`))),
-      getDocs(query(collectionGroup(db, 'ambient'), where('date', '>=', `${prevM}-01`), where('date', '<=', `${prevM}-31`))),
-      getDocs(query(collectionGroup(db, 'items'), where('date', '>=', `${prevM}-01`), where('date', '<=', `${prevM}-31`))),
-    ])
-      .then(async (snaps) => {
-        if (cancelled) return;
-        const ents = snaps[0].docs.map((d) => d.data() as MachineEntry);
-        const ambs = snaps[1].docs.map((d) => d.data() as AmbientEntry);
-        const prevItems = snaps[2].docs.map((d) => d.data() as Item);
-        const prevLogMap = await fetchMonthLogistics(prevM).catch(() => ({} as Record<string, number>));
-        if (cancelled) return;
-        setPrevLogisticsByDay(prevLogMap);
-        setPrevMonthData({ entries: ents, ambient: ambs, items: prevItems });
-        const ms = computeMonthStats(ents, ambs);
-        setPrev3Avg(ms.daysWorked > 0 ? ms.totalAvg : 0);
-      })
-      .catch(() => {});
+    type PrevSnapshot = {
+      entries: MachineEntry[];
+      ambient: AmbientEntry[];
+      items: Item[];
+      logistics: Record<string, number>;
+    };
+    const prevCacheKey = `pm:${prevM}`;
+    const prevCached = refreshTick === 0 ? getCache<PrevSnapshot>(prevCacheKey, ttlPrev) : null;
+    if (prevCached) {
+      setPrevLogisticsByDay(prevCached.data.logistics);
+      setPrevMonthData({
+        entries: prevCached.data.entries,
+        ambient: prevCached.data.ambient,
+        items: prevCached.data.items,
+      });
+      const ms = computeMonthStats(prevCached.data.entries, prevCached.data.ambient);
+      setPrev3Avg(ms.daysWorked > 0 ? ms.totalAvg : 0);
+    } else {
+      Promise.all([
+        getDocs(query(collectionGroup(db, 'entries'), where('date', '>=', `${prevM}-01`), where('date', '<=', `${prevM}-31`))),
+        getDocs(query(collectionGroup(db, 'ambient'), where('date', '>=', `${prevM}-01`), where('date', '<=', `${prevM}-31`))),
+        getDocs(query(collectionGroup(db, 'items'), where('date', '>=', `${prevM}-01`), where('date', '<=', `${prevM}-31`))),
+        fetchMonthLogistics(prevM),
+      ])
+        .then((arr) => {
+          if (cancelled) return;
+          const ents = arr[0].docs.map((d) => d.data() as MachineEntry);
+          const ambs = arr[1].docs.map((d) => d.data() as AmbientEntry);
+          const prevItems = arr[2].docs.map((d) => d.data() as Item);
+          const prevLogMap = arr[3] as Record<string, number>;
+          setPrevLogisticsByDay(prevLogMap);
+          setPrevMonthData({ entries: ents, ambient: ambs, items: prevItems });
+          const ms = computeMonthStats(ents, ambs);
+          setPrev3Avg(ms.daysWorked > 0 ? ms.totalAvg : 0);
+          setCache(prevCacheKey, { entries: ents, ambient: ambs, items: prevItems, logistics: prevLogMap });
+        })
+        .catch(() => {});
+    }
 
     return () => { cancelled = true; };
-  }, [month]);
+  }, [month, refreshTick]);
+
+  const forceRefresh = () => {
+    clearCache(`m:${month}`);
+    clearCache(`pm:${prevMonths(month, 1)[0]}`);
+    setRefreshTick((t) => t + 1);
+  };
 
   const stats = useMemo(() => {
     const qty = (e: MachineEntry) => (e.actualProduction || 0) + (e.additionalProduction || 0);
@@ -329,7 +406,19 @@ export default function AnalyticsMonthly() {
         />
         {loading && <span className="text-sm text-gray-500">불러오는 중...</span>}
         {err && <span className="text-sm text-red-500">에러: {err}</span>}
+        {!loading && cacheInfo.isCached && (
+          <span className="text-[11px] text-gray-400 flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+            캐시 ({Math.max(1, Math.floor(cacheInfo.age / 1000))}초 전)
+          </span>
+        )}
         <div className="ml-auto flex items-center gap-2">
+          <button
+            onClick={forceRefresh}
+            disabled={loading}
+            className="px-3 py-2 bg-white border hover:bg-gray-50 text-gray-700 rounded-md font-medium text-sm shadow-sm disabled:opacity-50"
+            title="캐시 무시하고 다시 불러오기"
+          >🔄</button>
           <button
             onClick={() => setLogisticsModalOpen(true)}
             className="px-4 py-2 bg-rose-600 hover:bg-rose-700 text-white rounded-md font-medium text-sm shadow-sm flex items-center gap-2"
