@@ -5,7 +5,7 @@ import { todayKey } from '../lib/dateUtil';
 import { loadViewDate, saveViewDate } from '../lib/viewDate';
 import type { AttendanceRecord, AttendanceStatus, Member } from '../types';
 import { ATTENDANCE_STATUSES } from '../types';
-import { isOnLeave } from '../lib/attendance';
+import { isOnLeave, getStatuses, formatStatusLabel, leaveDaysFromStatuses } from '../lib/attendance';
 
 const STATUS_COLOR: Record<AttendanceStatus, { chip: string; soft: string; text: string; border: string }> = {
   출근:    { chip: 'bg-emerald-500', soft: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-300' },
@@ -43,6 +43,20 @@ export default function Attendance() {
   const [editName, setEditName] = useState('');
   const [editDept, setEditDept] = useState('');
   const [leaveTarget, setLeaveTarget] = useState<Member | null>(null);
+  const [openStatusFor, setOpenStatusFor] = useState<string | null>(null);
+
+  // 팝오버 외부 클릭 시 닫기
+  useEffect(() => {
+    if (!openStatusFor) return;
+    const handler = (e: MouseEvent) => {
+      const t = e.target as HTMLElement;
+      if (!t.closest('[data-status-popover]') && !t.closest('[data-status-trigger]')) {
+        setOpenStatusFor(null);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [openStatusFor]);
 
   useEffect(() => {
     return onSnapshot(collection(db, 'members'), (snap) => {
@@ -67,21 +81,25 @@ export default function Attendance() {
 
   const counts = useMemo(() => {
     const totalN = members.length;
+    // 각 상태가 등장한 멤버 수 (한 사람이 여러 상태면 각각 +1)
     const breakdown: Record<AttendanceStatus, number> = {
       출근: 0, 연차: 0, 반차: 0, 반반차: 0, 결혼반차: 0, 병가: 0, 경조사: 0, 휴무: 0,
     };
-    let onLeaveN = 0;
+    let onLeaveN = 0, presentN = 0, restN = 0, leaveDays = 0;
     members.forEach((m) => {
-      if (isOnLeave(m, date)) { onLeaveN++; return; } // 휴직: 일별 카운트 제외
-      const status = (records[m.id]?.status as AttendanceStatus) || '출근';
-      breakdown[status]++;
+      if (isOnLeave(m, date)) { onLeaveN++; return; }
+      const statuses = getStatuses(records[m.id]);
+      if (statuses.length === 0) {
+        presentN++; breakdown.출근++;
+        return;
+      }
+      if (statuses.includes('휴무')) restN++;
+      else leaveDays += leaveDaysFromStatuses(statuses);
+      statuses.forEach((s) => { breakdown[s]++; });
     });
-    const presentN = breakdown.출근;
-    const restN = breakdown.휴무;
-    const dailyN = totalN - onLeaveN; // 일별 카운트 대상 (휴직 제외)
-    const leaveN = dailyN - presentN - restN; // 연차/반차/결혼반차/병가/경조사 합산
-    const workforceN = totalN - onLeaveN - restN; // 휴직+휴무 제외 (생산성 분모)
-    return { totalN, presentN, leaveN, restN, onLeaveN, workforceN, breakdown };
+    const leaveN = totalN - onLeaveN - presentN - restN; // 연차/반차/결혼반차/병가/경조사 (인원수)
+    const workforceN = totalN - onLeaveN - restN;
+    return { totalN, presentN, leaveN, restN, onLeaveN, workforceN, leaveDays, breakdown };
   }, [members, records, date]);
 
   const grouped = useMemo(() => {
@@ -98,14 +116,32 @@ export default function Attendance() {
     return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]));
   }, [members, search]);
 
-  const setStatus = async (m: Member, status: AttendanceStatus) => {
-    if (status === '출근') {
+  const setStatuses = async (m: Member, statuses: AttendanceStatus[]) => {
+    // 빈 배열 또는 [출근]만 있으면 출근(레코드 삭제)
+    const filtered = statuses.filter((s) => s !== '출근');
+    if (filtered.length === 0) {
       await deleteDoc(doc(db, 'attendance', date, 'records', m.id)).catch(() => {});
-    } else {
-      await setDoc(doc(db, 'attendance', date, 'records', m.id), {
-        memberId: m.id, name: m.name, status, date,
-      });
+      return;
     }
+    await setDoc(doc(db, 'attendance', date, 'records', m.id), {
+      memberId: m.id, name: m.name,
+      statuses: filtered,
+      status: filtered[0],  // 구버전 호환
+      date,
+    });
+  };
+
+  const toggleStatus = async (m: Member, s: AttendanceStatus) => {
+    const current = getStatuses(records[m.id]);
+    let next: AttendanceStatus[];
+    if (current.includes(s)) {
+      next = current.filter((x) => x !== s);
+    } else {
+      // 휴무는 다른 휴가 상태와 배타: 휴무 켜면 다른거 해제 / 다른거 켜면 휴무 해제
+      if (s === '휴무') next = ['휴무'];
+      else next = [...current.filter((x) => x !== '휴무'), s];
+    }
+    await setStatuses(m, next);
   };
 
   const addMember = async (name: string, dept: string) => {
@@ -247,10 +283,13 @@ export default function Attendance() {
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 divide-x divide-y divide-gray-100" style={{ borderRight: 0 }}>
                 {list.map((m) => {
                   const onLeave = isOnLeave(m, date);
-                  const status = (records[m.id]?.status as AttendanceStatus) || '출근';
-                  const color = STATUS_COLOR[status];
+                  const statuses = getStatuses(records[m.id]);
+                  const primary: AttendanceStatus = statuses[0] || '출근';
+                  const color = STATUS_COLOR[primary];
+                  const label = formatStatusLabel(statuses);
                   const isEdit = editing === m.id;
                   const cardBg = onLeave ? 'bg-zinc-100' : color.soft;
+                  const popoverOpen = openStatusFor === m.id;
                   return (
                     <div key={m.id} className={`p-3 ${cardBg} relative group`}>
                       {isEdit ? (
@@ -314,16 +353,38 @@ export default function Attendance() {
                             </button>
                           ) : (
                             <div className="relative">
-                              <select
-                                value={status}
-                                onChange={(e) => setStatus(m, e.target.value as AttendanceStatus)}
-                                className={`w-full px-2 py-1.5 rounded border-2 ${color.border} ${color.text} bg-white font-semibold text-sm cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-200 appearance-none pr-7`}
+                              <button
+                                data-status-trigger
+                                onClick={() => setOpenStatusFor(popoverOpen ? null : m.id)}
+                                className={`w-full px-2 py-1.5 rounded border-2 ${color.border} ${color.text} bg-white font-semibold text-sm cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-200 text-left flex items-center justify-between gap-1`}
                               >
-                                {ATTENDANCE_STATUSES.map((s) => (
-                                  <option key={s} value={s}>{s}</option>
-                                ))}
-                              </select>
-                              <span className={`absolute right-2 top-1/2 -translate-y-1/2 pointer-events-none ${color.text} text-xs`}>▼</span>
+                                <span className="truncate">{label}</span>
+                                <span className="text-xs flex-shrink-0">▼</span>
+                              </button>
+                              {popoverOpen && (
+                                <div
+                                  data-status-popover
+                                  className="absolute z-30 left-0 right-0 mt-1 bg-white border rounded-lg shadow-xl p-2 space-y-0.5"
+                                >
+                                  {ATTENDANCE_STATUSES.filter((s) => s !== '출근').map((s) => {
+                                    const checked = statuses.includes(s);
+                                    const stColor = STATUS_COLOR[s];
+                                    return (
+                                      <label key={s} className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer hover:bg-gray-50 ${checked ? stColor.soft : ''}`}>
+                                        <input type="checkbox" checked={checked} onChange={() => toggleStatus(m, s)} className="w-3.5 h-3.5" />
+                                        <span className={`w-1.5 h-1.5 rounded-full ${stColor.chip}`} />
+                                        <span className={`text-sm ${checked ? `${stColor.text} font-semibold` : 'text-gray-700'}`}>{s}</span>
+                                      </label>
+                                    );
+                                  })}
+                                  <div className="border-t pt-1 mt-1 flex items-center justify-between text-[11px] px-1">
+                                    {statuses.length > 0 ? (
+                                      <button onClick={() => setStatuses(m, [])} className="text-blue-600 hover:underline">→ 출근으로</button>
+                                    ) : <span className="text-gray-400">체크 없으면 출근</span>}
+                                    <button onClick={() => setOpenStatusFor(null)} className="text-gray-500 hover:text-gray-800">완료</button>
+                                  </div>
+                                </div>
+                              )}
                             </div>
                           )}
                         </>

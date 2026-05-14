@@ -70,7 +70,10 @@ export const LEAVE_DAY_WEIGHT: Record<AttendanceStatus, number> = {
 export interface AttendanceRecord {
   memberId: string;
   name: string;
-  status: AttendanceStatus;
+  /** 단일 상태 (구버전 호환) */
+  status?: AttendanceStatus;
+  /** 복합 상태 (반차+반반차 등) — 우선 사용. 비어있으면 출근 처리 */
+  statuses?: AttendanceStatus[];
   date: string;
   note?: string;
 }
