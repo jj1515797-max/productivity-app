@@ -101,14 +101,24 @@ export default function Dashboard() {
 
   const stats = useMemo(() => {
     const totalQty = items.reduce((s, i) => s + (i.totalQty || 0), 0);
-    const actual = items.reduce((s, i) => s + (actualByCode[i.code.toLowerCase()] || 0), 0);
+    // 완료된 수량: 물류(잔여량 수정)값이 있으면 totalQty + logQty 사용 (사용자 입력 우선)
+    // → 총수량 + 잔여량 합계 = 완료된 수량 으로 항상 일치
+    const actual = items.reduce((s, i) => {
+      const norm = i.code.toLowerCase().replace(/[-\s]/g, '');
+      const lq = logisticsByCode[norm];
+      if (lq !== undefined) return s + (i.totalQty || 0) + lq;
+      return s + (actualByCode[i.code.toLowerCase()] || 0);
+    }, 0);
     const itemCount = items.length;
-    const completedItems = items.filter(
-      (i) => (actualByCode[i.code.toLowerCase()] || 0) >= i.totalQty && i.totalQty > 0
-    ).length;
+    // 완료된 품목: 물류값이 있으면 완료로 간주, 아니면 실제 생산량 ≥ 총수량
+    const completedItems = items.filter((i) => {
+      const norm = i.code.toLowerCase().replace(/[-\s]/g, '');
+      if (logisticsByCode[norm] !== undefined) return true;
+      return (actualByCode[i.code.toLowerCase()] || 0) >= i.totalQty && i.totalQty > 0;
+    }).length;
     const pct = itemCount ? Math.round((completedItems / itemCount) * 100) : 0;
     return { totalQty, actual, itemCount, completedItems, pct };
-  }, [items, actualByCode]);
+  }, [items, actualByCode, logisticsByCode]);
 
   const onPaste = async () => {
     const num = (s: string) => {
