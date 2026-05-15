@@ -53,7 +53,7 @@ export default function AnalyticsDaily() {
     '1호기': {}, '2호기': {}, '3호기': {},
   });
   const [ambient, setAmbient] = useState<AmbientEntry[]>([]);
-  const [logisticsTotal, setLogisticsTotal] = useState<{ total: number; hasData: boolean }>({ total: 0, hasData: false });
+  const [logisticsTotal, setLogisticsTotal] = useState<{ total: number; hasData: boolean; byCode: Record<string, number> }>({ total: 0, hasData: false, byCode: {} });
   const [productivity, setProductivity] = useState<{ attend?: number; leave?: number }>({});
   const [members, setMembers] = useState<Member[]>([]);
   const [attendRecords, setAttendRecords] = useState<Record<string, AttendanceRecord>>({});
@@ -85,15 +85,19 @@ export default function AnalyticsDaily() {
 
   // 잔여량 (물류) 구독 — 잔여량 수정 후 즉시 반영
   useEffect(() => {
-    setLogisticsTotal({ total: 0, hasData: false });
+    setLogisticsTotal({ total: 0, hasData: false, byCode: {} });
     return onSnapshot(collection(db, 'days', viewDate, 'logistics'), (snap) => {
       let total = 0;
       let count = 0;
+      const byCode: Record<string, number> = {};
       snap.forEach((d) => {
-        total += (d.data().qty as number) || 0;
+        const qty = (d.data().qty as number) || 0;
+        total += qty;
         count++;
+        const norm = (d.id || '').toLowerCase().replace(/[-\s]/g, '');
+        byCode[norm] = qty;
       });
-      setLogisticsTotal({ total, hasData: count > 0 });
+      setLogisticsTotal({ total, hasData: count > 0, byCode });
     });
   }, [viewDate]);
 
@@ -146,7 +150,13 @@ export default function AnalyticsDaily() {
   }, [machineQty]);
 
   const stats = useMemo(() => {
-    const coldActual = items.reduce((s, i) => s + (actualByCode[i.code.toLowerCase()] || 0), 0);
+    // 냉장 생산: 잔여량 수정값이 있으면 totalQty + logQty (사용자 입력 우선)
+    const coldActual = items.reduce((s, i) => {
+      const norm = i.code.toLowerCase().replace(/[-\s]/g, '');
+      const lq = logisticsTotal.byCode[norm];
+      if (lq !== undefined) return s + (i.totalQty || 0) + lq;
+      return s + (actualByCode[i.code.toLowerCase()] || 0);
+    }, 0);
     const ambientTotal = ambient.reduce((s, a) => s + (a.qty || 0), 0);
     const totalActual = coldActual + ambientTotal;
     const itemCount = items.length;
