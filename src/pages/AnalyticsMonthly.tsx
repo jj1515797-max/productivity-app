@@ -292,12 +292,30 @@ export default function AnalyticsMonthly() {
   const stats = useMemo(() => {
     const qty = (e: MachineEntry) => (e.actualProduction || 0) + (e.additionalProduction || 0);
 
-    const coldTotal = entries.reduce((s, e) => s + qty(e), 0);
+    // 일별 raw 합계
+    const rawColdByDay: Record<string, number> = {};
+    entries.forEach((e) => { rawColdByDay[e.date] = (rawColdByDay[e.date] || 0) + qty(e); });
+    const totalQtyByDay: Record<string, number> = {};
+    items.forEach((it) => { totalQtyByDay[it.date] = (totalQtyByDay[it.date] || 0) + (it.totalQty || 0); });
+
+    // 냉장 생산량: 잔여량 수정값이 있는 날은 totalQty + logQty 사용 (사용자 입력 우선)
+    const coldByDay: Record<string, number> = {};
+    const allColdDates = new Set<string>([
+      ...Object.keys(rawColdByDay),
+      ...Object.keys(logisticsByDay),
+      ...Object.keys(totalQtyByDay),
+    ]);
+    allColdDates.forEach((d) => {
+      if (logisticsByDay[d] !== undefined) {
+        coldByDay[d] = (totalQtyByDay[d] || 0) + logisticsByDay[d];
+      } else {
+        coldByDay[d] = rawColdByDay[d] || 0;
+      }
+    });
+    const coldTotal = Object.values(coldByDay).reduce((s, v) => s + v, 0);
     const ambientTotal = ambient.reduce((s, a) => s + (a.qty || 0), 0);
     const total = coldTotal + ambientTotal;
 
-    const coldByDay: Record<string, number> = {};
-    entries.forEach((e) => { coldByDay[e.date] = (coldByDay[e.date] || 0) + qty(e); });
     const ambientByDay: Record<string, number> = {};
     ambient.forEach((a) => { ambientByDay[a.date] = (ambientByDay[a.date] || 0) + (a.qty || 0); });
 
