@@ -746,6 +746,37 @@ function DailyChart({
               );
             })}
 
+            {/* 막대만 먼저 (평균선이 막대 위로 보이도록) */}
+            {days.map((d, i) => {
+              if (d.cold + d.ambient <= 0) return null;
+              const cx = padL + bandW * i + bandW / 2;
+              const yCold = yFor(d.cold);
+              const hCold = padT + innerH - yCold;
+              const yAmb = yFor(d.cold + d.ambient);
+              const hAmb = yCold - yAmb;
+              return (
+                <g key={`bar-${d.day}`}>
+                  {d.cold > 0 && (
+                    <rect x={cx - barW / 2} y={yCold} width={barW} height={hCold} fill="#2563eb" rx={2} />
+                  )}
+                  {d.ambient > 0 && (
+                    <rect x={cx - barW / 2} y={yAmb} width={barW} height={hAmb} fill="#ea580c" rx={2} />
+                  )}
+                </g>
+              );
+            })}
+
+            {/* 평균선 (직선) - 막대 위에 표시되되 숫자 라벨에는 가려지도록 라벨 앞에 그림 */}
+            {avg > 0 && (
+              <line x1={padL} y1={avgY} x2={padL + innerW} y2={avgY}
+                stroke="#6b7280" strokeWidth={2.5} />
+            )}
+            {prev3Avg > 0 && (
+              <line x1={padL} y1={prev3Y} x2={padL + innerW} y2={prev3Y}
+                stroke="#eab308" strokeWidth={2.5} />
+            )}
+
+            {/* 막대 숫자 라벨 (평균선 위에 그려서 가리지 않게) */}
             {days.map((d, i) => {
               if (d.cold + d.ambient <= 0) return null;
               const cx = padL + bandW * i + bandW / 2;
@@ -765,17 +796,11 @@ function DailyChart({
               const ambLabelY = ambInside ? yAmb + hAmb / 2 : yAmb - 10;
 
               return (
-                <g key={`bar-${d.day}`}>
-                  {d.cold > 0 && (
-                    <rect x={cx - barW / 2} y={yCold} width={barW} height={hCold} fill="#2563eb" rx={2} />
-                  )}
-                  {d.ambient > 0 && (
-                    <rect x={cx - barW / 2} y={yAmb} width={barW} height={hAmb} fill="#ea580c" rx={2} />
-                  )}
+                <g key={`lbl-${d.day}`}>
                   {ambText && (
                     <g>
                       <rect x={cx - ambTW / 2} y={ambLabelY - 9} width={ambTW} height={16}
-                        fill="#ffedd5" fillOpacity={0.95} stroke="#fb923c" strokeWidth={0.7} rx={3} />
+                        fill="#ffedd5" fillOpacity={1} stroke="#fb923c" strokeWidth={0.7} rx={3} />
                       <text x={cx} y={ambLabelY + 3} textAnchor="middle" fontSize="11"
                         fill="#9a3412" fontWeight="bold">
                         {ambText}
@@ -785,7 +810,7 @@ function DailyChart({
                   {coldText && (
                     <g>
                       <rect x={cx - coldTW / 2} y={coldLabelY - 9} width={coldTW} height={16}
-                        fill="white" fillOpacity={0.92} stroke="#cbd5e1" strokeWidth={0.5} rx={3} />
+                        fill="white" fillOpacity={1} stroke="#cbd5e1" strokeWidth={0.5} rx={3} />
                       <text x={cx} y={coldLabelY + 3} textAnchor="middle" fontSize="11"
                         fill="#1f2937" fontWeight="bold">
                         {coldText}
@@ -796,10 +821,9 @@ function DailyChart({
               );
             })}
 
+            {/* 평균선 우측 라벨 박스 (맨 위에) */}
             {avg > 0 && (
               <g>
-                <line x1={padL} y1={avgY} x2={padL + innerW} y2={avgY}
-                  stroke="#6b7280" strokeWidth={2.5} />
                 <rect x={padL + innerW + 4} y={avgLabelY - 11} width={92} height={22}
                   fill="#f3f4f6" stroke="#9ca3af" rx={2} />
                 <text x={padL + innerW + 50} y={avgLabelY + 4} textAnchor="middle" fontSize="12"
@@ -810,8 +834,6 @@ function DailyChart({
             )}
             {prev3Avg > 0 && (
               <g>
-                <line x1={padL} y1={prev3Y} x2={padL + innerW} y2={prev3Y}
-                  stroke="#eab308" strokeWidth={2.5} />
                 <rect x={padL + innerW + 4} y={prev3LabelY - 11} width={92} height={22}
                   fill="#fefce8" stroke="#eab308" rx={2} />
                 <text x={padL + innerW + 50} y={prev3LabelY + 4} textAnchor="middle" fontSize="12"
