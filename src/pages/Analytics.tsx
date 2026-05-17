@@ -150,13 +150,11 @@ export default function AnalyticsDaily() {
   }, [machineQty]);
 
   const stats = useMemo(() => {
-    // 냉장 생산: 잔여량 수정값이 있으면 totalQty + logQty (사용자 입력 우선)
-    const coldActual = items.reduce((s, i) => {
-      const norm = i.code.toLowerCase().replace(/[-\s]/g, '');
-      const lq = logisticsTotal.byCode[norm];
-      if (lq !== undefined) return s + (i.totalQty || 0) + lq;
-      return s + (actualByCode[i.code.toLowerCase()] || 0);
-    }, 0);
+    const totalQtyAll = items.reduce((s, i) => s + (i.totalQty || 0), 0);
+    // 잔여량 수정이 있으면: 냉장 = 총수량 + 잔여량합계 (항상 일치)
+    const coldActual = logisticsTotal.hasData
+      ? totalQtyAll + logisticsTotal.total
+      : items.reduce((s, i) => s + (actualByCode[i.code.toLowerCase()] || 0), 0);
     const ambientTotal = ambient.reduce((s, a) => s + (a.qty || 0), 0);
     const totalActual = coldActual + ambientTotal;
     const itemCount = items.length;
