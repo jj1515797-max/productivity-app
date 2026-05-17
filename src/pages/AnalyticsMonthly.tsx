@@ -167,6 +167,9 @@ export default function AnalyticsMonthly() {
   const [prevLogisticsByDay, setPrevLogisticsByDay] = useState<Record<string, number>>({});
   const [nameMap, setNameMap] = useState<Map<string, string>>(new Map());
   const [prev3Avg, setPrev3Avg] = useState<number>(0);
+  const [prev3Tick, setPrev3Tick] = useState(0);
+  const [prev3Refreshing, setPrev3Refreshing] = useState(false);
+  const [prev3CachedAt, setPrev3CachedAt] = useState<number | null>(null);
   const [prevMonthData, setPrevMonthData] = useState<{ entries: MachineEntry[]; ambient: AmbientEntry[]; items: Item[] } | null>(null);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -180,7 +183,6 @@ export default function AnalyticsMonthly() {
     let cancelled = false;
     setLoading(true);
     setErr(null);
-    setPrev3Avg(0);
 
     // 현재월: 진행중이라 짧은 TTL, 과거월은 길게 (데이터 확정)
     const isCurrent = month === thisMonthKey();
@@ -256,8 +258,6 @@ export default function AnalyticsMonthly() {
         ambient: prevCached.data.ambient,
         items: prevCached.data.items,
       });
-      const ms = computeMonthStats(prevCached.data.entries, prevCached.data.ambient);
-      setPrev3Avg(ms.daysWorked > 0 ? ms.totalAvg : 0);
     } else {
       Promise.all([
         getDocs(query(collectionGroup(db, 'entries'), where('date', '>=', `${prevM}-01`), where('date', '<=', `${prevM}-31`))),
@@ -273,8 +273,6 @@ export default function AnalyticsMonthly() {
           const prevLogMap = arr[3] as Record<string, number>;
           setPrevLogisticsByDay(prevLogMap);
           setPrevMonthData({ entries: ents, ambient: ambs, items: prevItems });
-          const ms = computeMonthStats(ents, ambs);
-          setPrev3Avg(ms.daysWorked > 0 ? ms.totalAvg : 0);
           setCache(prevCacheKey, { entries: ents, ambient: ambs, items: prevItems, logistics: prevLogMap });
         })
         .catch(() => {});
@@ -283,10 +281,53 @@ export default function AnalyticsMonthly() {
     return () => { cancelled = true; };
   }, [month, refreshTick]);
 
+  // 직전 3개월 일평균: 30일 캐시 (수동 갱신 가능)
+  useEffect(() => {
+    let cancelled = false;
+    const key = `prev3avg:${month}`;
+    const TTL = 30 * 24 * 60 * 60 * 1000; // 30일
+    const cached = prev3Tick === 0 ? getCache<{ avg: number }>(key, TTL) : null;
+    if (cached) {
+      setPrev3Avg(cached.data.avg);
+      setPrev3CachedAt(cached.ts);
+      return () => { cancelled = true; };
+    }
+    setPrev3Refreshing(true);
+    const prevMs = prevMonths(month, 3);
+    Promise.all(
+      prevMs.flatMap((pm) => [
+        getDocs(query(collectionGroup(db, 'entries'), where('date', '>=', `${pm}-01`), where('date', '<=', `${pm}-31`))),
+        getDocs(query(collectionGroup(db, 'ambient'), where('date', '>=', `${pm}-01`), where('date', '<=', `${pm}-31`))),
+      ])
+    )
+      .then((snaps) => {
+        if (cancelled) return;
+        const avgs: number[] = [];
+        for (let i = 0; i < prevMs.length; i++) {
+          const ents = snaps[i * 2].docs.map((d) => d.data() as MachineEntry);
+          const ambs = snaps[i * 2 + 1].docs.map((d) => d.data() as AmbientEntry);
+          const ms = computeMonthStats(ents, ambs);
+          if (ms.daysWorked > 0) avgs.push(ms.totalAvg);
+        }
+        const avg = avgs.length ? avgs.reduce((s, a) => s + a, 0) / avgs.length : 0;
+        setPrev3Avg(avg);
+        setCache(key, { avg });
+        setPrev3CachedAt(Date.now());
+      })
+      .catch(() => {})
+      .finally(() => { if (!cancelled) setPrev3Refreshing(false); });
+    return () => { cancelled = true; };
+  }, [month, prev3Tick]);
+
   const forceRefresh = () => {
     clearCache(`m:${month}`);
     clearCache(`pm:${prevMonths(month, 1)[0]}`);
     setRefreshTick((t) => t + 1);
+  };
+
+  const refreshPrev3 = () => {
+    clearCache(`prev3avg:${month}`);
+    setPrev3Tick((t) => t + 1);
   };
 
   const stats = useMemo(() => {
@@ -550,6 +591,9 @@ export default function AnalyticsMonthly() {
         days={stats.allDays}
         avg={stats.avgPerDay}
         prev3Avg={prev3Avg}
+        onRefreshPrev3={refreshPrev3}
+        prev3Refreshing={prev3Refreshing}
+        prev3CachedAt={prev3CachedAt}
       />
 
       {/* Top 5 - 맨 아래 */}
@@ -604,13 +648,23 @@ function niceScale(maxValue: number): { max: number; step: number } {
 }
 
 function DailyChart({
-  monthLabel, days, avg, prev3Avg,
+  monthLabel, days, avg, prev3Avg, onRefreshPrev3, prev3Refreshing, prev3CachedAt,
 }: {
   monthLabel: string;
   days: { day: number; label: string; cold: number; ambient: number; isSunday: boolean }[];
   avg: number;
   prev3Avg: number;
+  onRefreshPrev3?: () => void;
+  prev3Refreshing?: boolean;
+  prev3CachedAt?: number | null;
 }) {
+  const cachedAgo = prev3CachedAt
+    ? (() => {
+        const days = Math.floor((Date.now() - prev3CachedAt) / (24 * 60 * 60 * 1000));
+        if (days === 0) return '오늘';
+        return `${days}일 전`;
+      })()
+    : null;
   const totalsPerDay = days.map((d) => d.cold + d.ambient);
   const maxRaw = Math.max(avg, prev3Avg, ...totalsPerDay);
   const { max: yMax, step: tickStep } = niceScale(maxRaw * 1.18);
@@ -639,8 +693,26 @@ function DailyChart({
 
   return (
     <div className="bg-white border rounded-lg overflow-hidden">
-      <div className="px-5 py-3 border-b bg-slate-50 font-semibold text-gray-800">
-        {monthLabel} 일별 생산량
+      <div className="px-5 py-3 border-b bg-slate-50 flex items-center gap-2 flex-wrap">
+        <span className="font-semibold text-gray-800">{monthLabel} 일별 생산량</span>
+        {onRefreshPrev3 && (
+          <div className="ml-auto flex items-center gap-2">
+            {cachedAgo && (
+              <span className="text-[11px] text-gray-400">
+                직전 3개월 평균 갱신: <b className="text-gray-600">{cachedAgo}</b>
+              </span>
+            )}
+            <button
+              onClick={onRefreshPrev3}
+              disabled={prev3Refreshing}
+              className="px-2.5 py-1 bg-white border hover:bg-yellow-50 hover:border-yellow-300 text-gray-700 rounded text-xs font-medium shadow-sm disabled:opacity-50 flex items-center gap-1"
+              title="직전 3개월 일평균을 다시 계산합니다 (한 달에 한 번만 누르면 됩니다)"
+            >
+              <span className={prev3Refreshing ? 'animate-spin inline-block' : 'inline-block'}>🔄</span>
+              {prev3Refreshing ? '갱신중' : '평균 갱신'}
+            </button>
+          </div>
+        )}
       </div>
       {noData ? (
         <div className="p-12 text-center text-gray-400 text-sm">해당 월에 생산 내역이 없습니다</div>
