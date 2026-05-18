@@ -120,3 +120,19 @@ export interface InventoryRequest {
   date: string;
   createdAt?: string;
 }
+
+export interface RemixEntry {
+  code: string;
+  count: number;     // 재배합 건수 (보통 1)
+  qty?: number;      // 재배합 수량 (선택, 음수)
+  date: string;
+}
+
+export interface GraphPoint {
+  month: string;     // 'YYYY-MM'
+  value: number;
+}
+
+export interface GraphData {
+  points?: GraphPoint[];
+}

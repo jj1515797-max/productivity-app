@@ -11,6 +11,7 @@ import Attendance from './pages/Attendance';
 import ProductivityInput from './pages/ProductivityInput';
 import ProductSettings from './pages/ProductSettings';
 import Inventory from './pages/Inventory';
+import Remix from './pages/Remix';
 import Logo from './components/Logo';
 import { useTrackVisit } from './lib/presence';
 
@@ -40,6 +41,7 @@ function MainContainer() {
         <Route path="/analytics" element={<Analytics />} />
         <Route path="/analytics/monthly" element={<AnalyticsMonthly />} />
         <Route path="/analytics/remaining" element={<Remaining />} />
+        <Route path="/analytics/remix" element={<Remix />} />
         <Route path="/analytics/report" element={<Report />} />
         <Route path="/analytics/settings" element={<ProductSettings />} />
         <Route path="/attendance" element={<Attendance />} />
@@ -74,6 +76,7 @@ const SUB_TABS: Record<Section, { label: string; to: string; exact?: boolean }[]
     { label: '일별요약', to: '/analytics', exact: true },
     { label: '월별현황', to: '/analytics/monthly' },
     { label: '잔여량', to: '/analytics/remaining' },
+    { label: '잔여량/재배합', to: '/analytics/remix' },
     { label: '금속CCP', to: '/analytics/report' },
     { label: '설정', to: '/analytics/settings' },
   ],
