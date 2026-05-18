@@ -4,6 +4,7 @@ import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
 import { loadViewDate, saveViewDate } from '../lib/viewDate';
 import type { Item, MachineEntry } from '../types';
+import { compareCode } from '../lib/codeUtil';
 
 const MACHINES: MachineEntry['machine'][] = ['1호기', '2호기', '3호기'];
 
@@ -38,7 +39,7 @@ export default function Remaining() {
     return onSnapshot(collection(db, 'days', date, 'items'), (snap) => {
       const list: Item[] = [];
       snap.forEach((d) => list.push(d.data() as Item));
-      list.sort((a, b) => a.code.localeCompare(b.code));
+      list.sort((a, b) => compareCode(a.code, b.code));
       setItems(list);
     });
   }, [date]);
