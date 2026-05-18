@@ -476,14 +476,15 @@ function RemixCell({ value, onChange }: { value: number; onChange: (v: number) =
 
 // ===== 월별 라인 그래프 카드 =====
 function MonthlyLineCard({
-  title, unit, points, color, onEdit,
-}: { title: string; unit: string; points: GraphPoint[]; color: string; onEdit: () => void }) {
+  title, unit, points, color, onEdit, onEnlarge, large,
+}: { title: string; unit: string; points: GraphPoint[]; color: string; onEdit: () => void; onEnlarge?: () => void; large?: boolean }) {
   const sorted = [...points].sort((a, b) => a.month.localeCompare(b.month));
   const max = sorted.length ? Math.max(...sorted.map((p) => p.value)) : 0;
   const min = 0;
   const range = Math.max(max - min, 0.1);
 
-  const W = 800, H = 220, padL = 40, padR = 20, padT = 24, padB = 36;
+  const W = large ? 1400 : 1100, H = large ? 380 : 260;
+  const padL = 50, padR = 20, padT = 28, padB = 40;
   const innerW = W - padL - padR;
   const innerH = H - padT - padB;
   const xFor = (i: number) => padL + (sorted.length > 1 ? (i / (sorted.length - 1)) * innerW : innerW / 2);
@@ -493,10 +494,13 @@ function MonthlyLineCard({
 
   return (
     <div className="bg-white border rounded-lg overflow-hidden">
-      <div className="px-4 py-2.5 border-b bg-slate-50 flex items-center">
-        <span className="font-semibold text-gray-800 text-sm">{title}</span>
-        <button onClick={onEdit} className="ml-auto px-2.5 py-1 text-xs bg-white border rounded hover:bg-gray-100">✎ 데이터 편집</button>
-      </div>
+      {title && (
+        <div className="px-4 py-2.5 border-b bg-slate-50 flex items-center gap-2">
+          <span className="font-semibold text-gray-800 text-sm">{title}</span>
+          {onEnlarge && <button onClick={onEnlarge} className="ml-auto px-2.5 py-1 text-xs bg-white border rounded hover:bg-gray-100">🔍 확대</button>}
+          <button onClick={onEdit} className={`${onEnlarge ? '' : 'ml-auto'} px-2.5 py-1 text-xs bg-white border rounded hover:bg-gray-100`}>✎ 데이터 편집</button>
+        </div>
+      )}
       {sorted.length === 0 ? (
         <div className="p-8 text-center text-sm text-gray-400">데이터 없음 — 우측 ✎ 편집으로 입력하세요</div>
       ) : (
@@ -585,6 +589,47 @@ function GraphEditModal({
   );
 }
 
+type MonthAgg = {
+  month: number;
+  totalQty: number;
+  remaining: number;
+  remixCount: number;
+  itemCount: number;
+  workDays: number;
+  remainingRatio: number;
+  avgRemix: number;
+  hasOverride?: boolean;
+};
+
+type MonthlyOverride = {
+  totalQty?: number;
+  remaining?: number;
+  remixCount?: number;
+  itemCount?: number;
+  workDays?: number;
+};
+
+// localStorage 캐시 (월별 집계는 거의 안 바뀜)
+const AGG_CACHE_PREFIX = 'remixMonthAgg:';
+function isPastMonth(year: number, month: number): boolean {
+  const now = new Date();
+  const cy = now.getFullYear(), cm = now.getMonth() + 1;
+  return year < cy || (year === cy && month < cm);
+}
+function getAggCache(year: number, month: number): { totalQty: number; remaining: number; remixCount: number; itemCount: number; workDays: number } | null {
+  try {
+    const raw = localStorage.getItem(`${AGG_CACHE_PREFIX}${year}-${pad(month)}`);
+    if (!raw) return null;
+    const { ts, data } = JSON.parse(raw);
+    const ttl = isPastMonth(year, month) ? 30 * 24 * 3600 * 1000 : 30 * 60 * 1000;
+    if (Date.now() - ts > ttl) return null;
+    return data;
+  } catch { return null; }
+}
+function setAggCache(year: number, month: number, data: any) {
+  try { localStorage.setItem(`${AGG_CACHE_PREFIX}${year}-${pad(month)}`, JSON.stringify({ ts: Date.now(), data })); } catch {}
+}
+
 function ViewToggle({ view, onChange }: { view: 'daily' | 'monthly'; onChange: (v: 'daily' | 'monthly') => void }) {
   return (
     <div className="bg-white border rounded-lg p-2 flex items-center gap-1 w-max">
@@ -600,16 +645,52 @@ function ViewToggle({ view, onChange }: { view: 'daily' | 'monthly'; onChange: (
   );
 }
 
-type MonthAgg = {
-  month: number;
-  totalQty: number;
-  remaining: number;
-  remixCount: number;
-  itemCount: number;
-  workDays: number;
-  remainingRatio: number;
-  avgRemix: number;
-};
+async function aggregateMonth(year: number, month: number): Promise<{ totalQty: number; remaining: number; remixCount: number; itemCount: number; workDays: number }> {
+  const cached = getAggCache(year, month);
+  if (cached) return cached;
+
+  const lastDay = new Date(year, month, 0).getDate();
+  const dates = Array.from({ length: lastDay }, (_, i) => `${year}-${pad(month)}-${pad(i + 1)}`);
+  let totalQty = 0, remaining = 0, remixCount = 0, workDays = 0;
+  const codesSet = new Set<string>();
+  const [itemsSnaps, logsSnaps, remixSnaps] = await Promise.all([
+    Promise.all(dates.map((d) => getDocs(collection(db, 'days', d, 'items')))),
+    Promise.all(dates.map((d) => getDocs(collection(db, 'days', d, 'logistics')))),
+    Promise.all(dates.map((d) => getDocs(collection(db, 'remix', d, 'items')).catch(() => null))),
+  ]);
+  dates.forEach((_d, idx) => {
+    let dayQty = 0;
+    itemsSnaps[idx].forEach((doc) => {
+      const it = doc.data() as Item;
+      dayQty += it.totalQty || 0;
+      codesSet.add(normalizeCode(it.code));
+    });
+    if (dayQty > 0) workDays++;
+    totalQty += dayQty;
+    logsSnaps[idx].forEach((doc) => { remaining += (doc.data().qty as number) || 0; });
+    if (remixSnaps[idx]) {
+      remixSnaps[idx]!.forEach((doc) => { remixCount += (doc.data().count as number) || 0; });
+    }
+  });
+  const data = { totalQty, remaining, remixCount, itemCount: codesSet.size, workDays };
+  setAggCache(year, month, data);
+  return data;
+}
+
+function mergeWithOverride(auto: { totalQty: number; remaining: number; remixCount: number; itemCount: number; workDays: number }, ov?: MonthlyOverride) {
+  const totalQty = ov?.totalQty ?? auto.totalQty;
+  const remaining = ov?.remaining ?? auto.remaining;
+  const remixCount = ov?.remixCount ?? auto.remixCount;
+  const itemCount = ov?.itemCount ?? auto.itemCount;
+  const workDays = ov?.workDays ?? auto.workDays;
+  const denom = totalQty + remaining;
+  return {
+    totalQty, remaining, remixCount, itemCount, workDays,
+    remainingRatio: denom > 0 ? (remaining / denom) * 100 : 0,
+    avgRemix: workDays > 0 ? remixCount / workDays : 0,
+    hasOverride: !!ov && Object.values(ov).some((v) => v !== undefined),
+  };
+}
 
 function MonthlyView({
   year, onYearChange, remixGraph, surplusGraph, onEditRemix, onEditSurplus,
@@ -621,9 +702,34 @@ function MonthlyView({
   onEditRemix: () => void;
   onEditSurplus: () => void;
 }) {
-  const [aggs, setAggs] = useState<MonthAgg[]>([]);
-  const [loading, setLoading] = useState(false);
+  const today = new Date();
+  // 그래프 범위: 기본 13개월 (현재월 포함, 12개월 전)
+  const defaultEnd = `${today.getFullYear()}-${pad(today.getMonth() + 1)}`;
+  const defaultStart = (() => {
+    const d = new Date(today.getFullYear(), today.getMonth() - 12, 1);
+    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}`;
+  })();
+  const [rangeStart, setRangeStart] = useState(defaultStart);
+  const [rangeEnd, setRangeEnd] = useState(defaultEnd);
+  const [enlargedGraph, setEnlargedGraph] = useState<'remix' | 'surplus' | null>(null);
 
+  const [aggs, setAggs] = useState<MonthAgg[]>([]);  // for selected year (table)
+  const [rangeAggs, setRangeAggs] = useState<{ key: string; auto: any; ov?: MonthlyOverride }[]>([]);  // for graph range
+  const [overrides, setOverrides] = useState<Record<string, MonthlyOverride>>({});
+  const [loading, setLoading] = useState(false);
+  const [editingMonth, setEditingMonth] = useState<number | null>(null);
+  const [refreshTick, setRefreshTick] = useState(0);
+
+  // 수동 보정 데이터 (월별) 실시간 구독
+  useEffect(() => {
+    return onSnapshot(collection(db, 'monthlyStats'), (snap) => {
+      const map: Record<string, MonthlyOverride> = {};
+      snap.forEach((d) => { map[d.id] = d.data() as MonthlyOverride; });
+      setOverrides(map);
+    });
+  }, []);
+
+  // 선택된 년도의 1~12월 집계 (캐시 사용)
   useEffect(() => {
     let cancelled = false;
     setLoading(true);
@@ -631,70 +737,159 @@ function MonthlyView({
     (async () => {
       const result: MonthAgg[] = [];
       for (let m = 1; m <= 12; m++) {
-        // 월 내 모든 일자 (간단히 1~31일)
-        const lastDay = new Date(year, m, 0).getDate();
-        const dates = Array.from({ length: lastDay }, (_, i) => `${year}-${pad(m)}-${pad(i + 1)}`);
-        let totalQty = 0, remaining = 0, remixCount = 0, workDays = 0;
-        const codesSet = new Set<string>();
-        const itemsSnaps = await Promise.all(dates.map((d) => getDocs(collection(db, 'days', d, 'items'))));
-        const logsSnaps = await Promise.all(dates.map((d) => getDocs(collection(db, 'days', d, 'logistics'))));
-        const remixSnaps = await Promise.all(dates.map((d) => getDocs(collection(db, 'remix', d, 'items')).catch(() => null)));
+        const auto = await aggregateMonth(year, m);
         if (cancelled) return;
-        dates.forEach((_d, idx) => {
-          let dayQty = 0;
-          itemsSnaps[idx].forEach((doc) => {
-            const it = doc.data() as Item;
-            dayQty += it.totalQty || 0;
-            codesSet.add(normalizeCode(it.code));
-          });
-          if (dayQty > 0) workDays++;
-          totalQty += dayQty;
-          logsSnaps[idx].forEach((doc) => { remaining += (doc.data().qty as number) || 0; });
-          if (remixSnaps[idx]) {
-            remixSnaps[idx]!.forEach((doc) => { remixCount += (doc.data().count as number) || 0; });
-          }
-        });
-        const denom = totalQty + remaining;
-        const ratio = denom > 0 ? (remaining / denom) * 100 : 0;
-        const avgRemix = workDays > 0 ? remixCount / workDays : 0;
-        result.push({
-          month: m, totalQty, remaining, remixCount,
-          itemCount: codesSet.size, workDays,
-          remainingRatio: ratio, avgRemix,
-        });
-        if (cancelled) return;
-        setAggs([...result]);  // progressive
+        const ov = overrides[`${year}-${pad(m)}`];
+        const merged = mergeWithOverride(auto, ov);
+        result.push({ month: m, ...merged });
+        setAggs([...result]);
       }
       if (!cancelled) setLoading(false);
     })();
     return () => { cancelled = true; };
-  }, [year]);
+  }, [year, overrides, refreshTick]);
 
-  // 그래프: 수동 점 우선, 없으면 자동 계산값 사용
+  // 그래프 범위 데이터
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const [sy, sm] = rangeStart.split('-').map(Number);
+      const [ey, em] = rangeEnd.split('-').map(Number);
+      const months: { y: number; m: number }[] = [];
+      let cur = new Date(sy, sm - 1, 1);
+      const end = new Date(ey, em - 1, 1);
+      while (cur <= end) {
+        months.push({ y: cur.getFullYear(), m: cur.getMonth() + 1 });
+        cur.setMonth(cur.getMonth() + 1);
+      }
+      const result: { key: string; auto: any; ov?: MonthlyOverride }[] = [];
+      for (const { y, m } of months) {
+        const key = `${y}-${pad(m)}`;
+        // 선택 년도와 동일하면 aggs에서 재사용
+        const auto = (y === year) ? null : await aggregateMonth(y, m);
+        if (cancelled) return;
+        result.push({ key, auto, ov: overrides[key] });
+      }
+      if (!cancelled) setRangeAggs(result);
+    })();
+    return () => { cancelled = true; };
+  }, [rangeStart, rangeEnd, overrides, year, refreshTick]);
+
+  // 그래프 포인트 계산
   const remixPoints: GraphPoint[] = useMemo(() => {
     const manual = new Map((remixGraph.points || []).map((p) => [p.month, p.value]));
-    return aggs.map((a) => {
-      const key = `${year}-${pad(a.month)}`;
-      return { month: key, value: manual.has(key) ? manual.get(key)! : a.avgRemix };
-    }).filter((p) => p.value > 0 || (remixGraph.points || []).some((mp) => mp.month === p.month));
-  }, [aggs, remixGraph, year]);
+    return rangeAggs.map(({ key, auto, ov }) => {
+      if (manual.has(key)) return { month: key, value: manual.get(key)! };
+      let auto2 = auto;
+      if (!auto2) {
+        const [, mm] = key.split('-').map(Number);
+        const a = aggs.find((x) => x.month === mm);
+        if (a) auto2 = { totalQty: a.totalQty, remaining: a.remaining, remixCount: a.remixCount, itemCount: a.itemCount, workDays: a.workDays };
+      }
+      if (!auto2) return { month: key, value: 0 };
+      const merged = mergeWithOverride(auto2, ov);
+      return { month: key, value: merged.avgRemix };
+    });
+  }, [rangeAggs, aggs, remixGraph]);
+
   const surplusPoints: GraphPoint[] = useMemo(() => {
     const manual = new Map((surplusGraph.points || []).map((p) => [p.month, p.value]));
-    return aggs.map((a) => {
-      const key = `${year}-${pad(a.month)}`;
-      return { month: key, value: manual.has(key) ? manual.get(key)! : a.remainingRatio };
-    }).filter((p) => p.value > 0 || (surplusGraph.points || []).some((mp) => mp.month === p.month));
-  }, [aggs, surplusGraph, year]);
+    return rangeAggs.map(({ key, auto, ov }) => {
+      if (manual.has(key)) return { month: key, value: manual.get(key)! };
+      let auto2 = auto;
+      if (!auto2) {
+        const [, mm] = key.split('-').map(Number);
+        const a = aggs.find((x) => x.month === mm);
+        if (a) auto2 = { totalQty: a.totalQty, remaining: a.remaining, remixCount: a.remixCount, itemCount: a.itemCount, workDays: a.workDays };
+      }
+      if (!auto2) return { month: key, value: 0 };
+      const merged = mergeWithOverride(auto2, ov);
+      return { month: key, value: merged.remainingRatio };
+    });
+  }, [rangeAggs, aggs, surplusGraph]);
+
+  const saveOverride = async (month: number, ov: MonthlyOverride) => {
+    const key = `${year}-${pad(month)}`;
+    const cleaned: MonthlyOverride = {};
+    (['totalQty', 'remaining', 'remixCount', 'itemCount', 'workDays'] as const).forEach((k) => {
+      if (ov[k] !== undefined && ov[k] !== null && !isNaN(ov[k] as number)) cleaned[k] = ov[k];
+    });
+    if (Object.keys(cleaned).length === 0) {
+      await deleteDoc(doc(db, 'monthlyStats', key)).catch(() => {});
+    } else {
+      await setDoc(doc(db, 'monthlyStats', key), cleaned);
+    }
+  };
+
+  const downloadExcel = async () => {
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet(`${year}년 월별정리`);
+    ws.addRow(['월', '생산수량', '잔여량', '잔여율(%)', '재배합', '일평균재배합', '품목수', '작업일']);
+    aggs.forEach((a) => {
+      ws.addRow([
+        `${a.month}월`, a.totalQty, a.remaining,
+        Number(a.remainingRatio.toFixed(2)),
+        a.remixCount, Number(a.avgRemix.toFixed(2)),
+        a.itemCount, a.workDays,
+      ]);
+    });
+    const buf = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = `월별정리_${year}.xlsx`; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const clearCacheAll = () => {
+    try {
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k?.startsWith(AGG_CACHE_PREFIX)) localStorage.removeItem(k);
+      }
+    } catch {}
+    setRefreshTick((t) => t + 1);
+  };
 
   return (
     <>
-      {/* 년도 선택 */}
+      {/* 그래프 범위 선택 */}
+      <div className="bg-white border rounded-lg p-3 flex items-center gap-3 flex-wrap">
+        <span className="text-xs text-gray-500">그래프 범위:</span>
+        <input type="month" value={rangeStart} onChange={(e) => setRangeStart(e.target.value)} className="border rounded px-2 py-1 text-sm" />
+        <span className="text-xs text-gray-400">~</span>
+        <input type="month" value={rangeEnd} onChange={(e) => setRangeEnd(e.target.value)} className="border rounded px-2 py-1 text-sm" />
+        <span className="text-xs text-gray-400">(기본 13개월)</span>
+        <button onClick={clearCacheAll} className="ml-auto px-2.5 py-1 text-xs border rounded hover:bg-gray-50" title="모든 월 캐시 무효화 후 재집계">🔄 캐시 무효화</button>
+      </div>
+
+      {/* 재배합 그래프 */}
+      <MonthlyLineCard
+        title="재배합 현황 (월별 일평균 건수)"
+        unit="건"
+        points={remixPoints}
+        color="#1e40af"
+        onEdit={onEditRemix}
+        onEnlarge={() => setEnlargedGraph('remix')}
+      />
+      {/* 잔여량 그래프 */}
+      <MonthlyLineCard
+        title="잔여량 현황 (월별 %)"
+        unit="%"
+        points={surplusPoints}
+        color="#dc2626"
+        onEdit={onEditSurplus}
+        onEnlarge={() => setEnlargedGraph('surplus')}
+      />
+
+      {/* 년도 선택 + 엑셀 */}
       <div className="bg-white border rounded-lg p-4 flex items-center gap-3">
         <select value={year} onChange={(e) => onYearChange(Number(e.target.value))} className="border rounded px-3 py-1.5 text-sm">
-          {[year - 2, year - 1, year, year + 1].map((y) => <option key={y} value={y}>{y}년</option>)}
+          {[year - 3, year - 2, year - 1, year, year + 1].map((y) => <option key={y} value={y}>{y}년</option>)}
         </select>
         {loading && <span className="text-xs text-gray-500">집계중...</span>}
-        <span className="ml-auto text-xs text-gray-400">자동 집계 + 수동 보정. 수동 우선.</span>
+        <span className="text-xs text-gray-400">📦 캐시: 과거월 30일, 현재월 30분</span>
+        <button onClick={downloadExcel} className="ml-auto px-3 py-1.5 bg-blue-900 text-white rounded text-sm font-medium hover:bg-blue-800">엑셀 다운로드</button>
       </div>
 
       {/* 월별 표 */}
@@ -711,15 +906,19 @@ function MonthlyView({
               <th className="px-3 py-2 text-right">일평균 재배합</th>
               <th className="px-3 py-2 text-right">품목수</th>
               <th className="px-3 py-2 text-right">작업일</th>
+              <th className="px-3 py-2 text-right w-16"></th>
             </tr>
           </thead>
           <tbody>
             {aggs.length === 0 && !loading && (
-              <tr><td colSpan={8} className="p-8 text-center text-gray-400 text-sm">데이터 없음</td></tr>
+              <tr><td colSpan={9} className="p-8 text-center text-gray-400 text-sm">데이터 없음</td></tr>
             )}
             {aggs.map((a) => (
-              <tr key={a.month} className="border-t hover:bg-slate-50/50">
-                <td className="px-3 py-2 font-medium">{a.month}월</td>
+              <tr key={a.month} className={`border-t hover:bg-slate-50/50 ${a.hasOverride ? 'bg-amber-50/40' : ''}`}>
+                <td className="px-3 py-2 font-medium">
+                  {a.month}월
+                  {a.hasOverride && <span className="ml-1 text-[10px] text-amber-600 font-bold">수동</span>}
+                </td>
                 <td className="px-3 py-2 text-right">{a.totalQty.toLocaleString()}</td>
                 <td className="px-3 py-2 text-right text-rose-700">{a.remaining.toLocaleString()}</td>
                 <td className="px-3 py-2 text-right text-rose-700 font-bold">{a.remainingRatio.toFixed(2)}%</td>
@@ -727,17 +926,106 @@ function MonthlyView({
                 <td className="px-3 py-2 text-right text-amber-700 font-bold">{a.avgRemix.toFixed(1)}건</td>
                 <td className="px-3 py-2 text-right text-gray-600">{a.itemCount}</td>
                 <td className="px-3 py-2 text-right text-gray-600">{a.workDays}일</td>
+                <td className="px-3 py-2 text-right">
+                  <button onClick={() => setEditingMonth(a.month)} className="text-xs text-blue-600 hover:underline">수정</button>
+                </td>
               </tr>
             ))}
           </tbody>
         </table>
       </div>
 
-      {/* 그래프 */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <MonthlyLineCard title="재배합 현황 (월별 평균 건수)" unit="건" points={remixPoints} color="#1e40af" onEdit={onEditRemix} />
-        <MonthlyLineCard title="잔여량 현황 (월별 %)" unit="%" points={surplusPoints} color="#dc2626" onEdit={onEditSurplus} />
-      </div>
+      {editingMonth !== null && (
+        <MonthOverrideModal
+          year={year}
+          month={editingMonth}
+          override={overrides[`${year}-${pad(editingMonth)}`]}
+          auto={aggs.find((a) => a.month === editingMonth)}
+          onClose={() => setEditingMonth(null)}
+          onSave={async (ov) => { await saveOverride(editingMonth, ov); setEditingMonth(null); }}
+        />
+      )}
+
+      {enlargedGraph && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50 p-6" onClick={() => setEnlargedGraph(null)}>
+          <div className="bg-white rounded-xl shadow-2xl max-w-6xl w-full" onClick={(e) => e.stopPropagation()}>
+            <div className="px-5 py-3 border-b flex items-center">
+              <span className="font-bold">{enlargedGraph === 'remix' ? '재배합 현황' : '잔여량 현황'} (확대)</span>
+              <button onClick={() => setEnlargedGraph(null)} className="ml-auto text-gray-500">×</button>
+            </div>
+            <div className="p-4">
+              <MonthlyLineCard
+                title=""
+                unit={enlargedGraph === 'remix' ? '건' : '%'}
+                points={enlargedGraph === 'remix' ? remixPoints : surplusPoints}
+                color={enlargedGraph === 'remix' ? '#1e40af' : '#dc2626'}
+                onEdit={enlargedGraph === 'remix' ? onEditRemix : onEditSurplus}
+                large
+              />
+              <p className="text-xs text-gray-500 mt-2">💡 PPT용: 우클릭 → 이미지로 저장</p>
+            </div>
+          </div>
+        </div>
+      )}
     </>
+  );
+}
+
+function MonthOverrideModal({
+  year, month, override, auto, onClose, onSave,
+}: {
+  year: number;
+  month: number;
+  override?: MonthlyOverride;
+  auto?: MonthAgg;
+  onClose: () => void;
+  onSave: (ov: MonthlyOverride) => Promise<void>;
+}) {
+  const [vals, setVals] = useState<MonthlyOverride>(() => override || {});
+  const [saving, setSaving] = useState(false);
+
+  const set = (k: keyof MonthlyOverride, v: string) => {
+    const n = v.trim() === '' ? undefined : Number(v);
+    setVals({ ...vals, [k]: n });
+  };
+
+  const Field = ({ k, label, autoVal }: { k: keyof MonthlyOverride; label: string; autoVal: number }) => (
+    <div>
+      <label className="block text-xs font-medium text-gray-600 mb-1">{label} <span className="text-gray-400">(자동: {autoVal.toLocaleString()})</span></label>
+      <input
+        type="number" inputMode="numeric"
+        value={vals[k] ?? ''}
+        onChange={(e) => set(k, e.target.value)}
+        placeholder="자동값 사용"
+        className="w-full border rounded px-3 py-2 text-sm"
+      />
+    </div>
+  );
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-md">
+        <div className="px-5 py-4 border-b bg-amber-50">
+          <h3 className="font-bold">{year}년 {month}월 수동 입력</h3>
+          <div className="text-xs text-gray-500 mt-0.5">빈 칸은 자동 집계값 사용. 입력하면 그 값이 우선됩니다.</div>
+        </div>
+        <div className="p-5 space-y-3">
+          <Field k="totalQty" label="생산 수량" autoVal={auto?.totalQty ?? 0} />
+          <Field k="remaining" label="잔여량" autoVal={auto?.remaining ?? 0} />
+          <Field k="remixCount" label="재배합 건수" autoVal={auto?.remixCount ?? 0} />
+          <Field k="itemCount" label="품목수" autoVal={auto?.itemCount ?? 0} />
+          <Field k="workDays" label="작업일 수" autoVal={auto?.workDays ?? 0} />
+          <p className="text-[11px] text-gray-500">잔여율과 일평균 재배합은 자동 계산됩니다.</p>
+        </div>
+        <div className="px-5 py-3 border-t bg-slate-50 flex gap-2">
+          <button onClick={onClose} className="px-3 py-2 border rounded text-sm">취소</button>
+          <button
+            onClick={async () => { setSaving(true); await onSave(vals); setSaving(false); }}
+            disabled={saving}
+            className="ml-auto px-5 py-2 bg-amber-600 text-white rounded text-sm font-medium hover:bg-amber-700"
+          >{saving ? '저장중...' : '저장'}</button>
+        </div>
+      </div>
+    </div>
   );
 }
