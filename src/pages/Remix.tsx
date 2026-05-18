@@ -989,18 +989,13 @@ function MonthOverrideModal({
     setVals({ ...vals, [k]: n });
   };
 
-  const Field = ({ k, label, autoVal }: { k: keyof MonthlyOverride; label: string; autoVal: number }) => (
-    <div>
-      <label className="block text-xs font-medium text-gray-600 mb-1">{label} <span className="text-gray-400">(자동: {autoVal.toLocaleString()})</span></label>
-      <input
-        type="number" inputMode="numeric"
-        value={vals[k] ?? ''}
-        onChange={(e) => set(k, e.target.value)}
-        placeholder="자동값 사용"
-        className="w-full border rounded px-3 py-2 text-sm"
-      />
-    </div>
-  );
+  const fields: { k: keyof MonthlyOverride; label: string; autoVal: number }[] = [
+    { k: 'totalQty', label: '생산 수량', autoVal: auto?.totalQty ?? 0 },
+    { k: 'remaining', label: '잔여량', autoVal: auto?.remaining ?? 0 },
+    { k: 'remixCount', label: '재배합 건수', autoVal: auto?.remixCount ?? 0 },
+    { k: 'itemCount', label: '품목수', autoVal: auto?.itemCount ?? 0 },
+    { k: 'workDays', label: '작업일 수', autoVal: auto?.workDays ?? 0 },
+  ];
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
@@ -1010,11 +1005,18 @@ function MonthOverrideModal({
           <div className="text-xs text-gray-500 mt-0.5">빈 칸은 자동 집계값 사용. 입력하면 그 값이 우선됩니다.</div>
         </div>
         <div className="p-5 space-y-3">
-          <Field k="totalQty" label="생산 수량" autoVal={auto?.totalQty ?? 0} />
-          <Field k="remaining" label="잔여량" autoVal={auto?.remaining ?? 0} />
-          <Field k="remixCount" label="재배합 건수" autoVal={auto?.remixCount ?? 0} />
-          <Field k="itemCount" label="품목수" autoVal={auto?.itemCount ?? 0} />
-          <Field k="workDays" label="작업일 수" autoVal={auto?.workDays ?? 0} />
+          {fields.map((f) => (
+            <div key={f.k}>
+              <label className="block text-xs font-medium text-gray-600 mb-1">{f.label} <span className="text-gray-400">(자동: {f.autoVal.toLocaleString()})</span></label>
+              <input
+                type="number" inputMode="numeric"
+                value={vals[f.k] ?? ''}
+                onChange={(e) => set(f.k, e.target.value)}
+                placeholder="자동값 사용"
+                className="w-full border rounded px-3 py-2 text-sm"
+              />
+            </div>
+          ))}
           <p className="text-[11px] text-gray-500">잔여율과 일평균 재배합은 자동 계산됩니다.</p>
         </div>
         <div className="px-5 py-3 border-t bg-slate-50 flex gap-2">
