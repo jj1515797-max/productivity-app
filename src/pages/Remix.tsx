@@ -67,6 +67,7 @@ type ItemMap = Record<string, { totalQty: number; name: string }>;  // code(norm
 
 export default function Remix() {
   const today = thisYearMonth();
+  const [view, setView] = useState<'daily' | 'monthly'>('daily');
   const [year, setYear] = useState(today.y);
   const [month, setMonth] = useState(today.m);
   const [weekIdx, setWeekIdx] = useState(1);
@@ -253,30 +254,41 @@ export default function Remix() {
       rem += t.remaining;
       rmx += t.remixCount;
     });
-    const ratio = qty > 0 ? (rem / qty) * 100 : 0;
+    // 잔여율 = 잔여량 / (지시량 + 잔여량) — 실제 생산량 대비 잔여율
+    const denom = qty + rem;
+    const ratio = denom > 0 ? (rem / denom) * 100 : 0;
     const avgRemix = workDays > 0 ? rmx / workDays : 0;
     return { qty, rem, rmx, workDays, ratio, avgRemix };
   }, [dayTotals, weekDateStrs]);
 
+  if (view === 'monthly') {
+    return (
+      <div className="space-y-5">
+        <ViewToggle view={view} onChange={setView} />
+        <MonthlyView
+          year={year}
+          onYearChange={setYear}
+          remixGraph={remixGraph}
+          surplusGraph={surplusGraph}
+          onEditRemix={() => setEditingGraph('remix')}
+          onEditSurplus={() => setEditingGraph('surplus')}
+        />
+        {editingGraph && (
+          <GraphEditModal
+            title={editingGraph === 'remix' ? '재배합 현황' : '잔여량 현황'}
+            unit={editingGraph === 'remix' ? '건' : '%'}
+            initial={editingGraph === 'remix' ? remixGraph.points || [] : surplusGraph.points || []}
+            onClose={() => setEditingGraph(null)}
+            onSave={async (pts) => { await saveGraph(editingGraph, pts); setEditingGraph(null); }}
+          />
+        )}
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-5">
-      {/* 상단 월별 그래프 2개 */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <MonthlyLineCard
-          title="재배합 현황 (월별 평균 건수)"
-          unit="건"
-          points={remixGraph.points || []}
-          color="#1e40af"
-          onEdit={() => setEditingGraph('remix')}
-        />
-        <MonthlyLineCard
-          title="잔여량 현황 (월별 %)"
-          unit="%"
-          points={surplusGraph.points || []}
-          color="#dc2626"
-          onEdit={() => setEditingGraph('surplus')}
-        />
-      </div>
+      <ViewToggle view={view} onChange={setView} />
 
       {/* 년/월/주차 네비 */}
       <div className="bg-white border rounded-lg p-4 flex items-center gap-3 flex-wrap">
@@ -326,7 +338,7 @@ export default function Remix() {
             <tr>
               {weekDateStrs.map((d) => (
                 <Fragment key={d + '-hdr'}>
-                  <th className="px-1 py-1 text-right border">지시</th>
+                  <th className="px-1 py-1 text-right border border-l-2 border-l-slate-400">지시</th>
                   <th className="px-1 py-1 text-right border">잔여</th>
                   <th className="px-1 py-1 text-right border bg-amber-50">재배합</th>
                 </Fragment>
@@ -570,5 +582,162 @@ function GraphEditModal({
         </div>
       </div>
     </div>
+  );
+}
+
+function ViewToggle({ view, onChange }: { view: 'daily' | 'monthly'; onChange: (v: 'daily' | 'monthly') => void }) {
+  return (
+    <div className="bg-white border rounded-lg p-2 flex items-center gap-1 w-max">
+      <button
+        onClick={() => onChange('daily')}
+        className={`px-4 py-1.5 rounded text-sm font-medium ${view === 'daily' ? 'bg-slate-800 text-white' : 'text-gray-600 hover:bg-gray-100'}`}
+      >일일현황</button>
+      <button
+        onClick={() => onChange('monthly')}
+        className={`px-4 py-1.5 rounded text-sm font-medium ${view === 'monthly' ? 'bg-slate-800 text-white' : 'text-gray-600 hover:bg-gray-100'}`}
+      >월별정리</button>
+    </div>
+  );
+}
+
+type MonthAgg = {
+  month: number;
+  totalQty: number;
+  remaining: number;
+  remixCount: number;
+  itemCount: number;
+  workDays: number;
+  remainingRatio: number;
+  avgRemix: number;
+};
+
+function MonthlyView({
+  year, onYearChange, remixGraph, surplusGraph, onEditRemix, onEditSurplus,
+}: {
+  year: number;
+  onYearChange: (y: number) => void;
+  remixGraph: GraphData;
+  surplusGraph: GraphData;
+  onEditRemix: () => void;
+  onEditSurplus: () => void;
+}) {
+  const [aggs, setAggs] = useState<MonthAgg[]>([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setAggs([]);
+    (async () => {
+      const result: MonthAgg[] = [];
+      for (let m = 1; m <= 12; m++) {
+        // 월 내 모든 일자 (간단히 1~31일)
+        const lastDay = new Date(year, m, 0).getDate();
+        const dates = Array.from({ length: lastDay }, (_, i) => `${year}-${pad(m)}-${pad(i + 1)}`);
+        let totalQty = 0, remaining = 0, remixCount = 0, workDays = 0;
+        const codesSet = new Set<string>();
+        const itemsSnaps = await Promise.all(dates.map((d) => getDocs(collection(db, 'days', d, 'items'))));
+        const logsSnaps = await Promise.all(dates.map((d) => getDocs(collection(db, 'days', d, 'logistics'))));
+        const remixSnaps = await Promise.all(dates.map((d) => getDocs(collection(db, 'remix', d, 'items')).catch(() => null)));
+        if (cancelled) return;
+        dates.forEach((_d, idx) => {
+          let dayQty = 0;
+          itemsSnaps[idx].forEach((doc) => {
+            const it = doc.data() as Item;
+            dayQty += it.totalQty || 0;
+            codesSet.add(normalizeCode(it.code));
+          });
+          if (dayQty > 0) workDays++;
+          totalQty += dayQty;
+          logsSnaps[idx].forEach((doc) => { remaining += (doc.data().qty as number) || 0; });
+          if (remixSnaps[idx]) {
+            remixSnaps[idx]!.forEach((doc) => { remixCount += (doc.data().count as number) || 0; });
+          }
+        });
+        const denom = totalQty + remaining;
+        const ratio = denom > 0 ? (remaining / denom) * 100 : 0;
+        const avgRemix = workDays > 0 ? remixCount / workDays : 0;
+        result.push({
+          month: m, totalQty, remaining, remixCount,
+          itemCount: codesSet.size, workDays,
+          remainingRatio: ratio, avgRemix,
+        });
+        if (cancelled) return;
+        setAggs([...result]);  // progressive
+      }
+      if (!cancelled) setLoading(false);
+    })();
+    return () => { cancelled = true; };
+  }, [year]);
+
+  // 그래프: 수동 점 우선, 없으면 자동 계산값 사용
+  const remixPoints: GraphPoint[] = useMemo(() => {
+    const manual = new Map((remixGraph.points || []).map((p) => [p.month, p.value]));
+    return aggs.map((a) => {
+      const key = `${year}-${pad(a.month)}`;
+      return { month: key, value: manual.has(key) ? manual.get(key)! : a.avgRemix };
+    }).filter((p) => p.value > 0 || (remixGraph.points || []).some((mp) => mp.month === p.month));
+  }, [aggs, remixGraph, year]);
+  const surplusPoints: GraphPoint[] = useMemo(() => {
+    const manual = new Map((surplusGraph.points || []).map((p) => [p.month, p.value]));
+    return aggs.map((a) => {
+      const key = `${year}-${pad(a.month)}`;
+      return { month: key, value: manual.has(key) ? manual.get(key)! : a.remainingRatio };
+    }).filter((p) => p.value > 0 || (surplusGraph.points || []).some((mp) => mp.month === p.month));
+  }, [aggs, surplusGraph, year]);
+
+  return (
+    <>
+      {/* 년도 선택 */}
+      <div className="bg-white border rounded-lg p-4 flex items-center gap-3">
+        <select value={year} onChange={(e) => onYearChange(Number(e.target.value))} className="border rounded px-3 py-1.5 text-sm">
+          {[year - 2, year - 1, year, year + 1].map((y) => <option key={y} value={y}>{y}년</option>)}
+        </select>
+        {loading && <span className="text-xs text-gray-500">집계중...</span>}
+        <span className="ml-auto text-xs text-gray-400">자동 집계 + 수동 보정. 수동 우선.</span>
+      </div>
+
+      {/* 월별 표 */}
+      <div className="bg-white border rounded-lg overflow-hidden">
+        <div className="px-5 py-3 border-b bg-slate-50 font-semibold text-gray-800">{year}년 월별 정리</div>
+        <table className="w-full text-sm">
+          <thead className="bg-gray-50 text-xs text-gray-500">
+            <tr>
+              <th className="px-3 py-2 text-left">월</th>
+              <th className="px-3 py-2 text-right">생산 수량</th>
+              <th className="px-3 py-2 text-right">잔여량</th>
+              <th className="px-3 py-2 text-right">잔여율</th>
+              <th className="px-3 py-2 text-right">재배합</th>
+              <th className="px-3 py-2 text-right">일평균 재배합</th>
+              <th className="px-3 py-2 text-right">품목수</th>
+              <th className="px-3 py-2 text-right">작업일</th>
+            </tr>
+          </thead>
+          <tbody>
+            {aggs.length === 0 && !loading && (
+              <tr><td colSpan={8} className="p-8 text-center text-gray-400 text-sm">데이터 없음</td></tr>
+            )}
+            {aggs.map((a) => (
+              <tr key={a.month} className="border-t hover:bg-slate-50/50">
+                <td className="px-3 py-2 font-medium">{a.month}월</td>
+                <td className="px-3 py-2 text-right">{a.totalQty.toLocaleString()}</td>
+                <td className="px-3 py-2 text-right text-rose-700">{a.remaining.toLocaleString()}</td>
+                <td className="px-3 py-2 text-right text-rose-700 font-bold">{a.remainingRatio.toFixed(2)}%</td>
+                <td className="px-3 py-2 text-right text-amber-700">{a.remixCount}</td>
+                <td className="px-3 py-2 text-right text-amber-700 font-bold">{a.avgRemix.toFixed(1)}건</td>
+                <td className="px-3 py-2 text-right text-gray-600">{a.itemCount}</td>
+                <td className="px-3 py-2 text-right text-gray-600">{a.workDays}일</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
+      {/* 그래프 */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        <MonthlyLineCard title="재배합 현황 (월별 평균 건수)" unit="건" points={remixPoints} color="#1e40af" onEdit={onEditRemix} />
+        <MonthlyLineCard title="잔여량 현황 (월별 %)" unit="%" points={surplusPoints} color="#dc2626" onEdit={onEditSurplus} />
+      </div>
+    </>
   );
 }
