@@ -1,57 +1,61 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { collection, doc, getDocs, onSnapshot, setDoc, deleteDoc } from 'firebase/firestore';
 import { db } from '../firebase';
-import type { GraphData, GraphPoint, Item, RemixEntry } from '../types';
-import { compareCode } from '../lib/codeUtil';
+import type { GraphData, GraphPoint, Item, ProductSetting, RemixEntry } from '../types';
+import { compareCode, convertErpCode, normalizeCode } from '../lib/codeUtil';
 import ExcelJS from 'exceljs';
 
-const STAGES: { letter: string; label: string }[] = [
-  { letter: 'A', label: '준비기' },
-  { letter: 'B', label: '초기' },
-  { letter: 'C', label: '중기' },
-  { letter: 'D', label: '후기' },
-  { letter: 'E', label: '완료기' },
-  { letter: 'F', label: '영양밥' },
-  { letter: 'F500', label: '한우토핑' },
-  { letter: 'G', label: '유아식' },
-  { letter: 'H', label: '키즈반찬' },
-  { letter: 'I', label: '본죽키즈' },
+const STAGES: { key: string; label: string }[] = [
+  { key: 'A', label: '준비기' },
+  { key: 'B', label: '초기' },
+  { key: 'C', label: '중기' },
+  { key: 'D', label: '후기' },
+  { key: 'E', label: '완료기' },
+  { key: 'G', label: '영양밥' },
+  { key: 'G_SAUCE', label: '소스' },
+  { key: 'H', label: '토핑' },
+  { key: 'F', label: '유아식' },
+  { key: 'I', label: '본죽키즈' },
 ];
 
 function getStage(code: string): string | null {
   const m = (code || '').match(/^([A-Za-z])(\d+)/);
   if (!m) return null;
   const letter = m[1].toUpperCase();
-  if (letter === 'F') return parseInt(m[2], 10) >= 500 ? 'F500' : 'F';
-  return letter;
-}
-
-function normalize(code: string): string {
-  return (code || '').toLowerCase().replace(/[-\s]/g, '');
+  const num = parseInt(m[2], 10);
+  if (letter === 'G') return (num >= 101 && num <= 132) ? 'G_SAUCE' : 'G';
+  if ('ABCDEFHI'.includes(letter)) return letter;
+  return null;
 }
 
 function pad(n: number): string { return String(n).padStart(2, '0'); }
 function dateStr(d: Date): string { return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`; }
 
-/** 해당 월의 주차들 (월~토 기준, 사용자 엑셀과 동일) */
+/** 해당 월의 주차들 (일~금 6일, Sunday 시작. Sunday가 속한 달이 그 주의 달) */
 function getMonthWeeks(year: number, month: number): { idx: number; days: Date[] }[] {
-  const first = new Date(year, month - 1, 1);
-  const last = new Date(year, month, 0);
-  const weeks: { idx: number; days: Date[] }[] = [];
-  let cursor = new Date(first);
-  // 첫 주: 1일부터 같은 주의 토요일까지
-  while (cursor <= last) {
-    const week: Date[] = [];
-    for (let i = 0; i < 6 && cursor <= last; i++) {
-      // 월요일 ~ 토요일만 포함
-      const dow = cursor.getDay();
-      if (dow !== 0) week.push(new Date(cursor));
-      cursor.setDate(cursor.getDate() + 1);
-      if (cursor.getDay() === 1 && week.length > 0) break; // 다음 월요일에 도달하면 주 종료
+  const result: { idx: number; days: Date[] }[] = [];
+  // 그 달의 1일을 포함하는 일요일 찾기
+  let sunday = new Date(year, month - 1, 1);
+  sunday.setDate(sunday.getDate() - sunday.getDay()); // 직전 일요일
+
+  let idx = 0;
+  while (true) {
+    const sm = sunday.getMonth() + 1;
+    const sy = sunday.getFullYear();
+    if (sy > year || (sy === year && sm > month)) break;
+    if (sy === year && sm === month) {
+      idx++;
+      const days: Date[] = [];
+      for (let i = 0; i < 6; i++) {
+        const d = new Date(sunday);
+        d.setDate(sunday.getDate() + i);
+        days.push(d);
+      }
+      result.push({ idx, days });
     }
-    if (week.length > 0) weeks.push({ idx: weeks.length + 1, days: week });
+    sunday.setDate(sunday.getDate() + 7);
   }
-  return weeks;
+  return result;
 }
 
 function thisYearMonth(): { y: number; m: number } {
@@ -100,15 +104,15 @@ export default function Remix() {
         const m1: ItemMap = {};
         itemSnaps[i].forEach((doc) => {
           const it = doc.data() as Item;
-          m1[normalize(it.code)] = { totalQty: it.totalQty || 0, name: it.name || '' };
+          m1[normalizeCode(it.code)] = { totalQty: it.totalQty || 0, name: it.name || '' };
         });
         im[d] = m1;
         const m2: Record<string, number> = {};
-        logSnaps[i].forEach((doc) => { m2[normalize(doc.id)] = (doc.data().qty as number) || 0; });
+        logSnaps[i].forEach((doc) => { m2[normalizeCode(doc.id)] = (doc.data().qty as number) || 0; });
         lm[d] = m2;
         const m3: Record<string, RemixEntry> = {};
         if (remixSnaps[i]) {
-          remixSnaps[i]!.forEach((doc) => { m3[normalize(doc.id)] = doc.data() as RemixEntry; });
+          remixSnaps[i]!.forEach((doc) => { m3[normalizeCode(doc.id)] = doc.data() as RemixEntry; });
         }
         rm[d] = m3;
       });
@@ -120,21 +124,37 @@ export default function Remix() {
     return () => { cancelled = true; };
   }, [weekDateStrs.join(','), refreshTick]);
 
-  // 주차 표에 나올 모든 코드 (병합)
+  // 제품 DB 마스터 (한 번 로드)
+  const [productList, setProductList] = useState<{ norm: string; code: string; name: string }[]>([]);
+  useEffect(() => {
+    getDocs(collection(db, 'productSettings')).then((snap) => {
+      const list: { norm: string; code: string; name: string }[] = [];
+      snap.forEach((d) => {
+        const s = d.data() as ProductSetting;
+        const shortCode = convertErpCode(s.code || d.id);
+        list.push({ norm: normalizeCode(shortCode), code: shortCode, name: s.name || '' });
+      });
+      setProductList(list);
+    }).catch(() => {});
+  }, []);
+
+  // 마스터 + 이번 주 등장 코드 병합 — 전 품목 항상 표시
   const allCodesWithName = useMemo(() => {
     const map = new Map<string, { code: string; name: string }>();
+    productList.forEach((p) => map.set(p.norm, { code: p.code, name: p.name }));
     Object.values(itemsByDate).forEach((dayMap) => {
       Object.entries(dayMap).forEach(([norm, info]) => {
         if (!map.has(norm)) map.set(norm, { code: norm.toUpperCase(), name: info.name });
+        else if (info.name && !map.get(norm)!.name) map.set(norm, { code: map.get(norm)!.code, name: info.name });
       });
     });
     return Array.from(map.entries()).map(([norm, info]) => ({ norm, code: info.code, name: info.name }));
-  }, [itemsByDate]);
+  }, [productList, itemsByDate]);
 
   // 단계별 그룹 + 코드 정렬
   const grouped = useMemo(() => {
     const map = new Map<string, typeof allCodesWithName>();
-    STAGES.forEach((s) => map.set(s.letter, []));
+    STAGES.forEach((s) => map.set(s.key, []));
     allCodesWithName.forEach((it) => {
       const stg = getStage(it.code);
       if (!stg) return;
@@ -199,7 +219,7 @@ export default function Remix() {
     });
     ws.addRow(header1);
     STAGES.forEach((s) => {
-      const items = grouped.get(s.letter) || [];
+      const items = grouped.get(s.key) || [];
       items.forEach((it) => {
         const row: (string | number)[] = [s.label, it.code, it.name];
         weekDateStrs.forEach((d) => {
@@ -278,12 +298,15 @@ export default function Remix() {
           ))}
         </div>
         {loadingWeek && <span className="text-xs text-gray-500">불러오는 중...</span>}
-        <div className="ml-auto flex items-center gap-2">
-          <span className="text-xs text-gray-500">
-            주 총 지시 <b>{weekTotal.qty.toLocaleString()}</b> · 잔여 <b className="text-rose-600">{weekTotal.rem.toLocaleString()}</b> ({weekTotal.ratio.toFixed(2)}%) · 재배합 <b>{weekTotal.rmx}건</b>
-          </span>
-          <button onClick={downloadExcel} className="px-3 py-1.5 bg-blue-900 text-white rounded text-sm font-medium hover:bg-blue-800">엑셀</button>
-        </div>
+        <button onClick={downloadExcel} className="ml-auto px-3 py-1.5 bg-blue-900 text-white rounded text-sm font-medium hover:bg-blue-800">엑셀 다운로드</button>
+      </div>
+
+      {/* 주차 합계 큼지막한 카드 */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <SummaryCard label="주 총 지시량" value={weekTotal.qty.toLocaleString()} unit="EA" tone="blue" />
+        <SummaryCard label="주 잔여량 합계" value={weekTotal.rem.toLocaleString()} unit="EA" tone="rose" />
+        <SummaryCard label="주 잔여율" value={weekTotal.ratio.toFixed(2)} unit="%" tone="rose" />
+        <SummaryCard label="주 재배합" value={String(weekTotal.rmx)} unit="건" tone="amber" sub={weekTotal.workDays > 0 ? `일평균 ${weekTotal.avgRemix.toFixed(1)}건` : undefined} />
       </div>
 
       {/* 단계별 그룹 표 */}
@@ -302,27 +325,41 @@ export default function Remix() {
             </tr>
             <tr>
               {weekDateStrs.map((d) => (
-                <>
-                  <th key={d + '-q'} className="px-1 py-1 text-right border">지시</th>
-                  <th key={d + '-r'} className="px-1 py-1 text-right border">잔여</th>
-                  <th key={d + '-m'} className="px-1 py-1 text-right border bg-amber-50">재배합</th>
-                </>
+                <Fragment key={d + '-hdr'}>
+                  <th className="px-1 py-1 text-right border">지시</th>
+                  <th className="px-1 py-1 text-right border">잔여</th>
+                  <th className="px-1 py-1 text-right border bg-amber-50">재배합</th>
+                </Fragment>
               ))}
             </tr>
           </thead>
           <tbody>
+            {/* 일 총계 (맨 위) */}
+            <tr className="bg-slate-200 border-y-2 border-slate-400 sticky top-0">
+              <td colSpan={3} className="px-2 py-2 text-right text-sm font-bold text-slate-800 bg-slate-200">일 총계</td>
+              {weekDateStrs.map((d) => {
+                const t = dayTotals[d];
+                return (
+                  <Fragment key={d + '-top'}>
+                    <td className="px-1 py-2 text-right border-x text-sm font-bold">{t?.totalQty.toLocaleString() || ''}</td>
+                    <td className="px-1 py-2 text-right border-x text-sm font-bold text-rose-700">{t?.remaining.toLocaleString() || ''}</td>
+                    <td className="px-1 py-2 text-right border-x text-sm font-bold text-amber-700 bg-amber-100">{t?.remixCount || ''}</td>
+                  </Fragment>
+                );
+              })}
+            </tr>
             {STAGES.map((s) => {
-              const items = grouped.get(s.letter) || [];
+              const items = grouped.get(s.key) || [];
               if (items.length === 0) return null;
               return (
-                <>
-                  <tr key={`hd-${s.letter}`} className="bg-slate-100">
+                <Fragment key={`stg-${s.key}`}>
+                  <tr key={`hd-${s.key}`} className="bg-slate-100">
                     <td colSpan={3 + weekDateStrs.length * 3} className="px-3 py-1.5 font-bold text-slate-700 text-sm">
                       {s.label} <span className="text-xs text-gray-500 font-normal">({items.length}품목)</span>
                     </td>
                   </tr>
                   {items.map((it) => (
-                    <tr key={`${s.letter}-${it.norm}`} className="border-t hover:bg-slate-50/50">
+                    <tr key={`${s.key}-${it.norm}`} className="border-t hover:bg-slate-50/50">
                       <td className="px-2 py-1 text-gray-500 border">{s.label}</td>
                       <td className="px-2 py-1 font-mono border">{it.code}</td>
                       <td className="px-2 py-1 border">{it.name || '-'}</td>
@@ -331,15 +368,15 @@ export default function Remix() {
                         const log = (logisticsByDate[d] || {})[it.norm];
                         const remix = (remixByDate[d] || {})[it.norm]?.count || 0;
                         return (
-                          <>
-                            <td key={d + '-q'} className="px-1 py-0.5 text-right border">{totalQty || ''}</td>
-                            <td key={d + '-r'} className={`px-1 py-0.5 text-right border ${log !== undefined ? 'text-rose-600 font-medium' : 'text-gray-300'}`}>
+                          <Fragment key={d + '-c'}>
+                            <td className="px-1 py-0.5 text-right border">{totalQty || ''}</td>
+                            <td className={`px-1 py-0.5 text-right border ${log !== undefined ? 'text-rose-600 font-medium' : 'text-gray-300'}`}>
                               {log ?? ''}
                             </td>
-                            <td key={d + '-m'} className="px-0 py-0 border bg-amber-50/40">
+                            <td className="px-0 py-0 border bg-amber-50/40">
                               <RemixCell value={remix} onChange={(v) => saveRemix(d, it.code, v)} />
                             </td>
-                          </>
+                          </Fragment>
                         );
                       })}
                     </tr>
@@ -356,31 +393,17 @@ export default function Remix() {
                         m += (remixByDate[d] || {})[it.norm]?.count || 0;
                       });
                       return (
-                        <>
-                          <td key={d + '-qs'} className="px-1 py-1 text-right border text-xs font-bold">{q || ''}</td>
-                          <td key={d + '-rs'} className="px-1 py-1 text-right border text-xs font-bold text-rose-700">{r || ''}</td>
-                          <td key={d + '-ms'} className="px-1 py-1 text-right border text-xs font-bold text-amber-700 bg-amber-50">{m || ''}</td>
-                        </>
+                        <Fragment key={d + '-sub'}>
+                          <td className="px-1 py-1 text-right border text-xs font-bold">{q || ''}</td>
+                          <td className="px-1 py-1 text-right border text-xs font-bold text-rose-700">{r || ''}</td>
+                          <td className="px-1 py-1 text-right border text-xs font-bold text-amber-700 bg-amber-50">{m || ''}</td>
+                        </Fragment>
                       );
                     })}
                   </tr>
-                </>
+                </Fragment>
               );
             })}
-            {/* 일 총계 */}
-            <tr className="bg-slate-200 border-t-2 border-slate-400">
-              <td colSpan={3} className="px-2 py-1.5 text-right text-sm font-bold text-slate-800">일 총계</td>
-              {weekDateStrs.map((d) => {
-                const t = dayTotals[d];
-                return (
-                  <>
-                    <td key={d + '-tq'} className="px-1 py-1.5 text-right border text-sm font-bold">{t?.totalQty.toLocaleString() || ''}</td>
-                    <td key={d + '-tr'} className="px-1 py-1.5 text-right border text-sm font-bold text-rose-700">{t?.remaining.toLocaleString() || ''}</td>
-                    <td key={d + '-tm'} className="px-1 py-1.5 text-right border text-sm font-bold text-amber-700 bg-amber-100">{t?.remixCount || ''}</td>
-                  </>
-                );
-              })}
-            </tr>
           </tbody>
         </table>
       </div>
@@ -394,6 +417,28 @@ export default function Remix() {
           onSave={async (pts) => { await saveGraph(editingGraph, pts); setEditingGraph(null); }}
         />
       )}
+    </div>
+  );
+}
+
+function SummaryCard({ label, value, unit, tone, sub }: {
+  label: string; value: string; unit: string;
+  tone: 'blue' | 'rose' | 'amber';
+  sub?: string;
+}) {
+  const tones = {
+    blue:  'border-blue-500  text-blue-700',
+    rose:  'border-rose-500  text-rose-700',
+    amber: 'border-amber-500 text-amber-700',
+  };
+  return (
+    <div className={`bg-white border-l-4 ${tones[tone]} rounded-lg shadow-sm p-4`}>
+      <div className="text-xs text-gray-500 mb-1 font-medium">{label}</div>
+      <div className="flex items-baseline gap-1">
+        <span className={`text-3xl font-bold ${tones[tone]}`}>{value}</span>
+        <span className="text-xs text-gray-500">{unit}</span>
+      </div>
+      {sub && <div className="text-[11px] text-gray-500 mt-1">{sub}</div>}
     </div>
   );
 }
