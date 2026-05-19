@@ -179,18 +179,22 @@ export default function Remix() {
           // 물류 입력 없으면 0
         }
       });
-      Object.values(remixByDate[d] || {}).forEach((r) => { remixCount += r.count || 0; });
+      // count 필드 우선, 없으면 qty가 0이 아니면 1로 카운팅 (구버전 호환)
+      Object.values(remixByDate[d] || {}).forEach((r) => {
+        if (r.count !== undefined) remixCount += r.count;
+        else if (r.qty) remixCount += 1;
+      });
       out[d] = { totalQty, remaining, remixCount };
     });
     return out;
   }, [itemsByDate, logisticsByDate, remixByDate, weekDateStrs]);
 
-  // 재배합 입력
-  const saveRemix = async (date: string, code: string, count: number) => {
-    if (count <= 0) {
+  // 재배합 입력: qty(수량) 받음. count=1 (품목 1개당 1건)
+  const saveRemix = async (date: string, code: string, qty: number) => {
+    if (qty === 0 || isNaN(qty)) {
       await deleteDoc(doc(db, 'remix', date, 'items', code)).catch(() => {});
     } else {
-      await setDoc(doc(db, 'remix', date, 'items', code), { code, count, date });
+      await setDoc(doc(db, 'remix', date, 'items', code), { code, qty, count: 1, date });
     }
     setRefreshTick((t) => t + 1);
   };
@@ -227,8 +231,9 @@ export default function Remix() {
           const dayItems = itemsByDate[d] || {};
           const totalQty = dayItems[it.norm]?.totalQty || 0;
           const log = (logisticsByDate[d] || {})[it.norm];
-          const remix = (remixByDate[d] || {})[it.norm]?.count || 0;
-          row.push(totalQty || '', log ?? '', remix || '');
+          const r = (remixByDate[d] || {})[it.norm];
+          const remixQty = r?.qty ?? r?.count ?? 0;
+          row.push(totalQty || '', log ?? '', remixQty || '');
         });
         ws.addRow(row);
       });
@@ -378,7 +383,8 @@ export default function Remix() {
                       {weekDateStrs.map((d) => {
                         const totalQty = (itemsByDate[d] || {})[it.norm]?.totalQty || 0;
                         const log = (logisticsByDate[d] || {})[it.norm];
-                        const remix = (remixByDate[d] || {})[it.norm]?.count || 0;
+                        const rEntry = (remixByDate[d] || {})[it.norm];
+                        const remixQty = rEntry?.qty ?? rEntry?.count ?? 0;
                         return (
                           <Fragment key={d + '-c'}>
                             <td className="px-1 py-0.5 text-right border">{totalQty || ''}</td>
@@ -386,23 +392,25 @@ export default function Remix() {
                               {log ?? ''}
                             </td>
                             <td className="px-0 py-0 border bg-amber-50/40">
-                              <RemixCell value={remix} onChange={(v) => saveRemix(d, it.code, v)} />
+                              <RemixCell value={remixQty} onChange={(v) => saveRemix(d, it.code, v)} />
                             </td>
                           </Fragment>
                         );
                       })}
                     </tr>
                   ))}
-                  {/* 단계 소계 */}
+                  {/* 단계 소계: 건수 카운팅 */}
                   <tr className="bg-slate-50 border-t">
-                    <td colSpan={3} className="px-2 py-1 text-right text-xs font-semibold text-slate-600">소계</td>
+                    <td colSpan={3} className="px-2 py-1 text-right text-xs font-semibold text-slate-600">소계 (건수)</td>
                     {weekDateStrs.map((d) => {
                       let q = 0, r = 0, m = 0;
                       items.forEach((it) => {
                         q += (itemsByDate[d] || {})[it.norm]?.totalQty || 0;
                         const log = (logisticsByDate[d] || {})[it.norm];
                         if (log !== undefined) r += log;
-                        m += (remixByDate[d] || {})[it.norm]?.count || 0;
+                        const rEntry = (remixByDate[d] || {})[it.norm];
+                        if (rEntry?.count !== undefined) m += rEntry.count;
+                        else if (rEntry?.qty) m += 1;
                       });
                       return (
                         <Fragment key={d + '-sub'}>
@@ -610,7 +618,7 @@ type MonthlyOverride = {
 };
 
 // localStorage 캐시 (월별 집계는 거의 안 바뀜)
-const AGG_CACHE_PREFIX = 'remixMonthAgg:';
+const AGG_CACHE_PREFIX = 'remixMonthAgg2:';  // v2: 일평균 품목수 + 건수 카운팅
 function isPastMonth(year: number, month: number): boolean {
   const now = new Date();
   const cy = now.getFullYear(), cm = now.getMonth() + 1;
@@ -651,8 +659,7 @@ async function aggregateMonth(year: number, month: number): Promise<{ totalQty: 
 
   const lastDay = new Date(year, month, 0).getDate();
   const dates = Array.from({ length: lastDay }, (_, i) => `${year}-${pad(month)}-${pad(i + 1)}`);
-  let totalQty = 0, remaining = 0, remixCount = 0, workDays = 0;
-  const codesSet = new Set<string>();
+  let totalQty = 0, remaining = 0, remixCount = 0, workDays = 0, totalDailyCodes = 0;
   const [itemsSnaps, logsSnaps, remixSnaps] = await Promise.all([
     Promise.all(dates.map((d) => getDocs(collection(db, 'days', d, 'items')))),
     Promise.all(dates.map((d) => getDocs(collection(db, 'days', d, 'logistics')))),
@@ -660,19 +667,28 @@ async function aggregateMonth(year: number, month: number): Promise<{ totalQty: 
   ]);
   dates.forEach((_d, idx) => {
     let dayQty = 0;
+    const daySet = new Set<string>();
     itemsSnaps[idx].forEach((doc) => {
       const it = doc.data() as Item;
       dayQty += it.totalQty || 0;
-      codesSet.add(normalizeCode(it.code));
+      daySet.add(normalizeCode(it.code));
     });
     if (dayQty > 0) workDays++;
+    if (daySet.size > 0) totalDailyCodes += daySet.size;
     totalQty += dayQty;
     logsSnaps[idx].forEach((doc) => { remaining += (doc.data().qty as number) || 0; });
     if (remixSnaps[idx]) {
-      remixSnaps[idx]!.forEach((doc) => { remixCount += (doc.data().count as number) || 0; });
+      remixSnaps[idx]!.forEach((doc) => {
+        const r = doc.data();
+        // 건수 카운팅: count 필드 우선, 없으면 qty 있을 때 1
+        if (r.count !== undefined) remixCount += r.count as number;
+        else if (r.qty) remixCount += 1;
+      });
     }
   });
-  const data = { totalQty, remaining, remixCount, itemCount: codesSet.size, workDays };
+  // 품목수 = 작업일 평균 일별 품목수
+  const avgItemCount = workDays > 0 ? Math.round(totalDailyCodes / workDays) : 0;
+  const data = { totalQty, remaining, remixCount, itemCount: avgItemCount, workDays };
   setAggCache(year, month, data);
   return data;
 }
@@ -824,7 +840,7 @@ function MonthlyView({
   const downloadExcel = async () => {
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet(`${year}년 월별정리`);
-    ws.addRow(['월', '생산수량', '잔여량', '잔여율(%)', '재배합', '일평균재배합', '품목수', '작업일']);
+    ws.addRow(['월', '생산수량', '잔여량', '잔여율(%)', '재배합', '일평균재배합', '일평균 품목수', '작업일']);
     aggs.forEach((a) => {
       ws.addRow([
         `${a.month}월`, a.totalQty, a.remaining,
@@ -904,7 +920,7 @@ function MonthlyView({
               <th className="px-3 py-2 text-right">잔여율</th>
               <th className="px-3 py-2 text-right">재배합</th>
               <th className="px-3 py-2 text-right">일평균 재배합</th>
-              <th className="px-3 py-2 text-right">품목수</th>
+              <th className="px-3 py-2 text-right">일평균 품목수</th>
               <th className="px-3 py-2 text-right">작업일</th>
               <th className="px-3 py-2 text-right w-16"></th>
             </tr>
@@ -993,7 +1009,7 @@ function MonthOverrideModal({
     { k: 'totalQty', label: '생산 수량', autoVal: auto?.totalQty ?? 0 },
     { k: 'remaining', label: '잔여량', autoVal: auto?.remaining ?? 0 },
     { k: 'remixCount', label: '재배합 건수', autoVal: auto?.remixCount ?? 0 },
-    { k: 'itemCount', label: '품목수', autoVal: auto?.itemCount ?? 0 },
+    { k: 'itemCount', label: '일평균 품목수', autoVal: auto?.itemCount ?? 0 },
     { k: 'workDays', label: '작업일 수', autoVal: auto?.workDays ?? 0 },
   ];
 
