@@ -12,6 +12,14 @@ export function normalizeCode(code: string): string {
   return (code || '').toLowerCase().replace(/[-\s]/g, '');
 }
 
+/** 어떤 형식이든 표준 단축코드로: PB-A-001 / A-001-01 / A01 → A01 */
+export function canonicalShort(raw: string): string {
+  const s = (raw || '').trim().toUpperCase().replace(/^PB-/, '');
+  const m = s.match(/([A-Z])-?(\d+)/);
+  if (!m) return s;
+  return `${m[1]}${String(parseInt(m[2], 10)).padStart(2, '0')}`;
+}
+
 /** 자연 정렬: F01, F02, F06, F12, F104 ... (알파벳 사전순 X) */
 export function compareCode(a: string, b: string): number {
   const ma = (a || '').match(/^([A-Za-z]+)(\d+)/);
