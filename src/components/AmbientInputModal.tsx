@@ -68,7 +68,7 @@ export default function AmbientInputModal({
       <div className="bg-white rounded-xl shadow-2xl w-full max-w-4xl h-[90vh] overflow-hidden flex flex-col">
         <div className="px-6 py-4 border-b flex items-center justify-between bg-gradient-to-r from-orange-50 to-amber-50">
           <div>
-            <h3 className="text-lg font-bold text-gray-800">상온 생산량 입력</h3>
+            <h3 className="text-lg font-bold text-gray-800">실온 생산량 입력</h3>
             <div className="text-xs text-gray-500 mt-0.5">제품 카테고리는 자동으로 분류됩니다</div>
           </div>
           <button onClick={onClose} className="w-8 h-8 rounded-full hover:bg-gray-200 text-gray-500 text-lg" aria-label="닫기">×</button>

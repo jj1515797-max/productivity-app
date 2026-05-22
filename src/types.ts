@@ -82,6 +82,7 @@ export interface ProductSetting {
   code: string;
   type?: '냄비' | '바트' | null;
   name?: string;
+  packWeight?: number;   // 포장중량 (g) — 냉장 기준
 }
 
 export interface Material {

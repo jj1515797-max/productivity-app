@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { collection, collectionGroup, getDocs, query, where } from 'firebase/firestore';
 import { db } from '../firebase';
-import type { AmbientEntry, Item, MachineEntry } from '../types';
+import type { AmbientEntry, Item, MachineEntry, ProductSetting } from '../types';
 import AmbientInputModal from '../components/AmbientInputModal';
 import LogisticsInputModal from '../components/LogisticsInputModal';
 import { todayKey } from '../lib/dateUtil';
+import { convertErpCode, normalizeCode } from '../lib/codeUtil';
 
 const MACHINES: MachineEntry['machine'][] = ['1호기', '2호기', '3호기'];
 
@@ -24,20 +25,32 @@ function prevMonths(month: string, count: number): string[] {
 }
 
 async function fetchMonthLogistics(month: string): Promise<Record<string, number>> {
+  const r = await fetchMonthLogisticsFull(month);
+  return r.byDay;
+}
+
+// byDay (일자별 합계) + byCode (코드별 합계) 둘 다 반환
+async function fetchMonthLogisticsFull(month: string): Promise<{ byDay: Record<string, number>; byCode: Record<string, number> }> {
   const [yy, mm] = month.split('-').map(Number);
   const lastDay = new Date(yy, mm, 0).getDate();
   const dates = Array.from({ length: lastDay }, (_, i) => `${month}-${String(i + 1).padStart(2, '0')}`);
   const snaps = await Promise.all(
     dates.map((d) => getDocs(collection(db, 'days', d, 'logistics')))
   );
-  const map: Record<string, number> = {};
+  const byDay: Record<string, number> = {};
+  const byCode: Record<string, number> = {};
   snaps.forEach((s, i) => {
     if (s.empty) return;
     let sum = 0;
-    s.forEach((d) => { sum += (d.data().qty as number) || 0; });
-    map[dates[i]] = sum;
+    s.forEach((d) => {
+      const q = (d.data().qty as number) || 0;
+      sum += q;
+      const norm = (d.id || '').toLowerCase().replace(/[-\s]/g, '');
+      byCode[norm] = (byCode[norm] || 0) + q;
+    });
+    byDay[dates[i]] = sum;
   });
-  return map;
+  return { byDay, byCode };
 }
 
 // ===== localStorage 캐시 (Firestore 읽기 절감) =====
@@ -164,7 +177,9 @@ export default function AnalyticsMonthly() {
   const [ambient, setAmbient] = useState<AmbientEntry[]>([]);
   const [items, setItems] = useState<Item[]>([]);
   const [logisticsByDay, setLogisticsByDay] = useState<Record<string, number>>({});
+  const [logisticsByCode, setLogisticsByCode] = useState<Record<string, number>>({});
   const [prevLogisticsByDay, setPrevLogisticsByDay] = useState<Record<string, number>>({});
+  const [packWeights, setPackWeights] = useState<Record<string, number>>({});
   const [nameMap, setNameMap] = useState<Map<string, string>>(new Map());
   const [prev3Avg, setPrev3Avg] = useState<number>(0);
   const [prev3Tick, setPrev3Tick] = useState(0);
@@ -194,6 +209,7 @@ export default function AnalyticsMonthly() {
       items: Item[];
       ambient: AmbientEntry[];
       logistics: Record<string, number>;
+      logisticsCode?: Record<string, number>;
     };
 
     const cacheKey = `m:${month}`;
@@ -204,6 +220,7 @@ export default function AnalyticsMonthly() {
       setItems(cached.data.items);
       setAmbient(cached.data.ambient);
       setLogisticsByDay(cached.data.logistics);
+      setLogisticsByCode(cached.data.logisticsCode || {});
       const map = new Map<string, string>();
       cached.data.items.forEach((it) => {
         if (it.code && it.name) map.set(it.code.toLowerCase(), it.name);
@@ -219,9 +236,9 @@ export default function AnalyticsMonthly() {
         getDocs(query(collectionGroup(db, 'entries'), where('date', '>=', start), where('date', '<=', end))),
         getDocs(query(collectionGroup(db, 'items'), where('date', '>=', start), where('date', '<=', end))),
         getDocs(query(collectionGroup(db, 'ambient'), where('date', '>=', start), where('date', '<=', end))),
-        fetchMonthLogistics(month),
+        fetchMonthLogisticsFull(month),
       ])
-        .then(([entriesSnap, itemsSnap, ambientSnap, logMap]) => {
+        .then(([entriesSnap, itemsSnap, ambientSnap, logFull]) => {
           if (cancelled) return;
           const ents = entriesSnap.docs.map((d) => d.data() as MachineEntry);
           const its = itemsSnap.docs.map((d) => d.data() as Item);
@@ -229,11 +246,12 @@ export default function AnalyticsMonthly() {
           setEntries(ents);
           setItems(its);
           setAmbient(ambs);
-          setLogisticsByDay(logMap);
+          setLogisticsByDay(logFull.byDay);
+          setLogisticsByCode(logFull.byCode);
           const map = new Map<string, string>();
           its.forEach((it) => { if (it.code && it.name) map.set(it.code.toLowerCase(), it.name); });
           setNameMap(map);
-          setCache(cacheKey, { entries: ents, items: its, ambient: ambs, logistics: logMap });
+          setCache(cacheKey, { entries: ents, items: its, ambient: ambs, logistics: logFull.byDay, logisticsCode: logFull.byCode });
         })
         .catch((e) => { if (!cancelled) setErr(e.message || String(e)); })
         .finally(() => { if (!cancelled) setLoading(false); });
@@ -280,6 +298,20 @@ export default function AnalyticsMonthly() {
 
     return () => { cancelled = true; };
   }, [month, refreshTick]);
+
+  // 제품 DB 포장중량 1회 로드 (월 생산 중량 계산용)
+  useEffect(() => {
+    getDocs(collection(db, 'productSettings')).then((snap) => {
+      const map: Record<string, number> = {};
+      snap.forEach((d) => {
+        const s = d.data() as ProductSetting;
+        if (s.packWeight && s.packWeight > 0) {
+          map[normalizeCode(convertErpCode(s.code || d.id))] = s.packWeight;
+        }
+      });
+      setPackWeights(map);
+    }).catch(() => {});
+  }, []);
 
   // 직전 3개월 일평균: 30일 캐시 (수동 갱신 가능)
   useEffect(() => {
@@ -368,7 +400,7 @@ export default function AnalyticsMonthly() {
     const ambientAvg = ambientDays ? ambientTotal / ambientDays : 0;
     const avgPerDay = daysWorked ? total / daysWorked : 0;
 
-    // 일별 평균 품목 수: 냉장 품목만 카운트 (상온 제외)
+    // 일별 평균 품목 수: 냉장 품목만 카운트 (실온 제외)
     const itemsByDay: Record<string, Set<string>> = {};
     entries.forEach((e) => {
       if (!itemsByDay[e.date]) itemsByDay[e.date] = new Set();
@@ -420,17 +452,32 @@ export default function AnalyticsMonthly() {
       if (q >= 1 && q < 10) under10Count++;
     });
 
+    // 월 생산 중량 (냉장): Σ 발주량×포장중량 + Σ 잔여량×포장중량
+    let monthWeightG = 0;
+    let weightMatched = 0, weightMissing = 0;
+    items.forEach((it) => {
+      const norm = normalizeCode(it.code);
+      const pw = packWeights[norm];
+      if (pw) { monthWeightG += (it.totalQty || 0) * pw; weightMatched++; }
+      else if (it.totalQty) weightMissing++;
+    });
+    Object.entries(logisticsByCode).forEach(([norm, q]) => {
+      const pw = packWeights[norm];
+      if (pw) monthWeightG += q * pw;
+    });
+
     return {
       total, coldTotal, ambientTotal,
       totalRemaining: ms.totalRemaining,
       remainingRatio: ms.remainingRatio,
       under10Count,
+      monthWeightG, weightMatched, weightMissing,
       daysWorked, coldDays, ambientDays,
       avgPerDay, coldAvg, ambientAvg,
       avgItemsPerDay,
       byMachine, allDays, topCodes,
     };
-  }, [entries, ambient, items, nameMap, month, logisticsByDay]);
+  }, [entries, ambient, items, nameMap, month, logisticsByDay, logisticsByCode, packWeights]);
 
   const shiftMonth = (delta: number) => {
     const [y, m] = month.split('-').map(Number);
@@ -488,20 +535,20 @@ export default function AnalyticsMonthly() {
             onClick={() => setAmbientModalOpen(true)}
             className="px-4 py-2 bg-orange-500 hover:bg-orange-600 text-white rounded-md font-medium text-sm shadow-sm flex items-center gap-2"
           >
-            <span className="w-2 h-2 rounded-full bg-white" /> 상온 입력
+            <span className="w-2 h-2 rounded-full bg-white" /> 실온 입력
           </button>
         </div>
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <Card label="총 생산량" value={stats.total.toLocaleString()} unit="EA" color="indigo" sub="냉장 + 상온" />
+        <Card label="총 생산량" value={stats.total.toLocaleString()} unit="EA" color="indigo" sub="냉장 + 실온" />
         <Card label="냉장 생산량" value={stats.coldTotal.toLocaleString()} unit="EA" color="blue" />
-        <Card label="상온 생산량" value={stats.ambientTotal.toLocaleString()} unit="EA" color="orange" />
+        <Card label="실온 생산량" value={stats.ambientTotal.toLocaleString()} unit="EA" color="orange" />
         <Card label="작업일 수" value={stats.daysWorked.toString()} unit="일" color="green" />
       </div>
 
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <Card label="일평균 생산량" value={Math.round(stats.avgPerDay).toLocaleString()} unit="EA" color="purple" sub="냉장 + 상온" />
+        <Card label="일평균 생산량" value={Math.round(stats.avgPerDay).toLocaleString()} unit="EA" color="purple" sub="냉장 + 실온" />
         <Card label="잔여량 비율" value={stats.remainingRatio.toFixed(2)} unit="%" color="rose" sub={`잔여 ${stats.totalRemaining.toLocaleString()} / 냉장 ${stats.coldTotal.toLocaleString()}`} />
         <Card
           label="10EA 미만 생산 품목"
@@ -595,6 +642,22 @@ export default function AnalyticsMonthly() {
         prev3Refreshing={prev3Refreshing}
         prev3CachedAt={prev3CachedAt}
       />
+
+      {/* 월 생산 중량 (냉장) */}
+      <div className="bg-white border-l-4 border-cyan-500 border-y border-r rounded-lg shadow-sm p-4 flex items-baseline gap-3 flex-wrap">
+        <span className="text-sm font-medium text-gray-500">월 생산 중량 <span className="text-xs text-gray-400">(냉장 · 발주+잔여 × 포장중량)</span></span>
+        <span className="text-3xl font-bold text-cyan-700">
+          {stats.monthWeightG >= 1000
+            ? (stats.monthWeightG / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 })
+            : stats.monthWeightG.toLocaleString()}
+        </span>
+        <span className="text-sm text-gray-500">{stats.monthWeightG >= 1000 ? 'kg' : 'g'}</span>
+        {stats.weightMissing > 0 && (
+          <span className="ml-auto text-[11px] text-orange-600">
+            ⚠ 포장중량 미입력 {stats.weightMissing}품목 — 설정 → 제품DB에서 입력
+          </span>
+        )}
+      </div>
 
       {/* Top 5 - 맨 아래 */}
       {stats.topCodes.length > 0 && (
@@ -852,7 +915,7 @@ function DailyChart({
               <span className="w-4 h-4 inline-block bg-blue-600 rounded-sm" /> 냉장
             </span>
             <span className="flex items-center gap-2">
-              <span className="w-4 h-4 inline-block rounded-sm" style={{ backgroundColor: '#ea580c' }} /> 상온
+              <span className="w-4 h-4 inline-block rounded-sm" style={{ backgroundColor: '#ea580c' }} /> 실온
             </span>
             <span className="flex items-center gap-2">
               <span className="w-6 border-t-[2.5px] border-gray-500 inline-block" /> 일 평균 생산량
@@ -897,7 +960,7 @@ function PrevMonthCompare({
     ? [
         { label: '총 생산량', cur: current.total, prv: prev?.total || 0, unit: 'EA', bold: true },
         { label: '냉장 생산량', cur: current.coldTotal, prv: prev?.coldTotal || 0, unit: 'EA' },
-        { label: '상온 생산량', cur: current.ambientTotal, prv: prev?.ambientTotal || 0, unit: 'EA' },
+        { label: '실온 생산량', cur: current.ambientTotal, prv: prev?.ambientTotal || 0, unit: 'EA' },
         { label: '잔여량', cur: current.totalRemaining, prv: prev?.totalRemaining || 0, unit: 'EA', inverse: true },
         { label: '잔여량 비율(%)', cur: current.remainingRatio, prv: prev?.remainingRatio || 0, unit: '%', pp: true, inverse: true },
         { label: '일평균 생산량', cur: current.totalAvg, prv: prev?.totalAvg || 0, unit: 'EA' },
@@ -907,7 +970,7 @@ function PrevMonthCompare({
     : [
         { label: '총 생산량', cur: current.total, prv: prev?.total || 0, unit: 'EA', bold: true },
         { label: '냉장 생산량', cur: current.coldTotal, prv: prev?.coldTotal || 0, unit: 'EA' },
-        { label: '상온 생산량', cur: current.ambientTotal, prv: prev?.ambientTotal || 0, unit: 'EA' },
+        { label: '실온 생산량', cur: current.ambientTotal, prv: prev?.ambientTotal || 0, unit: 'EA' },
         { label: '잔여량', cur: current.totalRemaining, prv: prev?.totalRemaining || 0, unit: 'EA', inverse: true },
         { label: '잔여량 비율(%)', cur: current.remainingRatio, prv: prev?.remainingRatio || 0, unit: '%', pp: true, inverse: true },
         { label: '일평균 생산량', cur: current.totalAvg, prv: prev?.totalAvg || 0, unit: 'EA' },
