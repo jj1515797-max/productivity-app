@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { collection, deleteDoc, doc, getCountFromServer, onSnapshot, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import type { Material, ProductSetting } from '../types';
-import { convertErpCode } from '../lib/codeUtil';
+import { canonicalShort, convertErpCode } from '../lib/codeUtil';
 
 type ProdType = '냄비' | '바트';
 
@@ -228,7 +228,7 @@ export default function ProductSettings() {
         />
       )}
       {showWeightBulk && (
-        <WeightBulkModal onClose={() => setShowWeightBulk(false)} />
+        <WeightBulkModal onClose={() => setShowWeightBulk(false)} existing={settings} />
       )}
     </div>
   );
@@ -254,24 +254,36 @@ function WeightCell({ value, onSave }: { value?: number; onSave: (v: number | nu
   );
 }
 
-function WeightBulkModal({ onClose }: { onClose: () => void }) {
+function WeightBulkModal({ onClose, existing }: { onClose: () => void; existing: ProductSetting[] }) {
   const [text, setText] = useState('');
   const [saving, setSaving] = useState(false);
+  const [cleaning, setCleaning] = useState(false);
 
-  // 각 줄: 코드 [tab/,] 품목명(선택) [tab/,] 포장중량  — 마지막 숫자를 중량으로
+  // 기존 제품: 표준코드 → 실제 docId 매핑
+  const lookup = useMemo(() => {
+    const m = new Map<string, string>();
+    existing.forEach((s) => m.set(canonicalShort(s.code), s.code));
+    return m;
+  }, [existing]);
+
+  // 잘못 생성된 PB- 항목들
+  const junkDocs = useMemo(() => existing.filter((s) => /^PB-/i.test(s.code)), [existing]);
+
   const lines = text.trim().split('\n').map((l) => l.trim()).filter(Boolean);
   const parsed = lines.map((line) => {
     const parts = line.split(/[,\t]/).map((s) => s.trim());
-    const code = (parts[0] || '').toUpperCase();
-    // 마지막 칸에서 숫자 추출
+    const rawCode = parts[0] || '';
+    const canon = canonicalShort(rawCode);
+    const matchedDoc = lookup.get(canon);
     let weight: number | null = null;
     for (let i = parts.length - 1; i >= 1; i--) {
-      const n = Number(parts[i].replace(/[^0-9.]/g, ''));
+      const n = Number((parts[i] || '').replace(/[^0-9.]/g, ''));
       if (!isNaN(n) && n > 0) { weight = n; break; }
     }
-    return { code, weight, valid: code.length > 0 && weight !== null };
+    return { rawCode, canon, matchedDoc, weight, valid: !!matchedDoc && weight !== null };
   });
   const validRows = parsed.filter((p) => p.valid);
+  const unmatched = parsed.filter((p) => p.weight !== null && !p.matchedDoc);
 
   const save = async () => {
     if (validRows.length === 0) return;
@@ -279,12 +291,27 @@ function WeightBulkModal({ onClose }: { onClose: () => void }) {
     try {
       const batch = writeBatch(db);
       validRows.forEach((row) => {
-        batch.set(doc(db, 'productSettings', row.code), { code: row.code, packWeight: row.weight }, { merge: true });
+        batch.set(doc(db, 'productSettings', row.matchedDoc!), { packWeight: row.weight }, { merge: true });
       });
       await batch.commit();
-      alert(`${validRows.length}개 포장중량 저장 완료`);
+      alert(`${validRows.length}개 기존 제품에 포장중량 반영 완료`);
       onClose();
     } finally { setSaving(false); }
+  };
+
+  const cleanupJunk = async () => {
+    if (junkDocs.length === 0) return;
+    if (!confirm(`잘못 생성된 'PB-' 항목 ${junkDocs.length}개를 삭제할까요?`)) return;
+    setCleaning(true);
+    try {
+      // 500개씩 배치
+      for (let i = 0; i < junkDocs.length; i += 400) {
+        const batch = writeBatch(db);
+        junkDocs.slice(i, i + 400).forEach((s) => batch.delete(doc(db, 'productSettings', s.code)));
+        await batch.commit();
+      }
+      alert(`${junkDocs.length}개 삭제 완료`);
+    } finally { setCleaning(false); }
   };
 
   return (
@@ -293,32 +320,46 @@ function WeightBulkModal({ onClose }: { onClose: () => void }) {
         <div className="px-5 py-4 border-b bg-gradient-to-r from-violet-50 to-blue-50 flex items-center justify-between">
           <div>
             <h3 className="font-bold text-gray-800">포장중량 일괄 입력</h3>
-            <div className="text-xs text-gray-500 mt-0.5">기존 제품 DB는 그대로, 포장중량만 매칭해서 추가/수정합니다</div>
+            <div className="text-xs text-gray-500 mt-0.5">기존 제품 DB에 포장중량만 매칭해서 덮어씁니다 (새 항목 안 만듦)</div>
           </div>
           <button onClick={onClose} className="w-7 h-7 rounded-full hover:bg-gray-200 text-gray-500">×</button>
         </div>
         <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          {junkDocs.length > 0 && (
+            <div className="bg-red-50 border border-red-300 rounded p-3 flex items-center gap-3">
+              <span className="text-sm text-red-700">⚠ 이전에 잘못 생성된 <b>PB-</b> 항목이 {junkDocs.length}개 있습니다.</span>
+              <button onClick={cleanupJunk} disabled={cleaning} className="ml-auto px-3 py-1.5 bg-red-600 text-white rounded text-sm font-medium hover:bg-red-700 disabled:bg-gray-300">
+                {cleaning ? '삭제중...' : `PB- 항목 ${junkDocs.length}개 삭제`}
+              </button>
+            </div>
+          )}
           <div className="bg-violet-50 border border-violet-200 rounded p-3 text-xs text-violet-800 leading-relaxed">
-            <b>형식:</b> 코드 / 품목명 / 포장중량 — 콤마 또는 탭 구분. 품목명은 무시되고 <b>마지막 숫자</b>를 포장중량(g)으로 인식.<br />
-            예: <code className="bg-white px-1.5 py-0.5 rounded">PB-A-001	순수쌀미음	150</code>
+            <b>형식:</b> 코드 / 품목명 / 포장중량 — 콤마 또는 탭 구분. 마지막 숫자를 포장중량(g)으로 인식.<br />
+            코드는 <code className="bg-white px-1 rounded">PB-A-001</code>, <code className="bg-white px-1 rounded">A-001-01</code>, <code className="bg-white px-1 rounded">A01</code> 어느 형식이든 기존 제품과 자동 매칭됩니다.
           </div>
           <textarea
             value={text}
             onChange={(e) => setText(e.target.value)}
             placeholder={"PB-A-001\t순수쌀미음\t150\nPB-A-002\t감자미음\t150"}
-            className="w-full h-72 border rounded-md p-3 text-sm font-mono"
+            className="w-full h-60 border rounded-md p-3 text-sm font-mono"
           />
           {parsed.length > 0 && (
-            <div className="text-sm text-gray-600">
-              유효 <b className="text-violet-700">{validRows.length}</b> / 전체 {parsed.length}줄
-              {parsed.length - validRows.length > 0 && <span className="text-red-500 ml-2">({parsed.length - validRows.length}줄 무시 — 코드/숫자 없음)</span>}
+            <div className="space-y-1 text-sm">
+              <div className="text-gray-600">
+                매칭 성공 <b className="text-violet-700">{validRows.length}</b> / 전체 {parsed.length}줄
+              </div>
+              {unmatched.length > 0 && (
+                <div className="text-red-600 text-xs">
+                  ⚠ 제품DB에 없어 매칭 실패 {unmatched.length}개: {unmatched.slice(0, 10).map((u) => u.rawCode).join(', ')}{unmatched.length > 10 ? ' …' : ''}
+                </div>
+              )}
             </div>
           )}
         </div>
         <div className="px-5 py-3 border-t bg-slate-50 flex items-center gap-2">
-          <button onClick={onClose} className="px-3 py-2 border rounded text-sm font-medium hover:bg-gray-100">취소</button>
+          <button onClick={onClose} className="px-3 py-2 border rounded text-sm font-medium hover:bg-gray-100">닫기</button>
           <button onClick={save} disabled={validRows.length === 0 || saving} className="ml-auto px-5 py-2 bg-violet-600 text-white rounded font-medium hover:bg-violet-700 disabled:bg-gray-300">
-            {saving ? '저장중...' : `${validRows.length}개 저장`}
+            {saving ? '저장중...' : `${validRows.length}개 반영`}
           </button>
         </div>
       </div>
