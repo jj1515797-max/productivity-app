@@ -17,6 +17,7 @@ export default function ProductSettings() {
   const [showProductDB, setShowProductDB] = useState(false);
   const [showMaterialDB, setShowMaterialDB] = useState(false);
   const [showBulk, setShowBulk] = useState(false);
+  const [showWeightBulk, setShowWeightBulk] = useState(false);
   const [materials, setMaterials] = useState<Material[]>([]);
   // 헤더에 표시할 총개수만 가볍게 (count aggregation = 1읽기)
   const [productCount, setProductCount] = useState<number | null>(null);
@@ -68,6 +69,10 @@ export default function ProductSettings() {
     await setDoc(doc(db, 'productSettings', code), { code, type }, { merge: true });
   };
 
+  const setWeight = async (code: string, w: number | null) => {
+    await setDoc(doc(db, 'productSettings', code), { code, packWeight: w }, { merge: true });
+  };
+
   const remove = async (code: string) => {
     if (!confirm(`'${code}' 항목을 삭제할까요?`)) return;
     await deleteDoc(doc(db, 'productSettings', code));
@@ -102,6 +107,10 @@ export default function ProductSettings() {
               className="px-3 py-2 border rounded-md font-medium text-sm hover:bg-gray-100"
             >📋 일괄 입력</button>
             <button
+              onClick={() => setShowWeightBulk(true)}
+              className="px-3 py-2 border rounded-md font-medium text-sm hover:bg-gray-100"
+            >⚖️ 포장중량 일괄</button>
+            <button
               onClick={() => {
                 const code = prompt('새 제품 코드 (예: A-01)');
                 if (code?.trim()) setType(code.trim().toUpperCase(), null);
@@ -135,6 +144,7 @@ export default function ProductSettings() {
                   <tr>
                     <th className="px-4 py-2 text-left w-44">코드</th>
                     <th className="px-4 py-2 text-left">품목명</th>
+                    <th className="px-4 py-2 text-center w-28">포장중량(g)</th>
                     <th className="px-4 py-2 text-center w-64">구분</th>
                     <th className="px-4 py-2 text-right w-20"></th>
                   </tr>
@@ -152,6 +162,9 @@ export default function ProductSettings() {
                         )}
                       </td>
                       <td className="px-4 py-2 text-gray-700">{s.name || <span className="text-gray-300">-</span>}</td>
+                      <td className="px-4 py-2 text-center">
+                        <WeightCell value={s.packWeight} onSave={(v) => setWeight(s.code, v)} />
+                      </td>
                       <td className="px-4 py-2">
                         <div className="flex items-center justify-center gap-1.5">
                           {(['냄비', '바트'] as ProdType[]).map((t) => {
@@ -214,6 +227,101 @@ export default function ProductSettings() {
           existing={settings}
         />
       )}
+      {showWeightBulk && (
+        <WeightBulkModal onClose={() => setShowWeightBulk(false)} />
+      )}
+    </div>
+  );
+}
+
+function WeightCell({ value, onSave }: { value?: number; onSave: (v: number | null) => void }) {
+  const [local, setLocal] = useState(value !== undefined && value !== null ? String(value) : '');
+  useEffect(() => { setLocal(value !== undefined && value !== null ? String(value) : ''); }, [value]);
+  return (
+    <input
+      type="number" inputMode="numeric"
+      value={local}
+      onChange={(e) => setLocal(e.target.value)}
+      onBlur={() => {
+        const t = local.trim();
+        if (t === '') { onSave(null); return; }
+        const n = Number(t);
+        if (!isNaN(n) && n !== value) onSave(n);
+      }}
+      placeholder="-"
+      className="w-20 border rounded px-2 py-1 text-sm text-center focus:outline-none focus:ring-2 focus:ring-blue-300"
+    />
+  );
+}
+
+function WeightBulkModal({ onClose }: { onClose: () => void }) {
+  const [text, setText] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  // 각 줄: 코드 [tab/,] 품목명(선택) [tab/,] 포장중량  — 마지막 숫자를 중량으로
+  const lines = text.trim().split('\n').map((l) => l.trim()).filter(Boolean);
+  const parsed = lines.map((line) => {
+    const parts = line.split(/[,\t]/).map((s) => s.trim());
+    const code = (parts[0] || '').toUpperCase();
+    // 마지막 칸에서 숫자 추출
+    let weight: number | null = null;
+    for (let i = parts.length - 1; i >= 1; i--) {
+      const n = Number(parts[i].replace(/[^0-9.]/g, ''));
+      if (!isNaN(n) && n > 0) { weight = n; break; }
+    }
+    return { code, weight, valid: code.length > 0 && weight !== null };
+  });
+  const validRows = parsed.filter((p) => p.valid);
+
+  const save = async () => {
+    if (validRows.length === 0) return;
+    setSaving(true);
+    try {
+      const batch = writeBatch(db);
+      validRows.forEach((row) => {
+        batch.set(doc(db, 'productSettings', row.code), { code: row.code, packWeight: row.weight }, { merge: true });
+      });
+      await batch.commit();
+      alert(`${validRows.length}개 포장중량 저장 완료`);
+      onClose();
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl h-[85vh] overflow-hidden flex flex-col">
+        <div className="px-5 py-4 border-b bg-gradient-to-r from-violet-50 to-blue-50 flex items-center justify-between">
+          <div>
+            <h3 className="font-bold text-gray-800">포장중량 일괄 입력</h3>
+            <div className="text-xs text-gray-500 mt-0.5">기존 제품 DB는 그대로, 포장중량만 매칭해서 추가/수정합니다</div>
+          </div>
+          <button onClick={onClose} className="w-7 h-7 rounded-full hover:bg-gray-200 text-gray-500">×</button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          <div className="bg-violet-50 border border-violet-200 rounded p-3 text-xs text-violet-800 leading-relaxed">
+            <b>형식:</b> 코드 / 품목명 / 포장중량 — 콤마 또는 탭 구분. 품목명은 무시되고 <b>마지막 숫자</b>를 포장중량(g)으로 인식.<br />
+            예: <code className="bg-white px-1.5 py-0.5 rounded">PB-A-001	순수쌀미음	150</code>
+          </div>
+          <textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder={"PB-A-001\t순수쌀미음\t150\nPB-A-002\t감자미음\t150"}
+            className="w-full h-72 border rounded-md p-3 text-sm font-mono"
+          />
+          {parsed.length > 0 && (
+            <div className="text-sm text-gray-600">
+              유효 <b className="text-violet-700">{validRows.length}</b> / 전체 {parsed.length}줄
+              {parsed.length - validRows.length > 0 && <span className="text-red-500 ml-2">({parsed.length - validRows.length}줄 무시 — 코드/숫자 없음)</span>}
+            </div>
+          )}
+        </div>
+        <div className="px-5 py-3 border-t bg-slate-50 flex items-center gap-2">
+          <button onClick={onClose} className="px-3 py-2 border rounded text-sm font-medium hover:bg-gray-100">취소</button>
+          <button onClick={save} disabled={validRows.length === 0 || saving} className="ml-auto px-5 py-2 bg-violet-600 text-white rounded font-medium hover:bg-violet-700 disabled:bg-gray-300">
+            {saving ? '저장중...' : `${validRows.length}개 저장`}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

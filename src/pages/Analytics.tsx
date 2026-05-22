@@ -221,7 +221,7 @@ export default function AnalyticsDaily() {
       <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
         <BigCard label="총 생산(EA)" value={stats.totalActual.toLocaleString()} unit="EA" color="indigo" />
         <BigCard label="냉장 생산" value={stats.coldActual.toLocaleString()} unit="EA" color="blue" />
-        <BigCard label="상온 생산" value={stats.ambientTotal.toLocaleString()} unit="EA" color="orange" />
+        <BigCard label="실온 생산" value={stats.ambientTotal.toLocaleString()} unit="EA" color="orange" />
       </div>
       <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
         <BigCard label="품목수" value={stats.itemCount.toString()} unit="품목" color="green" />
@@ -241,7 +241,7 @@ export default function AnalyticsDaily() {
           <div className="px-5 py-3 border-b bg-orange-50 font-semibold text-orange-800 flex items-center justify-between flex-wrap gap-2">
             <span className="flex items-center gap-2">
               <span className="w-2 h-2 rounded-full bg-orange-500" />
-              상온 생산
+              실온 생산
             </span>
             <span className="text-xs text-orange-700 font-medium">
               {ambient.length}품목 / 총 {stats.ambientTotal.toLocaleString()} EA
