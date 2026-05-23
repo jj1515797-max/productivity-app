@@ -728,6 +728,7 @@ interface AttendanceMeta {
   needHeads?: Record<string, number>;
   arTotal?: number;
   arPresent?: number;
+  arNames?: string;
   note?: string;
 }
 
@@ -765,6 +766,7 @@ function AttendanceTableModal({
         needHeads: dayData.needHeads || { ...def },
         arTotal: dayData.arTotal ?? 0,
         arPresent: dayData.arPresent ?? 0,
+        arNames: dayData.arNames || '',
         note: monthData.note || '',
       });
       setLoaded(true);
@@ -781,6 +783,7 @@ function AttendanceTableModal({
         needHeads: next.needHeads || {},
         arTotal: next.arTotal ?? 0,
         arPresent: next.arPresent ?? 0,
+        arNames: next.arNames || '',
         date,
       }, { merge: true }).catch(() => {});
     }, 400);
@@ -803,6 +806,7 @@ function AttendanceTableModal({
   };
   const setArTotal = (v: number) => persistDay({ ...meta, arTotal: v });
   const setArPresent = (v: number) => persistDay({ ...meta, arPresent: v });
+  const setArNames = (v: string) => persistDay({ ...meta, arNames: v });
   const setNote = (v: string) => persistMonthNote(v);
 
   const saveAsDefault = async () => {
@@ -983,7 +987,17 @@ function AttendanceTableModal({
                           />
                         ) : (r.출근 === 0 ? 0 : r.출근)}
                       </td>
-                      <td className="border border-gray-500 px-2 py-1.5 text-xs text-gray-700">{r.names.join(', ')}</td>
+                      <td className="border border-gray-500 px-1 py-0.5 text-xs text-gray-700">
+                        {isAR ? (
+                          <input
+                            type="text"
+                            value={meta.arNames || ''}
+                            onChange={(e) => setArNames(e.target.value)}
+                            placeholder="이름들 (쉼표로 구분)"
+                            className="w-full border-0 bg-transparent px-2 py-1 text-xs focus:outline-none focus:bg-yellow-50"
+                          />
+                        ) : r.names.join(', ')}
+                      </td>
                     </tr>
                   );
                 })}
