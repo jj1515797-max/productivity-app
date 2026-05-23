@@ -859,6 +859,26 @@ function AttendanceTableModal({
     return { totalHeads, presentHeads, need };
   }, [partRows, meta.needHeads]);
 
+  // 총 원 분류: 실장 / 파트장 / QC / 생산(나머지)
+  const totalsBreakdown = useMemo(() => {
+    const norm = (s: string) => (s || '').toLowerCase().replace(/[\s()]/g, '');
+    let 실장 = 0, 파트장 = 0, qc = 0, 생산 = 0;
+    members.forEach((m) => {
+      if (isOnLeave(m, date)) return;
+      const d = norm(m.dept || '');
+      if (d.includes('실장')) 실장++;
+      else if (d.includes('파트장')) 파트장++;
+      else if (d === 'qc') qc++;
+      else if (matchPart(m.dept)) 생산++;
+    });
+    return [
+      { label: '실장', value: 실장 },
+      { label: '파트장', value: 파트장 },
+      { label: '생산', value: 생산 },
+      { label: 'QC', value: qc },
+    ].filter((b) => b.value > 0);
+  }, [members, date]);
+
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-xl shadow-2xl w-full max-w-6xl h-[92vh] overflow-hidden flex flex-col">
@@ -873,127 +893,164 @@ function AttendanceTableModal({
         {!loaded ? (
           <div className="flex-1 flex items-center justify-center text-gray-400 text-sm">불러오는 중...</div>
         ) : (
-        <div className="flex-1 overflow-y-auto p-6 space-y-5">
-          {/* 근태표 */}
-          <div className="border rounded-lg overflow-hidden">
-            <table className="w-full text-sm">
-              <thead className="bg-slate-100 text-gray-700">
+        <div className="flex-1 overflow-y-auto p-6 space-y-6 bg-white">
+          {/* === 근태현황 메인 표 === */}
+          <div>
+            <table className="w-full border-collapse text-sm" style={{ borderColor: '#999' }}>
+              <thead>
                 <tr>
-                  <th className="px-3 py-2 border-b border-r text-left">구분</th>
-                  <th className="px-3 py-2 border-b border-r text-left">파트</th>
-                  <th className="px-3 py-2 border-b border-r text-right w-16">총원</th>
-                  <th className="px-3 py-2 border-b border-r text-right w-16">연차</th>
-                  <th className="px-3 py-2 border-b border-r text-right w-16">반차</th>
-                  <th className="px-3 py-2 border-b border-r text-right w-16">반반차</th>
-                  <th className="px-3 py-2 border-b border-r text-right w-16">휴무</th>
-                  <th className="px-3 py-2 border-b border-r text-right w-16">출근</th>
-                  <th className="px-3 py-2 border-b text-left">{isSunday ? '출근자' : '결근자'}</th>
+                  <th colSpan={9} className="border border-gray-500 bg-amber-50 text-center font-bold py-2 text-base">
+                    {date} 근태현황
+                  </th>
+                </tr>
+                <tr className="bg-amber-100">
+                  <th className="border border-gray-500 px-2 py-1.5 w-16">구분</th>
+                  <th className="border border-gray-500 px-2 py-1.5 w-32">파트</th>
+                  <th className="border border-gray-500 px-2 py-1.5 w-14">총원</th>
+                  <th className="border border-gray-500 px-2 py-1.5 w-14">연차</th>
+                  <th className="border border-gray-500 px-2 py-1.5 w-14">반차</th>
+                  <th className="border border-gray-500 px-2 py-1.5 w-14">반반차</th>
+                  <th className="border border-gray-500 px-2 py-1.5 w-14">휴무</th>
+                  <th className="border border-gray-500 px-2 py-1.5 w-14">출근</th>
+                  <th className="border border-gray-500 px-2 py-1.5"></th>
                 </tr>
               </thead>
               <tbody>
-                {partRows.map((r, idx) => (
-                  <tr key={r.part} className={idx % 2 ? 'bg-white' : 'bg-slate-50/40'}>
-                    <td className="px-3 py-2 border-r text-xs text-gray-500">생산동</td>
-                    <td className="px-3 py-2 border-r font-semibold text-gray-800">{r.part}</td>
-                    <td className="px-3 py-2 border-r text-right font-bold">{r.total || ''}</td>
-                    <td className="px-3 py-2 border-r text-right text-orange-700">{r.연차 || ''}</td>
-                    <td className="px-3 py-2 border-r text-right text-amber-700">{r.반차 || ''}</td>
-                    <td className="px-3 py-2 border-r text-right text-yellow-700">{r.반반차 || ''}</td>
-                    <td className="px-3 py-2 border-r text-right text-gray-600">{r.휴무 || ''}</td>
-                    <td className="px-3 py-2 border-r text-right font-bold text-emerald-700">{r.출근 || ''}</td>
-                    <td className="px-3 py-2 text-xs text-gray-700">{r.names.join(', ')}</td>
-                  </tr>
-                ))}
-                {/* 휴직 행 */}
-                <tr className="bg-zinc-50">
-                  <td className="px-3 py-2 border-r border-t text-xs text-gray-500">기타</td>
-                  <td className="px-3 py-2 border-r border-t font-semibold text-zinc-700">{LEAVE_PART}</td>
-                  <td className="px-3 py-2 border-r border-t text-right font-bold">{rows.leaveBucket.length || ''}</td>
-                  <td className="px-3 py-2 border-r border-t" colSpan={5}></td>
-                  <td className="px-3 py-2 border-t text-xs text-gray-600">{rows.leaveBucket.map((m) => m.name).join(', ')}</td>
-                </tr>
-              </tbody>
-              <tfoot className="bg-slate-100 font-bold">
-                <tr>
-                  <td className="px-3 py-2 border-r border-t" colSpan={2}>합계 (생산동)</td>
-                  <td className="px-3 py-2 border-r border-t text-right">{totals.totalHeads}</td>
-                  <td className="px-3 py-2 border-r border-t text-right text-orange-700">{partRows.reduce((s, r) => s + r.연차, 0)}</td>
-                  <td className="px-3 py-2 border-r border-t text-right text-amber-700">{partRows.reduce((s, r) => s + r.반차, 0)}</td>
-                  <td className="px-3 py-2 border-r border-t text-right text-yellow-700">{partRows.reduce((s, r) => s + r.반반차, 0)}</td>
-                  <td className="px-3 py-2 border-r border-t text-right text-gray-700">{partRows.reduce((s, r) => s + r.휴무, 0)}</td>
-                  <td className="px-3 py-2 border-r border-t text-right text-emerald-700">{totals.presentHeads}</td>
-                  <td className="px-3 py-2 border-t"></td>
-                </tr>
-              </tfoot>
-            </table>
-          </div>
-
-          {/* 생산동 인원 현황 */}
-          <div className="border rounded-lg overflow-hidden">
-            <div className="px-4 py-2.5 bg-slate-100 border-b flex items-center justify-between">
-              <span className="font-bold text-gray-800 text-sm">생산동 인원 현황</span>
-              <button
-                onClick={saveAsDefault}
-                className="text-xs px-2 py-1 border border-blue-300 text-blue-700 rounded hover:bg-blue-50"
-                title="현재 필요 인원을 모든 날의 기본값으로 저장"
-              >현재값을 기본값으로 저장</button>
-            </div>
-            <table className="w-full text-sm">
-              <thead className="bg-slate-50 text-gray-600 text-xs">
-                <tr>
-                  <th className="px-3 py-2 border-b border-r text-left">파트</th>
-                  <th className="px-3 py-2 border-b border-r text-right w-28">필요 인원</th>
-                  <th className="px-3 py-2 border-b border-r text-right w-24">총 인원</th>
-                  <th className="px-3 py-2 border-b text-right w-24">출근인원</th>
-                </tr>
-              </thead>
-              <tbody>
-                {partRows.map((r) => {
-                  const need = meta.needHeads?.[r.part] ?? '';
-                  const shortage = typeof need === 'number' && need > r.출근;
+                {partRows.map((r, idx) => {
+                  const isLead = r.part === '실장&파트장';
                   return (
-                    <tr key={r.part} className="border-t">
-                      <td className="px-3 py-1.5 border-r">{r.part}</td>
-                      <td className="px-3 py-1 border-r text-right">
-                        <input
-                          type="number"
-                          value={meta.needHeads?.[r.part] ?? ''}
-                          onChange={(e) => setNeed(r.part, Number(e.target.value) || 0)}
-                          placeholder={String(defaultNeed[r.part] ?? '')}
-                          className="w-20 border rounded px-2 py-1 text-right text-sm"
-                        />
-                      </td>
-                      <td className="px-3 py-1.5 border-r text-right">{r.total}</td>
-                      <td className={`px-3 py-1.5 text-right font-bold ${shortage ? 'text-red-600' : 'text-emerald-700'}`}>{r.출근}</td>
+                    <tr key={r.part} className={isLead ? 'bg-gray-100' : 'bg-white'}>
+                      {idx === 0 && (
+                        <td
+                          rowSpan={partRows.length}
+                          className="border border-gray-500 text-center font-bold align-middle bg-white"
+                          style={{ writingMode: 'horizontal-tb' }}
+                        >생산</td>
+                      )}
+                      <td className="border border-gray-500 px-2 py-1.5 text-center font-semibold">{r.part}</td>
+                      <td className="border border-gray-500 px-2 py-1.5 text-center font-bold">{r.total || (r.total === 0 ? 0 : '')}</td>
+                      <td className="border border-gray-500 px-2 py-1.5 text-center text-blue-700 font-semibold">{r.연차 || ''}</td>
+                      <td className="border border-gray-500 px-2 py-1.5 text-center text-blue-700 font-semibold">{r.반차 || ''}</td>
+                      <td className="border border-gray-500 px-2 py-1.5 text-center text-blue-700 font-semibold">{r.반반차 || ''}</td>
+                      <td className="border border-gray-500 px-2 py-1.5 text-center text-blue-700 font-semibold">{r.휴무 || ''}</td>
+                      <td className="border border-gray-500 px-2 py-1.5 text-center text-blue-700 font-bold">{r.출근 || (r.출근 === 0 ? 0 : '')}</td>
+                      <td className="border border-gray-500 px-2 py-1.5 text-xs text-gray-700">{r.names.join(', ')}</td>
                     </tr>
                   );
                 })}
-              </tbody>
-              <tfoot className="bg-slate-50 font-bold">
-                <tr className="border-t">
-                  <td className="px-3 py-2 border-r">합계</td>
-                  <td className="px-3 py-2 border-r text-right">{totals.need || '-'}</td>
-                  <td className="px-3 py-2 border-r text-right">{totals.totalHeads}</td>
-                  <td className={`px-3 py-2 text-right ${totals.need > totals.presentHeads ? 'text-red-600' : 'text-emerald-700'}`}>{totals.presentHeads}</td>
+                {/* 휴직 행 */}
+                <tr style={{ background: '#fce4e4' }}>
+                  <td className="border border-gray-500 px-2 py-1.5 text-center font-semibold" colSpan={2}>{LEAVE_PART}</td>
+                  <td className="border border-gray-500 px-2 py-1.5 text-center font-bold">{rows.leaveBucket.length || (rows.leaveBucket.length === 0 ? 0 : '')}</td>
+                  <td className="border border-gray-500 px-2 py-1.5"></td>
+                  <td className="border border-gray-500 px-2 py-1.5"></td>
+                  <td className="border border-gray-500 px-2 py-1.5"></td>
+                  <td className="border border-gray-500 px-2 py-1.5 text-center text-blue-700 font-semibold">{rows.leaveBucket.length || ''}</td>
+                  <td className="border border-gray-500 px-2 py-1.5 text-center text-blue-700 font-bold">0</td>
+                  <td className="border border-gray-500 px-2 py-1.5 text-xs text-gray-700">{rows.leaveBucket.map((m) => m.name).join(', ')}</td>
                 </tr>
-              </tfoot>
+                {/* 합계 행 */}
+                <tr className="bg-yellow-200 font-bold">
+                  <td className="border border-gray-500 px-2 py-1.5 text-center" colSpan={2}>합 계</td>
+                  <td className="border border-gray-500 px-2 py-1.5 text-center">{totals.totalHeads + rows.leaveBucket.length}</td>
+                  <td className="border border-gray-500 px-2 py-1.5 text-center">{partRows.reduce((s, r) => s + r.연차, 0)}</td>
+                  <td className="border border-gray-500 px-2 py-1.5 text-center">{partRows.reduce((s, r) => s + r.반차, 0)}</td>
+                  <td className="border border-gray-500 px-2 py-1.5 text-center">{partRows.reduce((s, r) => s + r.반반차, 0)}</td>
+                  <td className="border border-gray-500 px-2 py-1.5 text-center">{partRows.reduce((s, r) => s + r.휴무, 0) + rows.leaveBucket.length}</td>
+                  <td className="border border-gray-500 px-2 py-1.5 text-center">{totals.presentHeads}</td>
+                  <td className="border border-gray-500 px-2 py-1.5"></td>
+                </tr>
+              </tbody>
             </table>
           </div>
 
-          {/* 특이사항 */}
-          <div className="border rounded-lg overflow-hidden">
-            <div className="px-4 py-2.5 bg-slate-100 border-b font-bold text-gray-800 text-sm">특이사항</div>
-            <textarea
-              value={meta.note || ''}
-              onChange={(e) => setNote(e.target.value)}
-              placeholder={'예) 5/6 입사: 박홍관, 황티띠엣\n5/15 퇴사: 홍길동'}
-              className="w-full p-3 text-sm font-mono resize-y min-h-[120px] focus:outline-none"
-            />
+          {/* === 하단 3구역: 생산동 인원 현황 / 총원 / 특이사항 === */}
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+            {/* 생산동 인원 현황 */}
+            <div className="lg:col-span-3">
+              <table className="w-full border-collapse text-sm">
+                <thead>
+                  <tr>
+                    <th colSpan={2} className="border border-gray-500 bg-amber-100 text-center py-1.5 font-bold">
+                      생산동 인원 현황
+                    </th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td className="border border-gray-500 px-3 py-1.5 bg-yellow-100 font-semibold">필요 인원</td>
+                    <td className="border border-gray-500 px-3 py-1 text-right">
+                      <input
+                        type="number"
+                        value={meta.needHeads?.__total ?? ''}
+                        onChange={(e) => setNeed('__total', Number(e.target.value) || 0)}
+                        placeholder={String(defaultNeed.__total ?? '')}
+                        className="w-20 border rounded px-2 py-0.5 text-right font-bold"
+                      />
+                    </td>
+                  </tr>
+                  <tr>
+                    <td className="border border-gray-500 px-3 py-1.5 font-semibold">총 인원</td>
+                    <td className="border border-gray-500 px-3 py-1.5 text-right font-bold">{totals.totalHeads + rows.leaveBucket.length}</td>
+                  </tr>
+                  <tr>
+                    <td className="border border-gray-500 px-3 py-1.5 text-red-600 font-bold">출근인원</td>
+                    <td className="border border-gray-500 px-3 py-1.5 text-right text-red-600 font-bold">{totals.presentHeads}</td>
+                  </tr>
+                </tbody>
+              </table>
+              <button
+                onClick={saveAsDefault}
+                className="mt-2 text-[11px] px-2 py-1 border border-blue-300 text-blue-700 rounded hover:bg-blue-50"
+                title="현재 필요 인원을 기본값으로 저장"
+              >현재값 기본값 저장</button>
+            </div>
+
+            {/* 총원 (자동 분류) */}
+            <div className="lg:col-span-4">
+              <table className="w-full border-collapse text-sm">
+                <tbody>
+                  <tr>
+                    <td colSpan={2} className="border border-gray-500 bg-amber-100 text-center py-1.5 font-bold">총 원</td>
+                  </tr>
+                  <tr>
+                    <td className="border border-gray-500 bg-amber-50 text-center font-bold align-middle w-16 px-2 py-2">총<br/>원</td>
+                    <td className="border border-gray-500 align-middle px-4 py-3 text-sm leading-7 bg-white">
+                      {totalsBreakdown.map((b) => (
+                        <div key={b.label}>{b.label} : {b.value}명</div>
+                      ))}
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            {/* 특이사항 */}
+            <div className="lg:col-span-5">
+              <table className="w-full border-collapse text-sm">
+                <tbody>
+                  <tr>
+                    <td colSpan={2} className="border border-gray-500 bg-amber-100 text-center py-1.5 font-bold">특이사항</td>
+                  </tr>
+                  <tr>
+                    <td className="border border-gray-500 bg-amber-50 text-center font-bold align-middle w-16 px-2 py-2">특이<br/>사항</td>
+                    <td className="border border-gray-500 bg-white p-0 align-top">
+                      <textarea
+                        value={meta.note || ''}
+                        onChange={(e) => setNote(e.target.value)}
+                        placeholder={'* 이윤미 육아휴직(~8/31)\n- 5/6 입사: 박홍관, 황티띠엣\n- 5/14 퇴사 : 조현숙'}
+                        className="w-full p-3 text-sm resize-y min-h-[140px] focus:outline-none bg-white"
+                      />
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
           </div>
 
           <div className="text-[11px] text-gray-400">
             · 파트는 인원의 부서(dept) 값으로 자동 분류됩니다. 누락된 인원이 있으면 부서명을 위 파트명에 맞춰 수정해 주세요.<br />
-            · 변경 사항은 자동 저장됩니다.
+            · 필요 인원·특이사항은 자동 저장됩니다.
           </div>
         </div>
         )}
