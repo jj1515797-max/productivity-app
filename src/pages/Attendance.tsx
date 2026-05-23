@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
-import { addDoc, collection, deleteDoc, doc, onSnapshot, setDoc, updateDoc } from 'firebase/firestore';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { addDoc, collection, deleteDoc, doc, getDoc, onSnapshot, setDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
 import { loadViewDate, saveViewDate } from '../lib/viewDate';
@@ -17,6 +17,34 @@ const STATUS_COLOR: Record<AttendanceStatus, { chip: string; soft: string; text:
   경조사:  { chip: 'bg-violet-500',  soft: 'bg-violet-50',  text: 'text-violet-700',  border: 'border-violet-300' },
   휴무:    { chip: 'bg-gray-400',    soft: 'bg-gray-100',   text: 'text-gray-600',    border: 'border-gray-300' },
 };
+
+/** 근태현황표용 파트 정의 (생산동 인원 현황 대상) */
+const PART_GROUPS: string[] = [
+  '실장&파트장',
+  '전처리',
+  '배합',
+  '조리',
+  '내포장',
+  '외포장',
+  'OP',
+  '세정실',
+  'QC',
+  'AR(일용직)',
+];
+/** 휴직 파트는 별도 행으로 표시 (소계 제외) */
+const LEAVE_PART = '휴직(육아,병가)';
+
+/** dept 값을 파트 그룹에 매칭. 부분문자열·괄호·공백 무시. */
+function matchPart(dept: string | undefined): string | null {
+  if (!dept) return null;
+  const norm = (s: string) => s.toLowerCase().replace(/[\s()]/g, '');
+  const d = norm(dept);
+  for (const p of PART_GROUPS) {
+    const pn = norm(p);
+    if (d === pn || d.includes(pn) || pn.includes(d)) return p;
+  }
+  return null;
+}
 
 function shiftDate(dateStr: string, delta: number): string {
   const [y, m, d] = dateStr.split('-').map(Number);
@@ -43,6 +71,7 @@ export default function Attendance() {
   const [editName, setEditName] = useState('');
   const [editDept, setEditDept] = useState('');
   const [leaveTarget, setLeaveTarget] = useState<Member | null>(null);
+  const [showTable, setShowTable] = useState(false);
   const [openStatusFor, setOpenStatusFor] = useState<string | null>(null);
   const [popoverPos, setPopoverPos] = useState<{ x: number; y: number; width: number } | null>(null);
 
@@ -219,6 +248,11 @@ export default function Attendance() {
             className="px-3 py-1.5 text-xs rounded border border-blue-300 text-blue-700 bg-blue-50 hover:bg-blue-100 font-medium"
           >오늘로</button>
         )}
+        <button
+          onClick={() => setShowTable(true)}
+          className="px-3 py-1.5 text-xs rounded border border-emerald-400 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 font-semibold"
+          title="근태현황표"
+        >📋 표</button>
         <div className="ml-auto text-xs text-gray-500">
           출근 분모 (휴직·휴무 제외) <span className="font-bold text-gray-800 ml-1">{counts.workforceN}명</span>
         </div>
@@ -387,6 +421,16 @@ export default function Attendance() {
             </div>
           )}
         </div>
+      )}
+
+      {/* 근태현황표 */}
+      {showTable && (
+        <AttendanceTableModal
+          date={date}
+          members={members}
+          records={records}
+          onClose={() => setShowTable(false)}
+        />
       )}
 
       {/* 인원 추가 모달 */}
@@ -670,6 +714,292 @@ function LeaveModal({
           >
             {saving ? '저장중...' : (isOn ? '변경 적용' : '휴직 등록')}
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ===================== 근태현황표 ===================== */
+
+interface AttendanceMeta {
+  needHeads?: Record<string, number>;
+  note?: string;
+}
+
+function AttendanceTableModal({
+  date, members, records, onClose,
+}: {
+  date: string;
+  members: Member[];
+  records: Record<string, AttendanceRecord>;
+  onClose: () => void;
+}) {
+  const [meta, setMeta] = useState<AttendanceMeta>({ needHeads: {}, note: '' });
+  const [defaultNeed, setDefaultNeed] = useState<Record<string, number>>({});
+  const [loaded, setLoaded] = useState(false);
+  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // 일자 메타 + 기본 필요인원 로드
+  useEffect(() => {
+    let alive = true;
+    (async () => {
+      const [daySnap, defSnap] = await Promise.all([
+        getDoc(doc(db, 'attendanceMeta', date)),
+        getDoc(doc(db, 'attendanceMeta', '_default')),
+      ]);
+      if (!alive) return;
+      const def = (defSnap.data() as { needHeads?: Record<string, number> } | undefined)?.needHeads || {};
+      setDefaultNeed(def);
+      const dayData = (daySnap.data() as AttendanceMeta | undefined) || {};
+      setMeta({
+        needHeads: dayData.needHeads || { ...def },
+        note: dayData.note || '',
+      });
+      setLoaded(true);
+    })();
+    return () => { alive = false; };
+  }, [date]);
+
+  // 변경 시 디바운스 저장
+  const persist = (next: AttendanceMeta) => {
+    setMeta(next);
+    if (saveTimer.current) clearTimeout(saveTimer.current);
+    saveTimer.current = setTimeout(() => {
+      setDoc(doc(db, 'attendanceMeta', date), {
+        needHeads: next.needHeads || {},
+        note: next.note || '',
+        date,
+      }, { merge: true }).catch(() => {});
+    }, 400);
+  };
+
+  const setNeed = (part: string, v: number) => {
+    persist({ ...meta, needHeads: { ...(meta.needHeads || {}), [part]: v } });
+  };
+  const setNote = (v: string) => persist({ ...meta, note: v });
+
+  const saveAsDefault = async () => {
+    await setDoc(doc(db, 'attendanceMeta', '_default'), {
+      needHeads: meta.needHeads || {},
+    }, { merge: true });
+    setDefaultNeed(meta.needHeads || {});
+    alert('현재 필요 인원이 기본값으로 저장되었습니다.');
+  };
+
+  // 일요일이면 출근자 표시, 평일이면 결근자(연차/반차/반반차/병가/경조사/결혼반차) 표시
+  const [y, mo, d] = date.split('-').map(Number);
+  const dow = new Date(y, mo - 1, d).getDay(); // 0=일
+  const isSunday = dow === 0;
+
+  // 파트별 분류
+  const rows = useMemo(() => {
+    const buckets: Record<string, Member[]> = {};
+    PART_GROUPS.forEach((p) => { buckets[p] = []; });
+    const leaveBucket: Member[] = [];
+    members.forEach((m) => {
+      if (isOnLeave(m, date)) { leaveBucket.push(m); return; }
+      const p = matchPart(m.dept);
+      if (p) buckets[p].push(m);
+    });
+    return { buckets, leaveBucket };
+  }, [members, date]);
+
+  type PartRow = {
+    part: string;
+    total: number;
+    연차: number;
+    반차: number;
+    반반차: number;
+    휴무: number;
+    출근: number;
+    names: string[]; // 일요일=출근자, 평일=결근자
+    otherLeave: number; // 병가/경조사/결혼반차 등
+  };
+
+  const partRows: PartRow[] = useMemo(() => {
+    return PART_GROUPS.map((part) => {
+      const list = rows.buckets[part];
+      const row: PartRow = {
+        part, total: list.length,
+        연차: 0, 반차: 0, 반반차: 0, 휴무: 0, 출근: 0,
+        names: [], otherLeave: 0,
+      };
+      const present: string[] = [];
+      const absent: string[] = [];
+      list.forEach((m) => {
+        const statuses = getStatuses(records[m.id]);
+        if (statuses.length === 0) { row.출근++; present.push(m.name); return; }
+        if (statuses.includes('휴무')) { row.휴무++; return; }
+        let counted = false;
+        if (statuses.includes('연차')) { row.연차++; counted = true; }
+        if (statuses.includes('반차')) { row.반차++; counted = true; }
+        if (statuses.includes('반반차')) { row.반반차++; counted = true; }
+        const others = statuses.filter((s) => !['연차','반차','반반차','휴무','출근'].includes(s));
+        if (others.length) { row.otherLeave += others.length; counted = true; }
+        // 반차/반반차는 부분 출근 → 출근 인원에도 포함
+        if (statuses.includes('반차') || statuses.includes('반반차')) {
+          row.출근++; present.push(m.name);
+        }
+        if (counted) {
+          const label = statuses.filter((s) => s !== '출근').join('+');
+          absent.push(`${m.name}(${label})`);
+        }
+      });
+      row.names = isSunday ? present : absent;
+      return row;
+    });
+  }, [rows, records, isSunday]);
+
+  // 생산동 인원 현황 (휴직 제외, 파트 합산)
+  const totals = useMemo(() => {
+    const totalHeads = partRows.reduce((s, r) => s + r.total, 0);
+    const presentHeads = partRows.reduce((s, r) => s + r.출근, 0);
+    const need = partRows.reduce((s, r) => s + (meta.needHeads?.[r.part] || 0), 0);
+    return { totalHeads, presentHeads, need };
+  }, [partRows, meta.needHeads]);
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-6xl h-[92vh] overflow-hidden flex flex-col">
+        <div className="px-6 py-4 border-b flex items-center justify-between bg-gradient-to-r from-emerald-50 to-teal-50">
+          <div>
+            <h3 className="text-lg font-bold text-gray-800">📋 근태현황표</h3>
+            <div className="text-xs text-gray-500 mt-0.5">{dateLabel(date)} · {isSunday ? '일요일 — 출근자 표시' : '평일 — 결근자 표시'}</div>
+          </div>
+          <button onClick={onClose} className="w-8 h-8 rounded-full hover:bg-gray-200 text-gray-500 text-lg">×</button>
+        </div>
+
+        {!loaded ? (
+          <div className="flex-1 flex items-center justify-center text-gray-400 text-sm">불러오는 중...</div>
+        ) : (
+        <div className="flex-1 overflow-y-auto p-6 space-y-5">
+          {/* 근태표 */}
+          <div className="border rounded-lg overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-100 text-gray-700">
+                <tr>
+                  <th className="px-3 py-2 border-b border-r text-left">구분</th>
+                  <th className="px-3 py-2 border-b border-r text-left">파트</th>
+                  <th className="px-3 py-2 border-b border-r text-right w-16">총원</th>
+                  <th className="px-3 py-2 border-b border-r text-right w-16">연차</th>
+                  <th className="px-3 py-2 border-b border-r text-right w-16">반차</th>
+                  <th className="px-3 py-2 border-b border-r text-right w-16">반반차</th>
+                  <th className="px-3 py-2 border-b border-r text-right w-16">휴무</th>
+                  <th className="px-3 py-2 border-b border-r text-right w-16">출근</th>
+                  <th className="px-3 py-2 border-b text-left">{isSunday ? '출근자' : '결근자'}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {partRows.map((r, idx) => (
+                  <tr key={r.part} className={idx % 2 ? 'bg-white' : 'bg-slate-50/40'}>
+                    <td className="px-3 py-2 border-r text-xs text-gray-500">생산동</td>
+                    <td className="px-3 py-2 border-r font-semibold text-gray-800">{r.part}</td>
+                    <td className="px-3 py-2 border-r text-right font-bold">{r.total || ''}</td>
+                    <td className="px-3 py-2 border-r text-right text-orange-700">{r.연차 || ''}</td>
+                    <td className="px-3 py-2 border-r text-right text-amber-700">{r.반차 || ''}</td>
+                    <td className="px-3 py-2 border-r text-right text-yellow-700">{r.반반차 || ''}</td>
+                    <td className="px-3 py-2 border-r text-right text-gray-600">{r.휴무 || ''}</td>
+                    <td className="px-3 py-2 border-r text-right font-bold text-emerald-700">{r.출근 || ''}</td>
+                    <td className="px-3 py-2 text-xs text-gray-700">{r.names.join(', ')}</td>
+                  </tr>
+                ))}
+                {/* 휴직 행 */}
+                <tr className="bg-zinc-50">
+                  <td className="px-3 py-2 border-r border-t text-xs text-gray-500">기타</td>
+                  <td className="px-3 py-2 border-r border-t font-semibold text-zinc-700">{LEAVE_PART}</td>
+                  <td className="px-3 py-2 border-r border-t text-right font-bold">{rows.leaveBucket.length || ''}</td>
+                  <td className="px-3 py-2 border-r border-t" colSpan={5}></td>
+                  <td className="px-3 py-2 border-t text-xs text-gray-600">{rows.leaveBucket.map((m) => m.name).join(', ')}</td>
+                </tr>
+              </tbody>
+              <tfoot className="bg-slate-100 font-bold">
+                <tr>
+                  <td className="px-3 py-2 border-r border-t" colSpan={2}>합계 (생산동)</td>
+                  <td className="px-3 py-2 border-r border-t text-right">{totals.totalHeads}</td>
+                  <td className="px-3 py-2 border-r border-t text-right text-orange-700">{partRows.reduce((s, r) => s + r.연차, 0)}</td>
+                  <td className="px-3 py-2 border-r border-t text-right text-amber-700">{partRows.reduce((s, r) => s + r.반차, 0)}</td>
+                  <td className="px-3 py-2 border-r border-t text-right text-yellow-700">{partRows.reduce((s, r) => s + r.반반차, 0)}</td>
+                  <td className="px-3 py-2 border-r border-t text-right text-gray-700">{partRows.reduce((s, r) => s + r.휴무, 0)}</td>
+                  <td className="px-3 py-2 border-r border-t text-right text-emerald-700">{totals.presentHeads}</td>
+                  <td className="px-3 py-2 border-t"></td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+
+          {/* 생산동 인원 현황 */}
+          <div className="border rounded-lg overflow-hidden">
+            <div className="px-4 py-2.5 bg-slate-100 border-b flex items-center justify-between">
+              <span className="font-bold text-gray-800 text-sm">생산동 인원 현황</span>
+              <button
+                onClick={saveAsDefault}
+                className="text-xs px-2 py-1 border border-blue-300 text-blue-700 rounded hover:bg-blue-50"
+                title="현재 필요 인원을 모든 날의 기본값으로 저장"
+              >현재값을 기본값으로 저장</button>
+            </div>
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-gray-600 text-xs">
+                <tr>
+                  <th className="px-3 py-2 border-b border-r text-left">파트</th>
+                  <th className="px-3 py-2 border-b border-r text-right w-28">필요 인원</th>
+                  <th className="px-3 py-2 border-b border-r text-right w-24">총 인원</th>
+                  <th className="px-3 py-2 border-b text-right w-24">출근인원</th>
+                </tr>
+              </thead>
+              <tbody>
+                {partRows.map((r) => {
+                  const need = meta.needHeads?.[r.part] ?? '';
+                  const shortage = typeof need === 'number' && need > r.출근;
+                  return (
+                    <tr key={r.part} className="border-t">
+                      <td className="px-3 py-1.5 border-r">{r.part}</td>
+                      <td className="px-3 py-1 border-r text-right">
+                        <input
+                          type="number"
+                          value={meta.needHeads?.[r.part] ?? ''}
+                          onChange={(e) => setNeed(r.part, Number(e.target.value) || 0)}
+                          placeholder={String(defaultNeed[r.part] ?? '')}
+                          className="w-20 border rounded px-2 py-1 text-right text-sm"
+                        />
+                      </td>
+                      <td className="px-3 py-1.5 border-r text-right">{r.total}</td>
+                      <td className={`px-3 py-1.5 text-right font-bold ${shortage ? 'text-red-600' : 'text-emerald-700'}`}>{r.출근}</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+              <tfoot className="bg-slate-50 font-bold">
+                <tr className="border-t">
+                  <td className="px-3 py-2 border-r">합계</td>
+                  <td className="px-3 py-2 border-r text-right">{totals.need || '-'}</td>
+                  <td className="px-3 py-2 border-r text-right">{totals.totalHeads}</td>
+                  <td className={`px-3 py-2 text-right ${totals.need > totals.presentHeads ? 'text-red-600' : 'text-emerald-700'}`}>{totals.presentHeads}</td>
+                </tr>
+              </tfoot>
+            </table>
+          </div>
+
+          {/* 특이사항 */}
+          <div className="border rounded-lg overflow-hidden">
+            <div className="px-4 py-2.5 bg-slate-100 border-b font-bold text-gray-800 text-sm">특이사항</div>
+            <textarea
+              value={meta.note || ''}
+              onChange={(e) => setNote(e.target.value)}
+              placeholder={'예) 5/6 입사: 박홍관, 황티띠엣\n5/15 퇴사: 홍길동'}
+              className="w-full p-3 text-sm font-mono resize-y min-h-[120px] focus:outline-none"
+            />
+          </div>
+
+          <div className="text-[11px] text-gray-400">
+            · 파트는 인원의 부서(dept) 값으로 자동 분류됩니다. 누락된 인원이 있으면 부서명을 위 파트명에 맞춰 수정해 주세요.<br />
+            · 변경 사항은 자동 저장됩니다.
+          </div>
+        </div>
+        )}
+
+        <div className="border-t bg-slate-50 px-6 py-3 flex items-center justify-end">
+          <button onClick={onClose} className="px-4 py-2 bg-gray-700 hover:bg-gray-800 text-white rounded text-sm font-medium">닫기</button>
         </div>
       </div>
     </div>
