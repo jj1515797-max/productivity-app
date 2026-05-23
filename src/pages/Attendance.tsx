@@ -894,12 +894,11 @@ function AttendanceTableModal({
     return { totalHeads, presentHeads, need };
   }, [partRows, meta.needHeads]);
 
-  // 총 원 분류: 실장 / 파트장 / QC / 생산(나머지)
+  // 총 원 분류: 실장 / 파트장 / QC / 생산(나머지) — 휴직자 포함
   const totalsBreakdown = useMemo(() => {
     const norm = (s: string) => (s || '').toLowerCase().replace(/[\s()]/g, '');
     let 실장 = 0, 파트장 = 0, qc = 0, 생산 = 0;
     members.forEach((m) => {
-      if (isOnLeave(m, date)) return;
       const d = norm(m.dept || '');
       if (d.includes('실장')) 실장++;
       else if (d.includes('파트장')) 파트장++;
@@ -912,7 +911,7 @@ function AttendanceTableModal({
       { label: '생산', value: 생산 },
       { label: 'QC', value: qc },
     ].filter((b) => b.value > 0);
-  }, [members, date]);
+  }, [members]);
 
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
