@@ -5,7 +5,7 @@ import { todayKey } from '../lib/dateUtil';
 import { loadViewDate, saveViewDate } from '../lib/viewDate';
 import type { AttendanceRecord, AttendanceStatus, Member } from '../types';
 import { ATTENDANCE_STATUSES } from '../types';
-import { isOnLeave, getStatuses, formatStatusLabel, leaveDaysFromStatuses } from '../lib/attendance';
+import { isOnLeave, getStatuses, effectiveStatuses, formatStatusLabel, leaveDaysFromStatuses } from '../lib/attendance';
 
 const STATUS_COLOR: Record<AttendanceStatus, { chip: string; soft: string; text: string; border: string }> = {
   출근:    { chip: 'bg-emerald-500', soft: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-300' },
@@ -128,8 +128,8 @@ export default function Attendance() {
     let onLeaveN = 0, presentN = 0, restN = 0, leaveDays = 0;
     members.forEach((m) => {
       if (isOnLeave(m, date)) { onLeaveN++; return; }
-      const statuses = getStatuses(records[m.id]);
-      if (statuses.length === 0) {
+      const statuses = effectiveStatuses(records[m.id], date);
+      if (statuses.length === 0 || (statuses.length === 1 && statuses[0] === '출근')) {
         presentN++; breakdown.출근++;
         return;
       }
@@ -157,16 +157,14 @@ export default function Attendance() {
   }, [members, search]);
 
   const setStatuses = async (m: Member, statuses: AttendanceStatus[]) => {
-    // 빈 배열 또는 [출근]만 있으면 출근(레코드 삭제)
-    const filtered = statuses.filter((s) => s !== '출근');
-    if (filtered.length === 0) {
+    if (statuses.length === 0) {
       await deleteDoc(doc(db, 'attendance', date, 'records', m.id)).catch(() => {});
       return;
     }
     await setDoc(doc(db, 'attendance', date, 'records', m.id), {
       memberId: m.id, name: m.name,
-      statuses: filtered,
-      status: filtered[0],  // 구버전 호환
+      statuses,
+      status: statuses[0],  // 구버전 호환
       date,
     });
   };
@@ -177,9 +175,9 @@ export default function Attendance() {
     if (current.includes(s)) {
       next = current.filter((x) => x !== s);
     } else {
-      // 휴무는 다른 휴가 상태와 배타: 휴무 켜면 다른거 해제 / 다른거 켜면 휴무 해제
-      if (s === '휴무') next = ['휴무'];
-      else next = [...current.filter((x) => x !== '휴무'), s];
+      // 휴무·출근은 단독 (다른 휴가 상태와 배타)
+      if (s === '휴무' || s === '출근') next = [s];
+      else next = [...current.filter((x) => x !== '휴무' && x !== '출근'), s];
     }
     await setStatuses(m, next);
   };
@@ -328,7 +326,7 @@ export default function Attendance() {
               <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 divide-x divide-y divide-gray-100" style={{ borderRight: 0 }}>
                 {list.map((m) => {
                   const onLeave = isOnLeave(m, date);
-                  const statuses = getStatuses(records[m.id]);
+                  const statuses = effectiveStatuses(records[m.id], date);
                   const primary: AttendanceStatus = statuses[0] || '출근';
                   const color = STATUS_COLOR[primary];
                   const label = formatStatusLabel(statuses);
@@ -469,8 +467,8 @@ export default function Attendance() {
             style={{ position: 'fixed', left: popoverPos.x, top: popoverPos.y, width: Math.max(200, popoverPos.width), zIndex: 60 }}
             className="bg-white border rounded-lg shadow-2xl p-2 space-y-0.5"
           >
-            <div className="px-2 py-1 text-[11px] font-bold text-gray-500 border-b mb-1">{m.name} · 휴가 선택</div>
-            {ATTENDANCE_STATUSES.filter((s) => s !== '출근').map((s) => {
+            <div className="px-2 py-1 text-[11px] font-bold text-gray-500 border-b mb-1">{m.name} · 상태 선택</div>
+            {ATTENDANCE_STATUSES.map((s) => {
               const checked = statuses.includes(s);
               const stColor = STATUS_COLOR[s];
               return (
@@ -483,8 +481,12 @@ export default function Attendance() {
             })}
             <div className="border-t pt-1 mt-1 flex items-center justify-between text-[11px] px-1">
               {statuses.length > 0 ? (
-                <button onClick={() => setStatuses(m, [])} className="text-blue-600 hover:underline">→ 출근으로</button>
-              ) : <span className="text-gray-400">체크 없으면 출근</span>}
+                <button onClick={() => setStatuses(m, [])} className="text-blue-600 hover:underline">→ 기본값(평일=출근/일요일=휴무)</button>
+              ) : (() => {
+                const [yy, mm, dd] = date.split('-').map(Number);
+                const dow = new Date(yy, mm - 1, dd).getDay();
+                return <span className="text-gray-400">체크 없으면 {dow === 0 ? '휴무' : '출근'}</span>;
+              })()}
               <button onClick={() => { setOpenStatusFor(null); setPopoverPos(null); }} className="text-gray-500 hover:text-gray-800">완료</button>
             </div>
           </div>
@@ -724,6 +726,8 @@ function LeaveModal({
 
 interface AttendanceMeta {
   needHeads?: Record<string, number>;
+  arTotal?: number;
+  arPresent?: number;
   note?: string;
 }
 
@@ -738,46 +742,68 @@ function AttendanceTableModal({
   const [meta, setMeta] = useState<AttendanceMeta>({ needHeads: {}, note: '' });
   const [defaultNeed, setDefaultNeed] = useState<Record<string, number>>({});
   const [loaded, setLoaded] = useState(false);
-  const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const dayTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const monthTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  // 일자 메타 + 기본 필요인원 로드
+  const month = date.slice(0, 7); // YYYY-MM
+
+  // 일자 메타 + 월 특이사항 + 기본 필요인원 로드
   useEffect(() => {
     let alive = true;
     (async () => {
-      const [daySnap, defSnap] = await Promise.all([
+      const [daySnap, monthSnap, defSnap] = await Promise.all([
         getDoc(doc(db, 'attendanceMeta', date)),
+        getDoc(doc(db, 'attendanceMeta', `_month_${month}`)),
         getDoc(doc(db, 'attendanceMeta', '_default')),
       ]);
       if (!alive) return;
       const def = (defSnap.data() as { needHeads?: Record<string, number> } | undefined)?.needHeads || {};
       setDefaultNeed(def);
       const dayData = (daySnap.data() as AttendanceMeta | undefined) || {};
+      const monthData = (monthSnap.data() as { note?: string } | undefined) || {};
       setMeta({
         needHeads: dayData.needHeads || { ...def },
-        note: dayData.note || '',
+        arTotal: dayData.arTotal ?? 0,
+        arPresent: dayData.arPresent ?? 0,
+        note: monthData.note || '',
       });
       setLoaded(true);
     })();
     return () => { alive = false; };
-  }, [date]);
+  }, [date, month]);
 
-  // 변경 시 디바운스 저장
-  const persist = (next: AttendanceMeta) => {
+  // 일자 메타 저장 (note 제외)
+  const persistDay = (next: AttendanceMeta) => {
     setMeta(next);
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => {
+    if (dayTimer.current) clearTimeout(dayTimer.current);
+    dayTimer.current = setTimeout(() => {
       setDoc(doc(db, 'attendanceMeta', date), {
         needHeads: next.needHeads || {},
-        note: next.note || '',
+        arTotal: next.arTotal ?? 0,
+        arPresent: next.arPresent ?? 0,
         date,
       }, { merge: true }).catch(() => {});
     }, 400);
   };
 
-  const setNeed = (part: string, v: number) => {
-    persist({ ...meta, needHeads: { ...(meta.needHeads || {}), [part]: v } });
+  // 월 특이사항 저장
+  const persistMonthNote = (note: string) => {
+    setMeta((prev) => ({ ...prev, note }));
+    if (monthTimer.current) clearTimeout(monthTimer.current);
+    monthTimer.current = setTimeout(() => {
+      setDoc(doc(db, 'attendanceMeta', `_month_${month}`), {
+        note,
+        month,
+      }, { merge: true }).catch(() => {});
+    }, 400);
   };
-  const setNote = (v: string) => persist({ ...meta, note: v });
+
+  const setNeed = (part: string, v: number) => {
+    persistDay({ ...meta, needHeads: { ...(meta.needHeads || {}), [part]: v } });
+  };
+  const setArTotal = (v: number) => persistDay({ ...meta, arTotal: v });
+  const setArPresent = (v: number) => persistDay({ ...meta, arPresent: v });
+  const setNote = (v: string) => persistMonthNote(v);
 
   const saveAsDefault = async () => {
     await setDoc(doc(db, 'attendanceMeta', '_default'), {
@@ -828,8 +854,8 @@ function AttendanceTableModal({
       const present: string[] = [];
       const absent: string[] = [];
       list.forEach((m) => {
-        const statuses = getStatuses(records[m.id]);
-        if (statuses.length === 0) { row.출근++; present.push(m.name); return; }
+        const statuses = effectiveStatuses(records[m.id], date);
+        if (statuses.length === 0 || (statuses.length === 1 && statuses[0] === '출근')) { row.출근++; present.push(m.name); return; }
         if (statuses.includes('휴무')) { row.휴무++; return; }
         let counted = false;
         if (statuses.includes('연차')) { row.연차++; counted = true; }
@@ -847,9 +873,14 @@ function AttendanceTableModal({
         }
       });
       row.names = isSunday ? present : absent;
+      // AR(일용직)은 수동 입력값으로 덮어쓰기
+      if (part === 'AR(일용직)') {
+        row.total = meta.arTotal ?? 0;
+        row.출근 = meta.arPresent ?? 0;
+      }
       return row;
     });
-  }, [rows, records, isSunday]);
+  }, [rows, records, isSunday, date, meta.arTotal, meta.arPresent]);
 
   // 생산동 인원 현황 (휴직 제외, 파트 합산)
   const totals = useMemo(() => {
@@ -918,22 +949,40 @@ function AttendanceTableModal({
               <tbody>
                 {partRows.map((r, idx) => {
                   const isLead = r.part === '실장&파트장';
+                  const isAR = r.part === 'AR(일용직)';
                   return (
                     <tr key={r.part} className={isLead ? 'bg-gray-100' : 'bg-white'}>
                       {idx === 0 && (
                         <td
                           rowSpan={partRows.length}
                           className="border border-gray-500 text-center font-bold align-middle bg-white"
-                          style={{ writingMode: 'horizontal-tb' }}
                         >생산</td>
                       )}
                       <td className="border border-gray-500 px-2 py-1.5 text-center font-semibold">{r.part}</td>
-                      <td className="border border-gray-500 px-2 py-1.5 text-center font-bold">{r.total || (r.total === 0 ? 0 : '')}</td>
+                      <td className="border border-gray-500 px-1 py-0.5 text-center font-bold">
+                        {isAR ? (
+                          <input
+                            type="number"
+                            value={meta.arTotal ?? 0}
+                            onChange={(e) => setArTotal(Number(e.target.value) || 0)}
+                            className="w-12 border rounded px-1 py-0.5 text-center font-bold"
+                          />
+                        ) : (r.total === 0 ? 0 : r.total)}
+                      </td>
                       <td className="border border-gray-500 px-2 py-1.5 text-center text-blue-700 font-semibold">{r.연차 || ''}</td>
                       <td className="border border-gray-500 px-2 py-1.5 text-center text-blue-700 font-semibold">{r.반차 || ''}</td>
                       <td className="border border-gray-500 px-2 py-1.5 text-center text-blue-700 font-semibold">{r.반반차 || ''}</td>
                       <td className="border border-gray-500 px-2 py-1.5 text-center text-blue-700 font-semibold">{r.휴무 || ''}</td>
-                      <td className="border border-gray-500 px-2 py-1.5 text-center text-blue-700 font-bold">{r.출근 || (r.출근 === 0 ? 0 : '')}</td>
+                      <td className="border border-gray-500 px-1 py-0.5 text-center text-blue-700 font-bold">
+                        {isAR ? (
+                          <input
+                            type="number"
+                            value={meta.arPresent ?? 0}
+                            onChange={(e) => setArPresent(Number(e.target.value) || 0)}
+                            className="w-12 border rounded px-1 py-0.5 text-center font-bold text-blue-700"
+                          />
+                        ) : (r.출근 === 0 ? 0 : r.출근)}
+                      </td>
                       <td className="border border-gray-500 px-2 py-1.5 text-xs text-gray-700">{r.names.join(', ')}</td>
                     </tr>
                   );
@@ -1030,7 +1079,7 @@ function AttendanceTableModal({
               <table className="w-full border-collapse text-sm">
                 <tbody>
                   <tr>
-                    <td colSpan={2} className="border border-gray-500 bg-amber-100 text-center py-1.5 font-bold">특이사항</td>
+                    <td colSpan={2} className="border border-gray-500 bg-amber-100 text-center py-1.5 font-bold">특이사항 <span className="text-[10px] font-normal text-gray-500">({month} 월별)</span></td>
                   </tr>
                   <tr>
                     <td className="border border-gray-500 bg-amber-50 text-center font-bold align-middle w-16 px-2 py-2">특이<br/>사항</td>

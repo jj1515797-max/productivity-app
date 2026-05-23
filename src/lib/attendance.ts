@@ -17,6 +17,16 @@ export function getStatuses(record?: AttendanceRecord): AttendanceStatus[] {
   return [];
 }
 
+/** 표시용 상태: 명시 기록이 없으면 일요일=휴무, 평일=출근(빈 배열) 으로 처리 */
+export function effectiveStatuses(record: AttendanceRecord | undefined, date: string): AttendanceStatus[] {
+  const s = getStatuses(record);
+  if (s.length > 0) return s;
+  const [y, mo, d] = date.split('-').map(Number);
+  const dow = new Date(y, mo - 1, d).getDay();
+  if (dow === 0) return ['휴무'];
+  return [];
+}
+
 /** 복합 휴가 라벨: 출근=없음, 단일=그대로, 다중=원치(+)로 결합 */
 export function formatStatusLabel(statuses: AttendanceStatus[]): string {
   if (statuses.length === 0) return '출근';
