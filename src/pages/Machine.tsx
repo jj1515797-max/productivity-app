@@ -132,17 +132,39 @@ export default function Machine() {
         />
         {search && (
           <div className="grid grid-cols-2 md:grid-cols-3 gap-2 max-h-60 overflow-y-auto">
-            {filtered.map((it) => (
-              <button
-                key={it.code}
-                onClick={() => { setSelectedCode(it.code); setSearch(it.name); }}
-                className={`text-left p-3 rounded border ${selectedCode === it.code ? 'bg-slate-900 text-white' : 'hover:bg-slate-50'}`}
-              >
-                <div className="font-mono text-xs opacity-70">{it.code}</div>
-                <div className="font-medium">{it.name}</div>
-                <div className="text-xs opacity-70">총 {it.totalQty}EA</div>
-              </button>
-            ))}
+            {filtered.map((it) => {
+              const produced = combinedByCode[it.code.toLowerCase()] || 0;
+              const remaining = it.totalQty - produced;
+              const partial = produced > 0 && remaining > 0;
+              const active = selectedCode === it.code;
+              return (
+                <button
+                  key={it.code}
+                  onClick={() => { setSelectedCode(it.code); setSearch(it.name); }}
+                  className={`text-left p-3 rounded border transition relative ${
+                    active
+                      ? 'bg-slate-900 text-white border-slate-900'
+                      : partial
+                        ? 'bg-rose-50 border-rose-300 hover:bg-rose-100'
+                        : 'hover:bg-slate-50'
+                  }`}
+                >
+                  <div className={`font-mono text-xs ${active ? 'opacity-70' : partial ? 'text-rose-600' : 'opacity-70'}`}>{it.code}</div>
+                  <div className="font-medium">{it.name}</div>
+                  <div className={`text-xs ${active ? 'opacity-70' : 'opacity-70'}`}>총 {it.totalQty}EA</div>
+                  {partial && !active && (
+                    <div className="mt-1.5 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-500 text-white text-[11px] font-bold">
+                      추가 {remaining}개 필요
+                    </div>
+                  )}
+                  {partial && active && (
+                    <div className="mt-1.5 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-200 text-rose-800 text-[11px] font-bold">
+                      추가 {remaining}개 필요
+                    </div>
+                  )}
+                </button>
+              );
+            })}
           </div>
         )}
 
