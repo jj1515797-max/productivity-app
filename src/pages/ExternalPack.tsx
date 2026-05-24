@@ -149,7 +149,7 @@ export default function ExternalPack() {
                 r.combinedDiff > 0 ? 'text-green-700' :
                 r.combinedDiff < 0 ? 'text-red-700' : '';
               return (
-                <tr key={r.key} className={`border-t ${r.bg}`}>
+                <tr key={r.key} className={`border-t border-gray-400 ${r.bg}`}>
                   <td className="p-2 font-mono">{r.code}</td>
                   <td className="p-2">{r.name}</td>
                   <td className="p-2 text-right">{r.orderQty}</td>
