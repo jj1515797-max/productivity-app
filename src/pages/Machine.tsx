@@ -163,13 +163,13 @@ export default function Machine() {
               const add = e.additionalProduction || 0;
               return (
                 <tr key={e.docId} className="border-t">
-                  <td className="p-2 font-mono">{e.code}</td>
-                  <td className="p-2 text-right font-bold">{actual || '-'}</td>
-                  <td className={`p-2 text-right font-bold ${add > 0 ? 'bg-green-50 text-green-700' : ''}`}>
+                  <td className="p-2 font-mono text-2xl font-bold">{e.code}</td>
+                  <td className="p-2 text-right font-bold text-lg">{actual || '-'}</td>
+                  <td className={`p-2 text-right font-bold text-lg ${add > 0 ? 'bg-green-50 text-green-700' : ''}`}>
                     {add > 0 ? `+${add}` : '-'}
                   </td>
-                  <td className="p-2 text-center">{e.workTime || '-'}</td>
-                  <td className={`p-2 text-center ${e.additionalWorkTime ? 'bg-green-50 text-green-700' : ''}`}>
+                  <td className="p-2 text-center text-lg">{e.workTime || '-'}</td>
+                  <td className={`p-2 text-center text-lg ${e.additionalWorkTime ? 'bg-green-50 text-green-700' : ''}`}>
                     {e.additionalWorkTime || '-'}
                   </td>
                   <td className="p-2 text-right">
