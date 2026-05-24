@@ -17,6 +17,9 @@ export default function Machine() {
 
   const [items, setItems] = useState<Item[]>([]);
   const [entries, setEntries] = useState<(MachineEntry & { docId: string })[]>([]);
+  const [allMachineQty, setAllMachineQty] = useState<Record<string, Record<string, number>>>({
+    '1호기': {}, '2호기': {}, '3호기': {},
+  });
   const [search, setSearch] = useState('');
   const [selectedCode, setSelectedCode] = useState<string | null>(null);
   const [qty, setQty] = useState<number>(0);
@@ -40,11 +43,43 @@ export default function Machine() {
     });
   }, [date, machine]);
 
+  // 전 호기 합산 생산량 (이미 충분히 생산된 코드는 검색 리스트에서 숨김)
+  useEffect(() => {
+    setAllMachineQty({ '1호기': {}, '2호기': {}, '3호기': {} });
+    const machines = ['1호기', '2호기', '3호기'] as const;
+    const unsubs = machines.map((m) =>
+      onSnapshot(collection(db, 'days', date, 'machines', m, 'entries'), (snap) => {
+        const map: Record<string, number> = {};
+        snap.forEach((d) => {
+          const e = d.data() as MachineEntry;
+          const key = String(e.code || '').toLowerCase();
+          map[key] = (map[key] || 0) + (e.actualProduction || 0) + (e.additionalProduction || 0);
+        });
+        setAllMachineQty((prev) => ({ ...prev, [m]: map }));
+      })
+    );
+    return () => unsubs.forEach((u) => u());
+  }, [date]);
+
+  const combinedByCode = useMemo(() => {
+    const r: Record<string, number> = {};
+    (['1호기', '2호기', '3호기'] as const).forEach((m) => {
+      Object.entries(allMachineQty[m]).forEach(([code, q]) => { r[code] = (r[code] || 0) + q; });
+    });
+    return r;
+  }, [allMachineQty]);
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return items.slice(0, 30);
-    return items.filter((i) => i.code.toLowerCase().includes(q) || i.name.includes(q));
-  }, [items, search]);
+    // 잔여량 >= 0 (즉 합산 생산 >= 발주량) 이면 검색 리스트에서 제외
+    const stillNeeded = items.filter((i) => {
+      if (i.totalQty <= 0) return true;
+      const produced = combinedByCode[i.code.toLowerCase()] || 0;
+      return produced < i.totalQty;
+    });
+    if (!q) return stillNeeded.slice(0, 30);
+    return stillNeeded.filter((i) => i.code.toLowerCase().includes(q) || i.name.includes(q));
+  }, [items, search, combinedByCode]);
 
   const submit = async () => {
     if (!selectedCode || qty <= 0) return alert('코드와 수량을 입력하세요');
