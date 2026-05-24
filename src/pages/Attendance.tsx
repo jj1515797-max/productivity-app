@@ -860,7 +860,11 @@ function AttendanceTableModal({
       list.forEach((m) => {
         const statuses = effectiveStatuses(records[m.id], date);
         if (statuses.length === 0 || (statuses.length === 1 && statuses[0] === '출근')) { row.출근++; present.push(m.name); return; }
-        if (statuses.includes('휴무')) { row.휴무++; return; }
+        if (statuses.includes('휴무')) {
+          row.휴무++;
+          if (!isSunday) absent.push(`${m.name}(휴무)`);
+          return;
+        }
         let counted = false;
         if (statuses.includes('연차')) { row.연차++; counted = true; }
         if (statuses.includes('반차')) { row.반차++; counted = true; }
