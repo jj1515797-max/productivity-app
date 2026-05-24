@@ -150,12 +150,12 @@ export default function ExternalPack() {
                 r.combinedDiff < 0 ? 'text-red-700' : '';
               return (
                 <tr key={r.key} className={`border-t border-gray-400 ${r.bg}`}>
-                  <td className="p-2 font-mono">{r.code}</td>
-                  <td className="p-2">{r.name}</td>
-                  <td className="p-2 text-right">{r.orderQty}</td>
-                  <td className="p-2 text-right">{r.shipped}</td>
-                  <td className="p-2 text-right font-bold">{r.actual}</td>
-                  <td className={`p-2 text-right font-bold ${diffColor}`}>
+                  <td className="p-2 font-mono text-2xl font-bold">{r.code}</td>
+                  <td className="p-2 text-lg">{r.name}</td>
+                  <td className="p-2 text-right text-lg">{r.orderQty}</td>
+                  <td className="p-2 text-right text-lg">{r.shipped}</td>
+                  <td className="p-2 text-right font-bold text-lg">{r.actual}</td>
+                  <td className={`p-2 text-right font-bold text-lg ${diffColor}`}>
                     {r.combinedDiff > 0 ? `+${r.combinedDiff}` : r.combinedDiff || ''}
                   </td>
                 </tr>
