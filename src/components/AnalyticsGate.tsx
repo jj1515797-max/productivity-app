@@ -60,12 +60,6 @@ export default function AnalyticsGate() {
     }
   };
 
-  const logout = () => {
-    localStorage.removeItem(STORAGE_KEY);
-    setAuthed(false);
-    setExpired(false);
-  };
-
   if (!loaded) {
     return <div className="text-center text-gray-400 text-sm py-20">로딩 중...</div>;
   }
@@ -121,18 +115,5 @@ export default function AnalyticsGate() {
     );
   }
 
-  return (
-    <div className="relative">
-      {password && (
-        <button
-          onClick={logout}
-          className="absolute -top-2 right-0 text-[11px] text-gray-400 hover:text-gray-700 flex items-center gap-1 z-10"
-          title="로그아웃"
-        >
-          🔓 로그아웃
-        </button>
-      )}
-      <Outlet />
-    </div>
-  );
+  return <Outlet />;
 }

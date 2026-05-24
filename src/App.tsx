@@ -94,7 +94,10 @@ function Header() {
   const today = new Date();
   const days = ['일', '월', '화', '수', '목', '금', '토'];
   const dateLabel = `${today.getMonth() + 1}/${today.getDate()}(${days[today.getDay()]})`;
-  const section = getSection(useLocation().pathname);
+  const location = useLocation();
+  const section = getSection(location.pathname);
+  const onAnalytics = location.pathname.startsWith('/analytics');
+  const analyticsAuthed = onAnalytics && !!localStorage.getItem('analyticsAuthedAt');
 
   const rightLinks: { section: Section; to: string; label: string; icon?: string }[] = [
     { section: 'dashboard', to: '/', label: '현황' },
@@ -137,6 +140,15 @@ function Header() {
             </span>
           );
         })}
+        {analyticsAuthed && (
+          <button
+            onClick={() => { localStorage.removeItem('analyticsAuthedAt'); window.location.reload(); }}
+            className="ml-2 px-2.5 py-1 text-xs rounded bg-blue-800 hover:bg-blue-900 text-blue-100 hover:text-white font-medium flex items-center gap-1"
+            title="분석 로그아웃"
+          >
+            🔓 로그아웃
+          </button>
+        )}
       </nav>
     </header>
   );
