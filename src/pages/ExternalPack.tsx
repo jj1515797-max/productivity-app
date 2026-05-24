@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { collection, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase';
-import { todayKey } from '../lib/dateUtil';
+import { todayKey, effectiveTodayKey, shiftDateKey } from '../lib/dateUtil';
 import { loadViewDate, saveViewDate } from '../lib/viewDate';
 import type { Item, MachineEntry } from '../types';
 
@@ -15,6 +15,18 @@ export default function ExternalPack() {
   useEffect(() => { saveViewDate(date); }, [date]);
   const today = todayKey();
   const isToday = date === today;
+
+  // 새벽 2시 기준 자동 날짜 롤오버
+  useEffect(() => {
+    const tick = () => {
+      const eff = effectiveTodayKey();
+      if (date !== eff && date === shiftDateKey(eff, -1)) {
+        setDate(eff);
+      }
+    };
+    const id = setInterval(tick, 60_000);
+    return () => clearInterval(id);
+  }, [date]);
 
   const [items, setItems] = useState<Item[]>([]);
   const [entries, setEntries] = useState<MachineEntry[]>([]);
