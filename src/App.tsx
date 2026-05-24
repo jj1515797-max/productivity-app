@@ -13,6 +13,7 @@ import ProductSettings from './pages/ProductSettings';
 import Inventory from './pages/Inventory';
 import Remix from './pages/Remix';
 import Logo from './components/Logo';
+import AnalyticsGate from './components/AnalyticsGate';
 import { useTrackVisit } from './lib/presence';
 
 export default function App() {
@@ -38,12 +39,14 @@ function MainContainer() {
         <Route path="/remaining" element={<Remaining />} />
         <Route path="/report" element={<Report />} />
         <Route path="/import" element={<Import />} />
-        <Route path="/analytics" element={<Analytics />} />
-        <Route path="/analytics/monthly" element={<AnalyticsMonthly />} />
-        <Route path="/analytics/remaining" element={<Remaining />} />
-        <Route path="/analytics/remix" element={<Remix />} />
-        <Route path="/analytics/report" element={<Report />} />
-        <Route path="/analytics/settings" element={<ProductSettings />} />
+        <Route element={<AnalyticsGate />}>
+          <Route path="/analytics" element={<Analytics />} />
+          <Route path="/analytics/monthly" element={<AnalyticsMonthly />} />
+          <Route path="/analytics/remaining" element={<Remaining />} />
+          <Route path="/analytics/remix" element={<Remix />} />
+          <Route path="/analytics/report" element={<Report />} />
+          <Route path="/analytics/settings" element={<ProductSettings />} />
+        </Route>
         <Route path="/attendance" element={<Attendance />} />
         <Route path="/attendance/productivity" element={<ProductivityInput />} />
         <Route path="/inventory" element={<Inventory />} />
