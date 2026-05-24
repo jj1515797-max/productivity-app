@@ -996,7 +996,6 @@ function AttendanceTableModal({
                             type="text"
                             value={meta.arNames || ''}
                             onChange={(e) => setArNames(e.target.value)}
-                            placeholder="이름들 (쉼표로 구분)"
                             className="w-full border-0 bg-transparent px-2 py-1 text-xs focus:outline-none focus:bg-yellow-50"
                           />
                         ) : r.names.join(', ')}
