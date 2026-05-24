@@ -80,7 +80,8 @@ export default function ExternalPack() {
       const item = itemMap.get(e.code.toLowerCase());
       const orderQty = item?.orderQty || 0;
       const totalQty = item?.totalQty || 0;
-      const rowActual = (e.actualProduction || 0) + (e.additionalProduction || 0);
+      const rowActual = e.actualProduction || 0;
+      const rowAdd = e.additionalProduction || 0;
       const combined = combinedByCode[e.code.toLowerCase()] || 0;
       // 같은 호기에서 여러 번 OR 다른 호기에서도 생산한 경우
       const sameMulti = (entryCountByCode[e.code.toLowerCase()] || 1) > 1;
@@ -103,6 +104,7 @@ export default function ExternalPack() {
         orderQty,
         shipped: totalQty,
         actual: rowActual,
+        additional: rowAdd,
         combinedDiff,
         bg,
       };
@@ -141,6 +143,7 @@ export default function ExternalPack() {
               <th className="p-2 text-right">발주량</th>
               <th className="p-2 text-right">실제 생산량</th>
               <th className="p-2 text-right">모자란 수량</th>
+              <th className="p-2 text-right bg-green-50">추가 생산량</th>
             </tr>
           </thead>
           <tbody>
@@ -154,15 +157,18 @@ export default function ExternalPack() {
                   <td className="p-2 text-lg">{r.name}</td>
                   <td className="p-2 text-right text-lg">{r.orderQty}</td>
                   <td className="p-2 text-right text-lg">{r.shipped}</td>
-                  <td className="p-2 text-right font-bold text-lg">{r.actual}</td>
+                  <td className="p-2 text-right font-bold text-lg">{r.actual || ''}</td>
                   <td className={`p-2 text-right font-bold text-lg ${diffColor}`}>
                     {r.combinedDiff > 0 ? `+${r.combinedDiff}` : r.combinedDiff || ''}
+                  </td>
+                  <td className={`p-2 text-right font-bold text-lg ${r.additional > 0 ? 'bg-green-50 text-green-700' : ''}`}>
+                    {r.additional > 0 ? `+${r.additional}` : ''}
                   </td>
                 </tr>
               );
             })}
             {rows.length === 0 && (
-              <tr><td colSpan={6} className="p-6 text-center text-slate-400">{machine}에서 입력된 내역이 없습니다</td></tr>
+              <tr><td colSpan={7} className="p-6 text-center text-slate-400">{machine}에서 입력된 내역이 없습니다</td></tr>
             )}
           </tbody>
         </table>
