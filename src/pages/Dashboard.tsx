@@ -44,6 +44,8 @@ export default function Dashboard() {
   const [machineQty, setMachineQty] = useState<Record<string, Record<string, number>>>({
     '1호기': {}, '2호기': {}, '3호기': {},
   });
+  // 코드별 최신 작업시간 (HH:MM) — 호기 합산, workTime/additionalWorkTime 중 최대
+  const [lastTimeByCode, setLastTimeByCode] = useState<Record<string, string>>({});
 
   // 품목 목록 구독
   useEffect(() => {
@@ -56,23 +58,47 @@ export default function Dashboard() {
     });
   }, [viewDate]);
 
-  // 3개 호기 entries 구독 → 실제 생산량 합산용
+  // 3개 호기 entries 구독 → 실제 생산량 합산용 + 최신 작업시간
   useEffect(() => {
     setMachineQty({ '1호기': {}, '2호기': {}, '3호기': {} });
+    setLastTimeByCode({});
+    const perMachineTime: Record<string, Record<string, string>> = { '1호기': {}, '2호기': {}, '3호기': {} };
     const unsubs = MACHINES.map((machine) =>
       onSnapshot(collection(db, 'days', viewDate, 'machines', machine, 'entries'), (snap) => {
-        const map: Record<string, number> = {};
+        const qmap: Record<string, number> = {};
+        const tmap: Record<string, string> = {};
         snap.forEach((d) => {
           const e = d.data();
           const key = String(e.code || '').toLowerCase();
           const qty = (e.actualProduction || 0) + (e.additionalProduction || 0);
-          map[key] = (map[key] || 0) + qty;
+          qmap[key] = (qmap[key] || 0) + qty;
+          const t = [e.workTime, e.additionalWorkTime].filter(Boolean).sort().pop() as string | undefined;
+          if (t && (!tmap[key] || t > tmap[key])) tmap[key] = t;
         });
-        setMachineQty((prev) => ({ ...prev, [machine]: map }));
+        perMachineTime[machine] = tmap;
+        setMachineQty((prev) => ({ ...prev, [machine]: qmap }));
+        // 전 호기 최신 시간 병합
+        const merged: Record<string, string> = {};
+        MACHINES.forEach((m) => {
+          Object.entries(perMachineTime[m]).forEach(([c, t]) => {
+            if (!merged[c] || t > merged[c]) merged[c] = t;
+          });
+        });
+        setLastTimeByCode(merged);
       })
     );
     return () => unsubs.forEach((u) => u());
   }, [viewDate]);
+
+  // HH:MM 에 50분 더하기
+  const addMinutes = (hhmm: string, mins: number): string => {
+    const [h, m] = hhmm.split(':').map(Number);
+    if (isNaN(h) || isNaN(m)) return '';
+    const total = h * 60 + m + mins;
+    const nh = Math.floor(total / 60) % 24;
+    const nm = total % 60;
+    return `${String(nh).padStart(2, '0')}:${String(nm).padStart(2, '0')}`;
+  };
 
   // 잔여량 (물류) 구독 — 잔여량 수정값을 ± 컬럼에 반영
   const [logisticsByCode, setLogisticsByCode] = useState<Record<string, number>>({});
@@ -351,7 +377,13 @@ export default function Dashboard() {
                           ? (logQty > 0 ? `+${logQty}` : logQty === 0 ? '✓' : logQty)
                           : (actual === 0 ? '' : diff > 0 ? `+${diff}` : diff < 0 ? diff : '✓')}
                       </td>
-                      <td className="px-4 py-3 text-center text-xs text-gray-400">{it.coolingEndTime || '-'}</td>
+                      <td className="px-4 py-3 text-center text-xs text-gray-500">
+                        {(() => {
+                          const lt = lastTimeByCode[it.code.toLowerCase()];
+                          if (lt) return <span className="font-semibold text-blue-600">{addMinutes(lt, 50)}</span>;
+                          return it.coolingEndTime || '-';
+                        })()}
+                      </td>
                     </tr>
                   );
                 })}
