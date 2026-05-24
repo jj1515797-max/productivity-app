@@ -311,7 +311,7 @@ export default function Dashboard() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead>
-                <tr className="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide divide-x divide-gray-200">
+                <tr className="bg-gray-50 text-xs text-gray-500 uppercase tracking-wide divide-x divide-gray-400">
                   <th className="px-4 py-3 text-left font-medium">코드</th>
                   <th className="px-4 py-3 text-left font-medium">품목명</th>
                   <th className="px-4 py-3 text-right font-medium">주문수량</th>
@@ -324,7 +324,7 @@ export default function Dashboard() {
                   <th className="px-4 py-3 text-center font-medium">냉각 종료</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-gray-200">
+              <tbody className="divide-y divide-gray-400">
                 {items.map((it) => {
                   const actual = actualByCode[it.code.toLowerCase()] || 0;
                   // 잔여량 수정값(logistics) 우선, 없으면 actual - totalQty
@@ -336,7 +336,7 @@ export default function Dashboard() {
                   return (
                     <tr
                       key={it.code}
-                      className={`transition-colors divide-x divide-gray-200 ${done ? 'bg-green-200' : inProgress ? 'bg-red-200' : 'hover:bg-gray-50'}`}
+                      className={`transition-colors divide-x divide-gray-400 ${done ? 'bg-green-200' : inProgress ? 'bg-red-200' : 'hover:bg-gray-50'}`}
                     >
                       <td className="px-4 py-3 font-mono text-xs text-gray-500">{it.code}</td>
                       <td className="px-4 py-3 font-medium text-gray-800">{it.name}</td>
