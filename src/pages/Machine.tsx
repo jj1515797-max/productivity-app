@@ -140,7 +140,7 @@ export default function Machine() {
               return (
                 <button
                   key={it.code}
-                  onClick={() => { setSelectedCode(it.code); setSearch(it.name); }}
+                  onClick={() => { setSelectedCode(it.code); setSearch(it.name); setIsAdditional(partial); }}
                   className={`text-left p-3 rounded border transition relative ${
                     active
                       ? 'bg-slate-900 text-white border-slate-900'
