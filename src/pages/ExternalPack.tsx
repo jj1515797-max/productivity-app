@@ -143,7 +143,7 @@ export default function ExternalPack() {
               <th className="p-2 text-right">발주량</th>
               <th className="p-2 text-right">실제 생산량</th>
               <th className="p-2 text-right">모자란 수량</th>
-              <th className="p-2 text-right bg-green-50">추가 생산량</th>
+              <th className="p-2 text-right">추가 생산량</th>
             </tr>
           </thead>
           <tbody>
@@ -161,8 +161,8 @@ export default function ExternalPack() {
                   <td className={`p-2 text-right font-bold text-lg ${diffColor}`}>
                     {r.combinedDiff > 0 ? `+${r.combinedDiff}` : r.combinedDiff || ''}
                   </td>
-                  <td className={`p-2 text-right font-bold text-lg ${r.additional > 0 ? 'bg-green-50 text-green-700' : ''}`}>
-                    {r.additional > 0 ? `+${r.additional}` : ''}
+                  <td className="p-2 text-right font-bold text-lg">
+                    {r.additional > 0 ? r.additional : ''}
                   </td>
                 </tr>
               );
