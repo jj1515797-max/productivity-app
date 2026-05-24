@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { collection, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase';
-import { todayKey, effectiveTodayKey, shiftDateKey } from '../lib/dateUtil';
+import { todayKey, effectiveTodayKey } from '../lib/dateUtil';
 import { loadViewDate, saveViewDate } from '../lib/viewDate';
 import type { Item, MachineEntry } from '../types';
 
@@ -16,13 +16,11 @@ export default function ExternalPack() {
   const today = todayKey();
   const isToday = date === today;
 
-  // 새벽 2시 기준 자동 날짜 롤오버
+  // 새벽 2시 기준 자동 날짜 롤오버 — 어떤 날짜를 보고 있든 당일로 갱신
   useEffect(() => {
     const tick = () => {
       const eff = effectiveTodayKey();
-      if (date !== eff && date === shiftDateKey(eff, -1)) {
-        setDate(eff);
-      }
+      if (date !== eff) setDate(eff);
     };
     const id = setInterval(tick, 60_000);
     return () => clearInterval(id);
