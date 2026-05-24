@@ -139,7 +139,12 @@ export default function Dashboard() {
       if (logisticsByCode[norm] !== undefined) return true;
       return (actualByCode[i.code.toLowerCase()] || 0) >= i.totalQty && i.totalQty > 0;
     }).length;
-    const pct = itemCount ? Math.round((completedItems / itemCount) * 100) : 0;
+    const pct = totalQty
+      ? Math.round((items.reduce((s, i) => {
+          const produced = actualByCode[i.code.toLowerCase()] || 0;
+          return s + Math.min(produced, i.totalQty || 0);
+        }, 0) / totalQty) * 100)
+      : 0;
     return { totalQty, actual, itemCount, completedItems, pct };
   }, [items, actualByCode, logisticsByCode, hasLogistics]);
 
