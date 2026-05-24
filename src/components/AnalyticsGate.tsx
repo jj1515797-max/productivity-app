@@ -69,9 +69,8 @@ export default function AnalyticsGate() {
       <div className="flex items-center justify-center py-20">
         <div className={`bg-white border rounded-xl shadow-lg p-8 w-full max-w-sm ${shake ? 'animate-shake' : ''}`}>
           <div className="text-center mb-5">
-            <div className="text-4xl mb-2">🔒</div>
-            <h2 className="text-lg font-bold text-gray-800">분석 — 관리자 전용</h2>
-            <p className="text-xs text-gray-500 mt-1">비밀번호를 입력하세요</p>
+            <div className="text-4xl mb-3">🔒</div>
+            <h2 className="text-xl font-bold text-gray-800 tracking-tight">비밀번호를 입력하세요</h2>
             {expired && (
               <div className="mt-3 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-3 py-2">
                 세션이 만료되었습니다 (12시간) — 다시 로그인 해주세요
