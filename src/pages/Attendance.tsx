@@ -19,6 +19,9 @@ const STATUS_COLOR: Record<AttendanceStatus, { chip: string; soft: string; text:
   휴무:    { chip: 'bg-gray-400',    soft: 'bg-gray-100',   text: 'text-gray-600',    border: 'border-gray-300' },
 };
 
+const FALLBACK_COLOR = { chip: 'bg-gray-400', soft: 'bg-gray-100', text: 'text-gray-600', border: 'border-gray-300' };
+const colorOf = (s: AttendanceStatus | string) => (STATUS_COLOR as Record<string, typeof FALLBACK_COLOR>)[s] || FALLBACK_COLOR;
+
 /** 근태현황표용 파트 정의 (생산동 인원 현황 대상) */
 const PART_GROUPS: string[] = [
   '실장&파트장',
@@ -355,7 +358,7 @@ export default function Attendance() {
                   const onLeave = isOnLeave(m, date);
                   const statuses = effectiveStatuses(records[m.id], date);
                   const primary: AttendanceStatus = statuses[0] || '출근';
-                  const color = STATUS_COLOR[primary];
+                  const color = colorOf(primary);
                   const label = formatStatusLabel(statuses);
                   const isEdit = editing === m.id;
                   const cardBg = onLeave ? 'bg-zinc-100' : color.soft;
