@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { addDoc, collection, deleteDoc, doc, getDocs, onSnapshot, updateDoc } from 'firebase/firestore';
 import { db } from '../firebase';
-import { todayKey } from '../lib/dateUtil';
+import { todayKey, effectiveTodayKey } from '../lib/dateUtil';
 import { loadViewDate, saveViewDate } from '../lib/viewDate';
 import type { InventoryMovement, InventoryRequest, Material } from '../types';
 import { WAREHOUSES } from '../types';
@@ -52,6 +52,16 @@ const LASTSEEN_KEY = 'inventoryLastSeenReq';
 export default function Inventory() {
   const [date, setDate] = useState(loadViewDate);
   useEffect(() => { saveViewDate(date); }, [date]);
+
+  // 새벽 2시 기준 자동 날짜 롤오버
+  useEffect(() => {
+    const tick = () => {
+      const eff = effectiveTodayKey();
+      if (date !== eff) setDate(eff);
+    };
+    const id = setInterval(tick, 60_000);
+    return () => clearInterval(id);
+  }, [date]);
 
   const [materials, setMaterials] = useState<Material[]>([]);
   const [movements, setMovements] = useState<Mv[]>([]);
