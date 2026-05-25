@@ -67,7 +67,7 @@ export function summarizeAttendance(
   members.forEach((m) => {
     totalN++;
     if (isOnLeave(m, date)) { onLeaveN++; return; }
-    const statuses = getStatuses(records[m.id]);
+    const statuses = effectiveStatuses(records[m.id], date);
     if (statuses.includes('휴무')) { restN++; }
     leaveDays += leaveDaysFromStatuses(statuses);
   });
