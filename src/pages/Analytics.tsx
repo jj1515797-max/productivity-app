@@ -179,7 +179,7 @@ export default function AnalyticsDaily() {
 
     // 출근인원 / 연차 (수동 우선, 없으면 조직도 자동 계산)
     const summary = summarizeAttendance(members, attendRecords, viewDate);
-    const attend = productivity.attend ?? summary.workforceN;
+    const attend = productivity.attend ?? summary.presentN;
     const leave = productivity.leave ?? summary.leaveDays;
     const denom = attend + leave;
     const productivityValue = denom > 0 && coldOrdered > 0 ? coldOrdered / denom : null;

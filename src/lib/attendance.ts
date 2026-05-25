@@ -53,6 +53,8 @@ export type AttendanceSummary = {
   restN: number;
   /** 출근인원 (= 총원 - 휴직 - 휴무) - 생산성 분모 */
   workforceN: number;
+  /** 순수 출근(어떤 휴가도 없음) — 반차/반반차도 빠짐 */
+  presentN: number;
   /** 연차 환산 일수 (연차=1, 반차=0.5, 반반차=0.25 ...) — 다중 상태는 합산 */
   leaveDays: number;
 };
@@ -62,15 +64,19 @@ export function summarizeAttendance(
   records: Record<string, AttendanceRecord>,
   date: string,
 ): AttendanceSummary {
-  let totalN = 0, onLeaveN = 0, restN = 0;
+  let totalN = 0, onLeaveN = 0, restN = 0, presentN = 0;
   let leaveDays = 0;
   members.forEach((m) => {
     totalN++;
     if (isOnLeave(m, date)) { onLeaveN++; return; }
     const statuses = effectiveStatuses(records[m.id], date);
+    if (statuses.length === 0 || (statuses.length === 1 && statuses[0] === '출근')) {
+      presentN++;
+      return;
+    }
     if (statuses.includes('휴무')) { restN++; }
     leaveDays += leaveDaysFromStatuses(statuses);
   });
   const workforceN = totalN - onLeaveN - restN;
-  return { totalN, onLeaveN, restN, workforceN, leaveDays };
+  return { totalN, onLeaveN, restN, workforceN, presentN, leaveDays };
 }

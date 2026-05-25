@@ -150,7 +150,7 @@ export default function ProductivityInput() {
   }, [items, settingsByNormalized]);
 
   const auto = {
-    attend: attendanceSummary.workforceN,
+    attend: attendanceSummary.presentN,
     leave: attendanceSummary.leaveDays,
     pot: productionByType.pot,
     bat: productionByType.bat,
@@ -317,7 +317,7 @@ export default function ProductivityInput() {
                 onSave={(v) => save('attend', v)}
                 saving={savingFields.has('attend')}
                 unit="명"
-                hint="총원 − 휴직 − 휴무"
+                hint="총원 − 휴직 − 휴무 − 연차/반차 등"
               />
               <AutoNumberRow
                 label="연차"
