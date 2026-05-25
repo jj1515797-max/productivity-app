@@ -63,6 +63,17 @@ export default function Report() {
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet(sheetName);
 
+    // A4 페이지 설정 + 기본 폰트
+    ws.pageSetup = {
+      paperSize: 9, // A4
+      orientation: 'portrait',
+      fitToPage: true,
+      fitToWidth: 1,
+      fitToHeight: 0,
+      margins: { left: 0.3, right: 0.3, top: 0.4, bottom: 0.4, header: 0.2, footer: 0.2 },
+    };
+    ws.properties.defaultRowHeight = 16;
+
     ws.columns = [
       { width: 9 }, { width: 22 }, { width: 9 }, { width: 11 },
       { width: 2 },
@@ -74,12 +85,13 @@ export default function Report() {
     const thin = { style: 'thin' as const };
     const border = { top: thin, left: thin, right: thin, bottom: thin };
     const headerFill = { type: 'pattern' as const, pattern: 'solid' as const, fgColor: { argb: 'FFD6E4F5' } };
+    const baseFont = { size: 10 } as const;
 
     // Title (A1:J2 merged)
     ws.mergeCells('A1:J2');
     const title = ws.getCell('A1');
     title.value = '금속검출기(CCP-2P) 제품 통과 및 생산 내역';
-    title.font = { size: 16, bold: true };
+    title.font = { size: 14, bold: true };
     title.alignment = { horizontal: 'center', vertical: 'middle' };
 
     // Document number / work date (right block)
@@ -95,6 +107,7 @@ export default function Report() {
       const c = ws.getCell(addr);
       c.border = border;
       c.alignment = { horizontal: 'center', vertical: 'middle' };
+      c.font = baseFont;
     });
 
     // Machine headers (row 4) and column headers (row 5)
@@ -105,7 +118,7 @@ export default function Report() {
       ws.mergeCells(`${start}4:${end}4`);
       const headerCell = ws.getCell(`${start}4`);
       headerCell.value = m;
-      headerCell.font = { bold: true };
+      headerCell.font = { ...baseFont, bold: true };
       headerCell.alignment = { horizontal: 'center', vertical: 'middle' };
       headerCell.fill = headerFill;
       headerCell.border = border;
@@ -119,15 +132,14 @@ export default function Report() {
         const col = String.fromCharCode(start.charCodeAt(0) + hi);
         const c = ws.getCell(`${col}5`);
         c.value = label;
-        c.font = { bold: true };
+        c.font = { ...baseFont, bold: true };
         c.alignment = { horizontal: 'center', vertical: 'middle' };
         c.fill = headerFill;
         c.border = border;
       });
     });
 
-    // Data rows
-    const blockMaxRow = Math.max(1, ...MACHINES.map((m) => (byMachine[m] || []).length));
+    // Data rows — 데이터 있는 행에만 테두리·정렬
     MACHINES.forEach((m, mi) => {
       const start = MACHINE_START_COL[mi];
       const startCode = start.charCodeAt(0);
@@ -138,6 +150,7 @@ export default function Report() {
         const c = ws.getCell(`${String.fromCharCode(startCode + 1)}6`);
         c.value = '생산 내역 없음';
         c.alignment = { horizontal: 'center', vertical: 'middle' };
+        c.font = baseFont;
       }
 
       list.forEach((e, idx) => {
@@ -150,17 +163,15 @@ export default function Report() {
         cQty.value = e.actualProduction || e.additionalProduction || 0;
         const cTime = ws.getCell(`${String.fromCharCode(startCode + 3)}${row}`);
         cTime.value = e.workTime || e.additionalWorkTime || '';
-      });
-
-      // Apply borders + alignment to every cell in block from row 6 to blockMaxRow+5
-      for (let r = 6; r <= 5 + blockMaxRow; r++) {
+        // 테두리·정렬·폰트 — 이 행만
         for (let i = 0; i < 4; i++) {
           const col = String.fromCharCode(startCode + i);
-          const cell = ws.getCell(`${col}${r}`);
+          const cell = ws.getCell(`${col}${row}`);
           cell.border = border;
           cell.alignment = { horizontal: 'center', vertical: 'middle' };
+          cell.font = baseFont;
         }
-      }
+      });
     });
 
     const buf = await wb.xlsx.writeBuffer();
