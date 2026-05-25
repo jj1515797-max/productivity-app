@@ -27,7 +27,7 @@ export default function ExternalPack() {
   }, [date]);
 
   const [items, setItems] = useState<Item[]>([]);
-  const [entries, setEntries] = useState<MachineEntry[]>([]);
+  const [entries, setEntries] = useState<(MachineEntry & { docId: string })[]>([]);
   const [allMachineQty, setAllMachineQty] = useState<Record<string, Record<string, number>>>({
     '1호기': {}, '2호기': {}, '3호기': {},
   });
@@ -42,9 +42,15 @@ export default function ExternalPack() {
 
   useEffect(() => {
     return onSnapshot(collection(db, 'days', date, 'machines', machine, 'entries'), (snap) => {
-      const list: MachineEntry[] = [];
-      snap.forEach((d) => list.push(d.data() as MachineEntry));
-      list.sort((a, b) => (b.workTime || b.additionalWorkTime || '').localeCompare(a.workTime || a.additionalWorkTime || ''));
+      const list: (MachineEntry & { docId: string })[] = [];
+      snap.forEach((d) => list.push({ ...(d.data() as MachineEntry), docId: d.id }));
+      list.sort((a, b) => {
+        const ta = a.workTime || a.additionalWorkTime || '';
+        const tb = b.workTime || b.additionalWorkTime || '';
+        const cmp = tb.localeCompare(ta);
+        if (cmp !== 0) return cmp;
+        return b.docId.localeCompare(a.docId); // 같은 분 → 나중에 만든 doc(=docId 큼)이 위
+      });
       setEntries(list);
     });
   }, [date, machine]);
