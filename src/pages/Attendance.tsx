@@ -12,7 +12,7 @@ const STATUS_COLOR: Record<AttendanceStatus, { chip: string; soft: string; text:
   연차:    { chip: 'bg-orange-500',  soft: 'bg-orange-50',  text: 'text-orange-700',  border: 'border-orange-300' },
   반차:    { chip: 'bg-amber-500',   soft: 'bg-amber-50',   text: 'text-amber-700',   border: 'border-amber-300' },
   반반차:  { chip: 'bg-yellow-500',  soft: 'bg-yellow-50',  text: 'text-yellow-700',  border: 'border-yellow-300' },
-  결혼반차: { chip: 'bg-pink-500',    soft: 'bg-pink-50',    text: 'text-pink-700',    border: 'border-pink-300' },
+  '결혼/생일 반차': { chip: 'bg-pink-500',    soft: 'bg-pink-50',    text: 'text-pink-700',    border: 'border-pink-300' },
   병가:    { chip: 'bg-red-500',     soft: 'bg-red-50',     text: 'text-red-700',     border: 'border-red-300' },
   경조사:  { chip: 'bg-violet-500',  soft: 'bg-violet-50',  text: 'text-violet-700',  border: 'border-violet-300' },
   휴무:    { chip: 'bg-gray-400',    soft: 'bg-gray-100',   text: 'text-gray-600',    border: 'border-gray-300' },
@@ -140,7 +140,7 @@ export default function Attendance() {
     const totalN = members.length;
     // 각 상태가 등장한 멤버 수 (한 사람이 여러 상태면 각각 +1)
     const breakdown: Record<AttendanceStatus, number> = {
-      출근: 0, 연차: 0, 반차: 0, 반반차: 0, 결혼반차: 0, 병가: 0, 경조사: 0, 휴무: 0,
+      출근: 0, 연차: 0, 반차: 0, 반반차: 0, '결혼/생일 반차': 0, 병가: 0, 경조사: 0, 휴무: 0,
     };
     let onLeaveN = 0, presentN = 0, restN = 0, leaveDays = 0;
     members.forEach((m) => {
