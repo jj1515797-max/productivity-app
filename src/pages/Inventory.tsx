@@ -282,8 +282,8 @@ export default function Inventory() {
           })}
         </div>
 
-        {/* 요청사항 */}
-        <div className="bg-white border rounded-lg overflow-hidden h-fit">
+        {/* 요청사항 — 모바일에서는 맨 위로 */}
+        <div className="bg-white border rounded-lg overflow-hidden h-fit order-first lg:order-none">
           <div className="px-4 py-3 border-b bg-amber-50 flex items-center gap-2 flex-wrap">
             <span className="font-semibold text-amber-800 flex items-center gap-1.5">
               📝 요청사항
