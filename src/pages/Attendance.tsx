@@ -73,7 +73,7 @@ export default function Attendance() {
   const [leaveTarget, setLeaveTarget] = useState<Member | null>(null);
   const [showTable, setShowTable] = useState(false);
   const [openStatusFor, setOpenStatusFor] = useState<string | null>(null);
-  const [popoverPos, setPopoverPos] = useState<{ x: number; y: number; width: number } | null>(null);
+  const [popoverPos, setPopoverPos] = useState<{ x: number; y: number; width: number; mobile: boolean } | null>(null);
 
   // 팝오버 외부 클릭 시 닫기
   useEffect(() => {
@@ -94,7 +94,24 @@ export default function Attendance() {
       setOpenStatusFor(null); setPopoverPos(null); return;
     }
     const r = e.currentTarget.getBoundingClientRect();
-    setPopoverPos({ x: r.left, y: r.bottom + 4, width: r.width });
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+    const mobile = vw < 640;
+    if (mobile) {
+      // 모바일: 중앙에 띄움 (어디서 눌러도 시야 중앙)
+      setPopoverPos({ x: 0, y: 0, width: vw, mobile: true });
+    } else {
+      const estHeight = 380; // 팝오버 예상 높이
+      let y = r.bottom + 4;
+      // 아래로 공간 부족하면 위쪽에 띄움
+      if (y + estHeight > vh) y = Math.max(8, r.top - estHeight - 4);
+      // 좌우 화면 밖 방지
+      const width = Math.max(220, r.width);
+      let x = r.left;
+      if (x + width > vw - 8) x = vw - width - 8;
+      if (x < 8) x = 8;
+      setPopoverPos({ x, y, width, mobile: false });
+    }
     setOpenStatusFor(mid);
   };
 
@@ -456,30 +473,32 @@ export default function Attendance() {
         />
       )}
 
-      {/* 상태 팝오버 (fixed — overflow 회피) */}
+      {/* 상태 팝오버 (모바일=중앙 모달 / PC=fixed 위치) */}
       {openStatusFor && popoverPos && (() => {
         const m = members.find((mm) => mm.id === openStatusFor);
         if (!m) return null;
         const statuses = getStatuses(records[m.id]);
-        return (
-          <div
-            data-status-popover
-            style={{ position: 'fixed', left: popoverPos.x, top: popoverPos.y, width: Math.max(200, popoverPos.width), zIndex: 60 }}
-            className="bg-white border rounded-lg shadow-2xl p-2 space-y-0.5"
-          >
-            <div className="px-2 py-1 text-[11px] font-bold text-gray-500 border-b mb-1">{m.name} · 상태 선택</div>
+        const close = () => { setOpenStatusFor(null); setPopoverPos(null); };
+        const body = (
+          <>
+            <div className="px-2 py-1.5 text-xs font-bold text-gray-700 border-b mb-1 flex items-center justify-between">
+              <span>{m.name} · 상태 선택</span>
+              {popoverPos.mobile && (
+                <button onClick={close} className="w-6 h-6 rounded-full hover:bg-gray-200 text-gray-500">×</button>
+              )}
+            </div>
             {ATTENDANCE_STATUSES.map((s) => {
               const checked = statuses.includes(s);
               const stColor = STATUS_COLOR[s];
               return (
-                <label key={s} className={`flex items-center gap-2 px-2 py-1.5 rounded cursor-pointer hover:bg-gray-50 ${checked ? stColor.soft : ''}`}>
-                  <input type="checkbox" checked={checked} onChange={() => toggleStatus(m, s)} className="w-3.5 h-3.5" />
-                  <span className={`w-1.5 h-1.5 rounded-full ${stColor.chip}`} />
+                <label key={s} className={`flex items-center gap-2 px-2 py-2.5 rounded cursor-pointer hover:bg-gray-50 ${checked ? stColor.soft : ''}`}>
+                  <input type="checkbox" checked={checked} onChange={() => toggleStatus(m, s)} className="w-4 h-4" />
+                  <span className={`w-2 h-2 rounded-full ${stColor.chip}`} />
                   <span className={`text-sm ${checked ? `${stColor.text} font-semibold` : 'text-gray-700'}`}>{s}</span>
                 </label>
               );
             })}
-            <div className="border-t pt-1 mt-1 flex items-center justify-between text-[11px] px-1">
+            <div className="border-t pt-2 mt-1 flex items-center justify-between text-[11px] px-1 gap-2">
               {statuses.length > 0 ? (
                 <button onClick={() => setStatuses(m, [])} className="text-blue-600 hover:underline">→ 기본값(평일=출근/일요일=휴무)</button>
               ) : (() => {
@@ -487,8 +506,26 @@ export default function Attendance() {
                 const dow = new Date(yy, mm - 1, dd).getDay();
                 return <span className="text-gray-400">체크 없으면 {dow === 0 ? '휴무' : '출근'}</span>;
               })()}
-              <button onClick={() => { setOpenStatusFor(null); setPopoverPos(null); }} className="text-gray-500 hover:text-gray-800">완료</button>
+              <button onClick={close} className="px-3 py-1.5 rounded bg-blue-600 text-white text-xs font-semibold hover:bg-blue-700">완료</button>
             </div>
+          </>
+        );
+        if (popoverPos.mobile) {
+          return (
+            <div className="fixed inset-0 z-[60] flex items-center justify-center p-4 bg-black/40" onClick={close}>
+              <div data-status-popover onClick={(e) => e.stopPropagation()} className="bg-white border rounded-xl shadow-2xl p-3 w-full max-w-xs space-y-0.5">
+                {body}
+              </div>
+            </div>
+          );
+        }
+        return (
+          <div
+            data-status-popover
+            style={{ position: 'fixed', left: popoverPos.x, top: popoverPos.y, width: popoverPos.width, zIndex: 60 }}
+            className="bg-white border rounded-lg shadow-2xl p-2 space-y-0.5"
+          >
+            {body}
           </div>
         );
       })()}
