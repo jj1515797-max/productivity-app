@@ -108,45 +108,76 @@ function Header() {
   ];
 
   return (
-    <header className="bg-blue-700 text-white px-5 py-2.5 flex items-center gap-4 sticky top-0 z-20">
-      <div className="flex items-center gap-3 min-w-max">
-        <div className="bg-white rounded px-2 py-1 flex items-center shadow">
-          <Logo height={32} />
+    <header className="bg-blue-700 text-white sticky top-0 z-20">
+      {/* 상단: 로고/타이틀 + (PC 한정) 우측 네비 */}
+      <div className="px-3 sm:px-5 py-2 sm:py-2.5 flex items-center gap-3 sm:gap-4">
+        <div className="flex items-center gap-2 sm:gap-3 min-w-max">
+          <div className="bg-white rounded px-1.5 py-0.5 sm:px-2 sm:py-1 flex items-center shadow">
+            <Logo height={28} />
+          </div>
+          <div className="leading-tight">
+            <div className="font-bold text-xs sm:text-sm">순수본 1공장</div>
+            <div className="text-blue-100 text-[10px] sm:text-xs">{dateLabel}</div>
+          </div>
         </div>
-        <div className="leading-tight">
-          <div className="font-bold text-sm">순수본 1공장</div>
-          <div className="text-blue-100 text-xs">{dateLabel}</div>
-        </div>
+
+        <div className="flex-1" />
+
+        {/* PC: 우측 네비 인라인 */}
+        <nav className="hidden sm:flex gap-1 items-center">
+          {rightLinks.map((l, i) => {
+            const active = section === l.section;
+            const showDivider = l.section === 'attendance' && i > 0;
+            return (
+              <span key={l.to} className="flex items-center gap-1">
+                {showDivider && <span className="w-px h-5 bg-blue-400 mx-1.5" aria-hidden />}
+                <NavLink
+                  to={l.to}
+                  className={`px-3 py-1.5 text-sm rounded font-medium transition flex items-center gap-1.5 ${
+                    active ? 'bg-white text-blue-700' : 'text-blue-100 hover:bg-blue-800'
+                  }`}
+                >
+                  {l.icon && <span className="text-xs">{l.icon}</span>}
+                  {l.label}
+                </NavLink>
+              </span>
+            );
+          })}
+          {analyticsAuthed && (
+            <button
+              onClick={() => { localStorage.removeItem('analyticsAuthedAt'); window.location.reload(); }}
+              className="ml-2 px-2.5 py-1 text-xs rounded bg-blue-800 hover:bg-blue-900 text-blue-100 hover:text-white font-medium flex items-center gap-1"
+              title="분석 로그아웃"
+            >
+              🔓 로그아웃
+            </button>
+          )}
+        </nav>
       </div>
 
-      <div className="flex-1" />
-
-      <nav className="flex gap-1 items-center">
-        {rightLinks.map((l, i) => {
+      {/* 모바일: 네비를 두번째 줄로 분리, 화면폭 꽉채워 5등분 */}
+      <nav className="sm:hidden grid grid-cols-5 gap-0.5 px-1.5 pb-1.5 bg-blue-700">
+        {rightLinks.map((l) => {
           const active = section === l.section;
-          const showDivider = l.section === 'attendance' && i > 0;
           return (
-            <span key={l.to} className="flex items-center gap-1">
-              {showDivider && <span className="w-px h-5 bg-blue-400 mx-1.5" aria-hidden />}
-              <NavLink
-                to={l.to}
-                className={`px-3 py-1.5 text-sm rounded font-medium transition flex items-center gap-1.5 ${
-                  active ? 'bg-white text-blue-700' : 'text-blue-100 hover:bg-blue-800'
-                }`}
-              >
-                {l.icon && <span className="text-xs">{l.icon}</span>}
-                {l.label}
-              </NavLink>
-            </span>
+            <NavLink
+              key={l.to}
+              to={l.to}
+              className={`px-1 py-1.5 text-xs rounded font-medium transition flex flex-col items-center justify-center gap-0.5 ${
+                active ? 'bg-white text-blue-700' : 'text-blue-100 active:bg-blue-800'
+              }`}
+            >
+              {l.icon && <span className="text-sm leading-none">{l.icon}</span>}
+              <span className="leading-none">{l.label}</span>
+            </NavLink>
           );
         })}
         {analyticsAuthed && (
           <button
             onClick={() => { localStorage.removeItem('analyticsAuthedAt'); window.location.reload(); }}
-            className="ml-2 px-2.5 py-1 text-xs rounded bg-blue-800 hover:bg-blue-900 text-blue-100 hover:text-white font-medium flex items-center gap-1"
-            title="분석 로그아웃"
+            className="col-span-5 mt-1 py-1 text-[11px] rounded bg-blue-800 text-blue-100 font-medium"
           >
-            🔓 로그아웃
+            🔓 분석 로그아웃
           </button>
         )}
       </nav>
