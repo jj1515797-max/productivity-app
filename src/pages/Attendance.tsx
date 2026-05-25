@@ -927,11 +927,7 @@ function AttendanceTableModal({
         if (statuses.includes('반반차')) { row.반반차++; counted = true; }
         const others = statuses.filter((s) => !['연차','반차','반반차','결혼반차','생일반차','휴무','출근'].includes(s));
         if (others.length) { row.otherLeave += others.length; counted = true; }
-        // 반차류/반반차는 부분 출근 → 출근 인원에도 포함 (단 합쳐서 연차된 경우는 제외)
-        const partialPresent = !hasFullYearly && halfHits < 2 && (halfHits >= 1 || statuses.includes('반반차'));
-        if (partialPresent) {
-          row.출근++; present.push(m.name);
-        }
+        // 휴가가 있으면 어떤 종류든 출근 카운트에서 제외 (이름은 결근자에 표시)
         if (counted) {
           const label = statuses.filter((s) => s !== '출근').join('+');
           absent.push(`${m.name}(${label})`);
