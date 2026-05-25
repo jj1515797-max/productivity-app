@@ -85,18 +85,39 @@ export default function Remaining() {
 
   const hasLogistics = Object.keys(logisticsQty).length > 0;
 
-  const enriched = useMemo(() => items.map((it) => {
-    const actual = actualByCode[it.code.toLowerCase()] || 0;
-    const normItem = normalize(it.code);
-    const logEntry = Object.entries(logisticsQty).find(([k]) => normalize(k) === normItem);
-    const logQty = logEntry ? logEntry[1] : undefined;
-    return {
-      ...it,
-      actualProduction: actual,
-      totalQty: it.totalQty || 0,
-      logQty,
-    };
-  }), [items, actualByCode, logisticsQty]);
+  const enriched = useMemo(() => {
+    const itemsNorm = new Set(items.map((i) => normalize(i.code)));
+    const matched = items.map((it) => {
+      const actual = actualByCode[it.code.toLowerCase()] || 0;
+      const normItem = normalize(it.code);
+      const logEntry = Object.entries(logisticsQty).find(([k]) => normalize(k) === normItem);
+      const logQty = logEntry ? logEntry[1] : undefined;
+      return {
+        ...it,
+        actualProduction: actual,
+        totalQty: it.totalQty || 0,
+        logQty,
+      };
+    });
+    // items 에 없지만 logistics 에는 있는 코드도 표시 (누락 방지)
+    Object.entries(logisticsQty).forEach(([code, qty]) => {
+      if (!itemsNorm.has(normalize(code))) {
+        matched.push({
+          id: code,
+          code,
+          name: '(품목 미등록)',
+          orderQty: 0,
+          coupang: 0,
+          marketKurly: 0,
+          totalQty: 0,
+          actualProduction: 0,
+          date,
+          logQty: qty,
+        });
+      }
+    });
+    return matched;
+  }, [items, actualByCode, logisticsQty, date]);
 
   // 생산 모드: 잔여량 = actual - totalQty
   // 물류 모드: 잔여량 = logQty (등록수량 그대로)
