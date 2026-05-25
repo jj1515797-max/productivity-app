@@ -273,8 +273,17 @@ export default function Attendance() {
         </div>
       </div>
 
-      {/* 카운트 카드 */}
-      <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
+      {/* 카운트 카드 — 모바일: 작은 인라인 요약 / PC: 전체 카드 */}
+      {/* 모바일 요약 (PC에서는 숨김) */}
+      <div className="sm:hidden bg-white border rounded-lg px-3 py-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+        <span><b className="text-indigo-700">{counts.totalN}</b> 총원</span>
+        <span><b className="text-emerald-700">{counts.presentN}</b> 출근</span>
+        <span><b className="text-orange-700">{counts.leaveN}</b> 연차/반차</span>
+        <span><b className="text-gray-700">{counts.restN}</b> 휴무</span>
+        <span><b className="text-zinc-700">{counts.onLeaveN}</b> 휴직</span>
+      </div>
+      {/* PC 카드 (모바일에서는 숨김) */}
+      <div className="hidden sm:grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
         <StatCard label="총원" value={counts.totalN} unit="명" tone="indigo" highlight />
         <StatCard label="출근" value={counts.presentN} unit="명" tone="emerald" sub={counts.workforceN > 0 ? `${((counts.presentN / counts.workforceN) * 100).toFixed(1)}%` : ''} />
         <StatCard label="연차/반차 등" value={counts.leaveN} unit="명" tone="orange" />
@@ -303,24 +312,24 @@ export default function Attendance() {
         </div>
       </div>
 
-      {/* 검색/추가 바 */}
-      <div className="bg-white border rounded-lg px-4 py-3 flex items-center gap-3 flex-wrap">
-        <div className="relative flex-1 min-w-[240px]">
+      {/* 검색/추가 바 — 모바일에서 스크롤해도 따라옴 */}
+      <div className="bg-white border rounded-lg px-3 py-2 sm:px-4 sm:py-3 flex items-center gap-2 sm:gap-3 flex-wrap sticky top-0 z-30 shadow-sm">
+        <div className="relative flex-1 min-w-[160px]">
           <input
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="🔍 이름 또는 부서 검색..."
-            className="w-full border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
+            placeholder="🔍 이름/부서 검색..."
+            className="w-full border rounded-md px-3 py-2.5 sm:py-2 text-base sm:text-sm focus:outline-none focus:ring-2 focus:ring-blue-300"
           />
           {search && (
-            <button onClick={() => setSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">×</button>
+            <button onClick={() => setSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600 text-lg">×</button>
           )}
         </div>
-        <span className="text-xs text-gray-500">{members.length}명 등록됨</span>
+        <span className="hidden sm:inline text-xs text-gray-500">{members.length}명 등록됨</span>
         <button
           onClick={() => setShowAdd(true)}
-          className="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md font-medium text-sm shadow-sm"
-        >+ 인원 추가</button>
+          className="px-3 py-2.5 sm:py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-md font-medium text-sm shadow-sm whitespace-nowrap"
+        >+ 추가</button>
       </div>
 
       {/* 인원 목록 (부서별 그룹) */}
@@ -379,20 +388,20 @@ export default function Attendance() {
                               </div>
                               {m.dept && <div className="text-[10px] text-gray-500 truncate">{m.dept}</div>}
                             </div>
-                            <div className="opacity-0 group-hover:opacity-100 transition flex gap-0.5 -mt-1">
+                            <div className="opacity-100 sm:opacity-0 sm:group-hover:opacity-100 transition flex gap-0.5 -mt-1">
                               <button
                                 onClick={() => setLeaveTarget(m)}
-                                className={`text-xs px-1 ${onLeave ? 'text-zinc-700 font-bold' : 'text-gray-400 hover:text-zinc-700'}`}
+                                className={`text-sm sm:text-xs px-1.5 sm:px-1 py-0.5 ${onLeave ? 'text-zinc-700 font-bold' : 'text-gray-400 hover:text-zinc-700'}`}
                                 title="휴직 관리"
                               >💼</button>
                               <button
                                 onClick={() => { setEditing(m.id); setEditName(m.name); setEditDept(m.dept || ''); }}
-                                className="text-gray-400 hover:text-gray-700 text-xs px-1"
+                                className="text-gray-400 hover:text-gray-700 text-sm sm:text-xs px-1.5 sm:px-1 py-0.5"
                                 title="수정"
                               >✎</button>
                               <button
                                 onClick={() => removeMember(m)}
-                                className="text-gray-400 hover:text-red-600 text-xs px-1"
+                                className="text-gray-400 hover:text-red-600 text-sm sm:text-xs px-1.5 sm:px-1 py-0.5"
                                 title="삭제"
                               >×</button>
                             </div>
@@ -415,7 +424,7 @@ export default function Attendance() {
                               <button
                                 data-status-trigger
                                 onClick={(e) => openStatusPopover(e, m.id)}
-                                className={`w-full px-2 py-1.5 rounded border-2 ${color.border} ${color.text} bg-white font-semibold text-sm cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-200 text-left flex items-center justify-between gap-1`}
+                                className={`w-full px-3 py-2.5 sm:py-1.5 rounded border-2 ${color.border} ${color.text} bg-white font-semibold text-base sm:text-sm cursor-pointer focus:outline-none focus:ring-2 focus:ring-blue-200 text-left flex items-center justify-between gap-1`}
                               >
                                 <span className="truncate">{label}</span>
                                 <span className="text-xs flex-shrink-0">▼</span>
