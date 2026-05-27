@@ -100,8 +100,24 @@ function computeMonthStats(
     useItems = items.filter((i) => allowed.has(i.date));
     useLogistics = Object.fromEntries(Object.entries(logisticsByDay).filter(([d]) => allowed.has(d)));
   }
+  const rawColdByDay: Record<string, number> = {};
+  useEntries.forEach((e) => { rawColdByDay[e.date] = (rawColdByDay[e.date] || 0) + qty(e); });
+  // 잔여량 수정값이 있는 날: totalQty + logQty 로 덮어쓰기 (current 와 동일 로직)
+  const totalQtyByDay: Record<string, number> = {};
+  useItems.forEach((it) => { totalQtyByDay[it.date] = (totalQtyByDay[it.date] || 0) + (it.totalQty || 0); });
   const coldByDay: Record<string, number> = {};
-  useEntries.forEach((e) => { coldByDay[e.date] = (coldByDay[e.date] || 0) + qty(e); });
+  const allColdDates = new Set<string>([
+    ...Object.keys(rawColdByDay),
+    ...Object.keys(useLogistics),
+    ...Object.keys(totalQtyByDay),
+  ]);
+  allColdDates.forEach((d) => {
+    if (useLogistics[d] !== undefined) {
+      coldByDay[d] = (totalQtyByDay[d] || 0) + useLogistics[d];
+    } else {
+      coldByDay[d] = rawColdByDay[d] || 0;
+    }
+  });
   const ambByDay: Record<string, number> = {};
   useAmbient.forEach((a) => { ambByDay[a.date] = (ambByDay[a.date] || 0) + (a.qty || 0); });
   const allDays = new Set([...Object.keys(coldByDay), ...Object.keys(ambByDay)]);
