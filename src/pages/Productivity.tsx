@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { collection, collectionGroup, getDocs, query, where } from 'firebase/firestore';
+import ExcelJS from 'exceljs';
 import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
 import type { AttendanceRecord, Item, Member, ProductSetting } from '../types';
@@ -88,6 +89,133 @@ function computeRow(d: DayProd) {
   const denom = (d.attend || 0) + (d.leave || 0);
   const totalProd = denom > 0 && total > 0 ? Math.round(total / denom) : 0;
   return { total, pot, bat, bg, ck, fl, pk, totalProd };
+}
+
+async function downloadXlsx(month: string, days: DayProd[]) {
+  const wb = new ExcelJS.Workbook();
+  const ws = wb.addWorksheet(`${month} 생산성`);
+  ws.pageSetup = {
+    paperSize: 9, orientation: 'landscape', fitToPage: true, fitToWidth: 1, fitToHeight: 0,
+    margins: { left: 0.3, right: 0.3, top: 0.4, bottom: 0.4, header: 0.2, footer: 0.2 },
+  };
+  ws.properties.defaultRowHeight = 18;
+
+  ws.columns = [
+    { width: 11 }, { width: 6 }, { width: 11 }, { width: 11 }, { width: 12 },
+    { width: 6 }, { width: 7 }, { width: 9 },
+    { width: 6 }, { width: 7 }, { width: 9 },
+    { width: 6 }, { width: 7 }, { width: 9 },
+    { width: 6 }, { width: 7 }, { width: 9 },
+    { width: 7 }, { width: 7 }, { width: 11 },
+  ];
+
+  const thin = { style: 'thin' as const };
+  const border = { top: thin, left: thin, right: thin, bottom: thin };
+  const headerFill = (argb: string) => ({ type: 'pattern' as const, pattern: 'solid' as const, fgColor: { argb } });
+  const baseFont = { size: 11, name: '맑은 고딕' } as const;
+
+  // 1행: 타이틀
+  ws.mergeCells('A1:T1');
+  const title = ws.getCell('A1');
+  title.value = `${month} 생산성 일별 상세`;
+  title.font = { size: 14, bold: true, name: '맑은 고딕' };
+  title.alignment = { horizontal: 'center', vertical: 'middle' };
+  ws.getRow(1).height = 22;
+
+  // 2~3행: 헤더 (병합)
+  const groupHeaders = [
+    { range: 'A2:A3', text: '날짜', fill: 'FFE2E8F0' },
+    { range: 'B2:B3', text: '요일', fill: 'FFE2E8F0' },
+    { range: 'C2:C3', text: '냄비', fill: 'FFE2E8F0' },
+    { range: 'D2:D3', text: '바트', fill: 'FFE2E8F0' },
+    { range: 'E2:E3', text: '합계', fill: 'FFE2E8F0' },
+    { range: 'F2:H2', text: '배합',   fill: 'FFDBEAFE' },
+    { range: 'I2:K2', text: '취반기', fill: 'FFFEE2E2' },
+    { range: 'L2:N2', text: '화구',   fill: 'FFFEF3C7' },
+    { range: 'O2:Q2', text: '내포장', fill: 'FFD1FAE5' },
+    { range: 'R2:R3', text: '출근', fill: 'FFE2E8F0' },
+    { range: 'S2:S3', text: '연차', fill: 'FFE2E8F0' },
+    { range: 'T2:T3', text: '전체생산성', fill: 'FFE2E8F0' },
+  ];
+  groupHeaders.forEach(({ range, text, fill }) => {
+    ws.mergeCells(range);
+    const c = ws.getCell(range.split(':')[0]);
+    c.value = text;
+    c.font = { ...baseFont, bold: true };
+    c.alignment = { horizontal: 'center', vertical: 'middle' };
+    c.fill = headerFill(fill);
+  });
+  // 3행 (stage sub-headers)
+  const subHeaders: { col: string; text: string; fill: string }[] = [
+    { col: 'F3', text: '인원', fill: 'FFDBEAFE' }, { col: 'G3', text: '시간', fill: 'FFDBEAFE' }, { col: 'H3', text: '생산성', fill: 'FFDBEAFE' },
+    { col: 'I3', text: '인원', fill: 'FFFEE2E2' }, { col: 'J3', text: '시간', fill: 'FFFEE2E2' }, { col: 'K3', text: '생산성', fill: 'FFFEE2E2' },
+    { col: 'L3', text: '인원', fill: 'FFFEF3C7' }, { col: 'M3', text: '시간', fill: 'FFFEF3C7' }, { col: 'N3', text: '생산성', fill: 'FFFEF3C7' },
+    { col: 'O3', text: '인원', fill: 'FFD1FAE5' }, { col: 'P3', text: '시간', fill: 'FFD1FAE5' }, { col: 'Q3', text: '생산성', fill: 'FFD1FAE5' },
+  ];
+  subHeaders.forEach(({ col, text, fill }) => {
+    const c = ws.getCell(col);
+    c.value = text;
+    c.font = { ...baseFont, bold: true, size: 10 };
+    c.alignment = { horizontal: 'center', vertical: 'middle' };
+    c.fill = headerFill(fill);
+  });
+  // 2~3행 전체에 border 적용
+  for (let r = 2; r <= 3; r++) {
+    for (let c = 1; c <= 20; c++) {
+      ws.getCell(r, c).border = border;
+    }
+  }
+
+  // 데이터 행
+  const dayNames = ['일', '월', '화', '수', '목', '금', '토'];
+  days.forEach((d, idx) => {
+    const rowIdx = 4 + idx;
+    const row = ws.getRow(rowIdx);
+    const r = computeRow(d);
+    const dow = dowOf(d.date);
+    const sun = dow === 0;
+    row.getCell(1).value = d.date.slice(5);
+    row.getCell(2).value = dayNames[dow];
+    row.getCell(3).value = d.pot || null;
+    row.getCell(4).value = d.bat || null;
+    row.getCell(5).value = r.total || null;
+    const stageVals: [number | null, number | null, number | null][] = [
+      [d.bg_people ?? null, r.bg.hrs ? Number(r.bg.hrs.toFixed(1)) : null, r.bg.prod || null],
+      [d.ck_people ?? null, r.ck.hrs ? Number(r.ck.hrs.toFixed(1)) : null, r.ck.prod || null],
+      [d.fl_people ?? null, r.fl.hrs ? Number(r.fl.hrs.toFixed(1)) : null, r.fl.prod || null],
+      [d.pk_people ?? null, r.pk.hrs ? Number(r.pk.hrs.toFixed(1)) : null, r.pk.prod || null],
+    ];
+    stageVals.forEach(([p, h, prod], si) => {
+      const base = 6 + si * 3;
+      row.getCell(base).value = p;
+      row.getCell(base + 1).value = h;
+      row.getCell(base + 2).value = prod;
+    });
+    row.getCell(18).value = d.attend || null;
+    row.getCell(19).value = d.leave || null;
+    row.getCell(20).value = r.totalProd || null;
+
+    // 스타일
+    for (let c = 1; c <= 20; c++) {
+      const cell = row.getCell(c);
+      cell.border = border;
+      cell.font = { ...baseFont, ...(c === 20 ? { bold: true, color: { argb: 'FFDC2626' } } : {}) };
+      cell.alignment = { horizontal: c <= 2 ? 'center' : 'right', vertical: 'middle' };
+      if (sun) cell.fill = headerFill('FFFEF2F2');
+      if (typeof cell.value === 'number' && c >= 3 && c <= 5) cell.numFmt = '#,##0';
+    }
+    // 일요일 요일 셀은 빨간 글씨
+    if (sun) row.getCell(2).font = { ...baseFont, color: { argb: 'FFDC2626' } };
+  });
+
+  const buf = await wb.xlsx.writeBuffer();
+  const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = `생산성_${month}.xlsx`;
+  a.click();
+  URL.revokeObjectURL(url);
 }
 
 function avg(arr: number[]): number {
@@ -524,6 +652,11 @@ export default function Productivity() {
         <div className="px-4 py-2.5 border-b bg-slate-50 font-bold text-gray-800 text-sm flex items-center gap-2">
           <span>📋 일별 상세 — {month}</span>
           <span className="text-xs text-gray-500 font-normal">{rangeDays.length}일</span>
+          <button
+            onClick={() => downloadXlsx(month, rangeDays)}
+            disabled={rangeDays.length === 0}
+            className="ml-auto px-3 py-1.5 text-xs rounded bg-emerald-600 text-white font-semibold hover:bg-emerald-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
+          >📥 엑셀 다운로드</button>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
@@ -554,7 +687,7 @@ export default function Productivity() {
               </tr>
             </thead>
             <tbody>
-              {[...rangeDays].reverse().map((d) => {
+              {rangeDays.map((d) => {
                 const r = computeRow(d);
                 const dow = dowOf(d.date);
                 const dowLabel = DOW_LABELS[dow];
