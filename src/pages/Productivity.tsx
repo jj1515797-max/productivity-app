@@ -39,7 +39,7 @@ const STAGES: { key: StageKey; label: string; color: string }[] = [
   { key: 'pk', label: '내포장', color: '#10b981' },
 ];
 const TOTAL_COLOR = '#1f2937';
-const PCT_COLOR = '#be185d';
+const PCT_COLOR = '#ea580c';
 const DOW_LABELS = ['일', '월', '화', '수', '목', '금', '토'];
 
 interface DayProd {
@@ -102,20 +102,25 @@ export default function Productivity() {
   const [month, setMonth] = useState(thisMonth);
   const { from, to } = useMemo(() => monthBounds(month), [month]);
 
-  // 비교 구간 — 직전 7일 vs 최근 7일
-  const [aFrom, setAFrom] = useState(() => {
+  // 비교 구간 기본값: 전전주(일~금) vs 전주(일~금)
+  const defaultCompare = useMemo(() => {
     const t = new Date();
-    return ymd(new Date(t.getFullYear(), t.getMonth(), t.getDate() - 13));
-  });
-  const [aTo, setATo] = useState(() => {
-    const t = new Date();
-    return ymd(new Date(t.getFullYear(), t.getMonth(), t.getDate() - 7));
-  });
-  const [bFrom, setBFrom] = useState(() => {
-    const t = new Date();
-    return ymd(new Date(t.getFullYear(), t.getMonth(), t.getDate() - 6));
-  });
-  const [bTo, setBTo] = useState(today);
+    const dow = t.getDay(); // 0=일, 5=금
+    // 가장 최근 "완료된" 금요일까지의 일수
+    let backToFri: number;
+    if (dow === 5) backToFri = 7;          // 오늘이 금요일 → 직전 금
+    else if (dow > 5) backToFri = dow - 5; // 토 → 1
+    else backToFri = dow + 2;              // 일=2, 월=3 ... 목=6
+    const bEnd = new Date(t.getFullYear(), t.getMonth(), t.getDate() - backToFri);
+    const bStart = new Date(bEnd.getFullYear(), bEnd.getMonth(), bEnd.getDate() - 5);
+    const aEnd = new Date(bEnd.getFullYear(), bEnd.getMonth(), bEnd.getDate() - 7);
+    const aStart = new Date(bStart.getFullYear(), bStart.getMonth(), bStart.getDate() - 7);
+    return { aFrom: ymd(aStart), aTo: ymd(aEnd), bFrom: ymd(bStart), bTo: ymd(bEnd) };
+  }, []);
+  const [aFrom, setAFrom] = useState(defaultCompare.aFrom);
+  const [aTo, setATo] = useState(defaultCompare.aTo);
+  const [bFrom, setBFrom] = useState(defaultCompare.bFrom);
+  const [bTo, setBTo] = useState(defaultCompare.bTo);
 
   const [daysByMonth, setDaysByMonth] = useState<Record<string, DayProd[]>>({});
   const [loading, setLoading] = useState(false);
@@ -631,7 +636,7 @@ function DowBarChart({ data }: { data: { label: string; bg: number; ck: number; 
         <g key={'t' + i}>
           <circle cx={padL + i * bandW + bandW / 2} cy={yFor(d.total)} r={3.5} fill={TOTAL_COLOR} />
           {d.total > 0 && (
-            <text x={padL + i * bandW + bandW / 2} y={Math.max(padT + 8, yFor(d.total) - 8)} fontSize={11} textAnchor="middle" fill={TOTAL_COLOR} fontWeight="bold" stroke="white" strokeWidth={3} paintOrder="stroke">{d.total}</text>
+            <text x={padL + i * bandW + bandW / 2} y={Math.max(padT + 8, yFor(d.total) - 8)} fontSize={11} textAnchor="middle" fill={TOTAL_COLOR} fontWeight="bold" stroke="white" strokeWidth={5} paintOrder="stroke">{d.total}</text>
           )}
         </g>
       ))}
@@ -664,8 +669,8 @@ function CompareChart({ rows }: { rows: { label: string; a: { total: number }; b
           <g key={r.label}>
             <rect x={xBase} y={yFor(r.a.total)} width={barW} height={Math.max(0, innerH - (yFor(r.a.total) - padT))} fill="#3b82f6" />
             <rect x={xBase + barW} y={yFor(r.b.total)} width={barW} height={Math.max(0, innerH - (yFor(r.b.total) - padT))} fill="#ef4444" />
-            <text x={xBase + barW / 2} y={Math.max(padT + 10, yFor(r.a.total) - 6)} fontSize={11} textAnchor="middle" fill="#1e3a8a" fontWeight="bold" stroke="white" strokeWidth={3} paintOrder="stroke">{r.a.total || ''}</text>
-            <text x={xBase + barW + barW / 2} y={Math.max(padT + 10, yFor(r.b.total) - 6)} fontSize={11} textAnchor="middle" fill="#7f1d1d" fontWeight="bold" stroke="white" strokeWidth={3} paintOrder="stroke">{r.b.total || ''}</text>
+            <text x={xBase + barW / 2} y={Math.max(padT + 10, yFor(r.a.total) - 6)} fontSize={11} textAnchor="middle" fill="#1e3a8a" fontWeight="bold" stroke="white" strokeWidth={5} paintOrder="stroke">{r.a.total || ''}</text>
+            <text x={xBase + barW + barW / 2} y={Math.max(padT + 10, yFor(r.b.total) - 6)} fontSize={11} textAnchor="middle" fill="#7f1d1d" fontWeight="bold" stroke="white" strokeWidth={5} paintOrder="stroke">{r.b.total || ''}</text>
             <text x={xBase + barW} y={H - 10} fontSize={11} textAnchor="middle" fill="#334155" fontWeight="600">{r.label}</text>
           </g>
         );
@@ -684,7 +689,7 @@ function CompareChart({ rows }: { rows: { label: string; a: { total: number }; b
         return (
           <g key={'p' + i}>
             <circle cx={cx} cy={cy} r={3.5} fill={PCT_COLOR} />
-            <text x={cx} y={labelY} fontSize={11} textAnchor="middle" fill={PCT_COLOR} fontWeight="bold" stroke="white" strokeWidth={3} paintOrder="stroke">
+            <text x={cx} y={labelY} fontSize={11} textAnchor="middle" fill={PCT_COLOR} fontWeight="bold" stroke="white" strokeWidth={5} paintOrder="stroke">
               {r.dtotal ? `${r.dtotal > 0 ? '+' : ''}${r.dtotal.toFixed(1)}%` : ''}
             </text>
           </g>
