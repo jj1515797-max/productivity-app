@@ -71,7 +71,7 @@ function monthBounds(month: string): { from: string; to: string } {
   return { from: `${month}-01`, to: `${month}-${String(last).padStart(2, '0')}` };
 }
 
-/** 공정별 생산성: 배합/내포장=냄비+바트, 취반기=냄비만, 화구=바트만 */
+/** 공정별 생산성: 배합/내포장=냄비+바트, 취반기=바트만, 화구=냄비만 */
 function computeRow(d: DayProd) {
   const pot = d.pot || 0;
   const bat = d.bat || 0;
@@ -82,8 +82,8 @@ function computeRow(d: DayProd) {
     return { hrs, prod: Math.round(numerator / (people * hrs)) };
   };
   const bg = stage(total, d.bg_people, d.bg_start, d.bg_end);
-  const ck = stage(pot,   d.ck_people, d.ck_start, d.ck_end);
-  const fl = stage(bat,   d.fl_people, d.fl_start, d.fl_end);
+  const ck = stage(bat,   d.ck_people, d.ck_start, d.ck_end);
+  const fl = stage(pot,   d.fl_people, d.fl_start, d.fl_end);
   const pk = stage(total, d.pk_people, d.pk_start, d.pk_end);
   const denom = (d.attend || 0) + (d.leave || 0);
   const totalProd = denom > 0 && total > 0 ? Math.round(total / denom) : 0;
