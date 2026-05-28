@@ -643,7 +643,7 @@ function DowBarChart({ data }: { data: { label: string; bg: number; ck: number; 
       ))}
       {/* 5. 전체 라벨 — 항상 맨 위, 흰 외곽선 */}
       {data.map((d, i) => d.total > 0 && (
-        <text key={'tlab' + i} x={padL + i * bandW + bandW / 2} y={Math.max(padT + 10, yFor(d.total) - 10)} fontSize={12} textAnchor="middle" fill={TOTAL_COLOR} fontWeight="bold" stroke="white" strokeWidth={6} paintOrder="stroke">{d.total}</text>
+        <text key={'tlab' + i} x={padL + i * bandW + bandW / 2} y={Math.max(padT + 10, yFor(d.total) - 10)} fontSize={12} textAnchor="middle" fill={TOTAL_COLOR} fontWeight="bold" stroke="white" strokeWidth={3} paintOrder="stroke">{d.total}</text>
       ))}
     </svg>
   );
@@ -712,8 +712,8 @@ function CompareChart({ rows }: { rows: { label: string; a: { total: number }; b
         const xBase = padL + i * bandW + 6;
         return (
           <g key={'lab' + i}>
-            <text x={xBase + barW / 2} y={barLabelY(r.a.total)} fontSize={11} textAnchor="middle" fill="#1e3a8a" fontWeight="bold" stroke="white" strokeWidth={6} paintOrder="stroke">{r.a.total || ''}</text>
-            <text x={xBase + barW + barW / 2} y={barLabelY(r.b.total)} fontSize={11} textAnchor="middle" fill="#7f1d1d" fontWeight="bold" stroke="white" strokeWidth={6} paintOrder="stroke">{r.b.total || ''}</text>
+            <text x={xBase + barW / 2} y={barLabelY(r.a.total)} fontSize={11} textAnchor="middle" fill="#1e3a8a" fontWeight="bold" stroke="white" strokeWidth={3} paintOrder="stroke">{r.a.total || ''}</text>
+            <text x={xBase + barW + barW / 2} y={barLabelY(r.b.total)} fontSize={11} textAnchor="middle" fill="#7f1d1d" fontWeight="bold" stroke="white" strokeWidth={3} paintOrder="stroke">{r.b.total || ''}</text>
           </g>
         );
       })}
