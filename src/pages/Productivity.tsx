@@ -1,7 +1,10 @@
 import { useEffect, useMemo, useState } from 'react';
-import { collection, getDocs, query, where } from 'firebase/firestore';
+import { collection, collectionGroup, getDocs, query, where } from 'firebase/firestore';
 import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
+import type { AttendanceRecord, Item, Member, ProductSetting } from '../types';
+import { summarizeAttendance } from '../lib/attendance';
+import { canonicalShort, convertErpCode, normalizeCode } from '../lib/codeUtil';
 
 type StageKey = 'bg' | 'ck' | 'fl' | 'pk';
 const STAGES: { key: StageKey; label: string; color: string }[] = [
@@ -25,10 +28,6 @@ interface DayProd {
 function ymd(d: Date): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
-function shiftDays(s: string, delta: number): string {
-  const [y, m, dd] = s.split('-').map(Number);
-  return ymd(new Date(y, m - 1, dd + delta));
-}
 function dowOf(s: string): number {
   const [y, m, dd] = s.split('-').map(Number);
   return new Date(y, m - 1, dd).getDay();
@@ -40,21 +39,29 @@ function hoursBetween(start?: string, end?: string): number {
   const diff = (eh * 60 + em) - (sh * 60 + sm);
   return diff > 0 ? diff / 60 : 0;
 }
+function monthBounds(month: string): { from: string; to: string } {
+  const [y, m] = month.split('-').map(Number);
+  const last = new Date(y, m, 0).getDate();
+  return { from: `${month}-01`, to: `${month}-${String(last).padStart(2, '0')}` };
+}
 
+/** 공정별 생산성: 배합/내포장=냄비+바트, 취반기=냄비만, 화구=바트만 */
 function computeRow(d: DayProd) {
-  const total = (d.pot || 0) + (d.bat || 0);
-  const stage = (people?: number, start?: string, end?: string) => {
+  const pot = d.pot || 0;
+  const bat = d.bat || 0;
+  const total = pot + bat;
+  const stage = (numerator: number, people?: number, start?: string, end?: string) => {
     const hrs = hoursBetween(start, end);
-    if (!people || people <= 0 || hrs <= 0 || total <= 0) return { hrs, prod: 0 };
-    return { hrs, prod: Math.round(total / (people * hrs)) };
+    if (!people || people <= 0 || hrs <= 0 || numerator <= 0) return { hrs, prod: 0 };
+    return { hrs, prod: Math.round(numerator / (people * hrs)) };
   };
-  const bg = stage(d.bg_people, d.bg_start, d.bg_end);
-  const ck = stage(d.ck_people, d.ck_start, d.ck_end);
-  const fl = stage(d.fl_people, d.fl_start, d.fl_end);
-  const pk = stage(d.pk_people, d.pk_start, d.pk_end);
+  const bg = stage(total, d.bg_people, d.bg_start, d.bg_end);
+  const ck = stage(pot,   d.ck_people, d.ck_start, d.ck_end);
+  const fl = stage(bat,   d.fl_people, d.fl_start, d.fl_end);
+  const pk = stage(total, d.pk_people, d.pk_start, d.pk_end);
   const denom = (d.attend || 0) + (d.leave || 0);
   const totalProd = denom > 0 && total > 0 ? Math.round(total / denom) : 0;
-  return { total, bg, ck, fl, pk, totalProd };
+  return { total, pot, bat, bg, ck, fl, pk, totalProd };
 }
 
 function avg(arr: number[]): number {
@@ -65,51 +72,123 @@ function avg(arr: number[]): number {
 
 export default function Productivity() {
   const today = todayKey();
-  const monthStart = today.slice(0, 8) + '01';
-  const [from, setFrom] = useState(monthStart);
-  const [to, setTo] = useState(today);
+  const thisMonth = today.slice(0, 7);
+  const [month, setMonth] = useState(thisMonth);
+  const { from, to } = useMemo(() => monthBounds(month), [month]);
 
-  // 비교 구간 기본: 직전 주 vs 이번 주 (월~금)
-  const monStart = (() => {
+  // 비교 구간 — 직전 7일 vs 최근 7일
+  const [aFrom, setAFrom] = useState(() => {
     const t = new Date();
-    const day = t.getDay();
-    const diffToMon = (day + 6) % 7; // 0=Mon, 6=Sun
-    return ymd(new Date(t.getFullYear(), t.getMonth(), t.getDate() - diffToMon));
-  })();
-  const [aFrom, setAFrom] = useState(shiftDays(monStart, -7));
-  const [aTo, setATo] = useState(shiftDays(monStart, -1));
-  const [bFrom, setBFrom] = useState(monStart);
+    return ymd(new Date(t.getFullYear(), t.getMonth(), t.getDate() - 13));
+  });
+  const [aTo, setATo] = useState(() => {
+    const t = new Date();
+    return ymd(new Date(t.getFullYear(), t.getMonth(), t.getDate() - 7));
+  });
+  const [bFrom, setBFrom] = useState(() => {
+    const t = new Date();
+    return ymd(new Date(t.getFullYear(), t.getMonth(), t.getDate() - 6));
+  });
   const [bTo, setBTo] = useState(today);
 
   const [days, setDays] = useState<DayProd[]>([]);
   const [loading, setLoading] = useState(false);
 
-  // 한 번에 from~to + 비교 A·B 까지 포괄해서 fetch (중복 read 회피)
+  // 한 번에 전체 범위 fetch
   const fetchFrom = useMemo(() => [from, aFrom, bFrom].sort()[0], [from, aFrom, bFrom]);
-  const fetchTo   = useMemo(() => [to,   aTo,   bTo  ].sort().reverse()[0], [to, aTo, bTo]);
+  const fetchTo   = useMemo(() => [to, aTo, bTo].sort().reverse()[0], [to, aTo, bTo]);
 
   useEffect(() => {
     let cancel = false;
     setLoading(true);
-    getDocs(query(
-      collection(db, 'productivity'),
-      where('date', '>=', fetchFrom),
-      where('date', '<=', fetchTo),
-    )).then((snap) => {
+
+    Promise.all([
+      // 1) 생산성 문서 (수동 입력 우선)
+      getDocs(query(
+        collection(db, 'productivity'),
+        where('date', '>=', fetchFrom),
+        where('date', '<=', fetchTo),
+      )),
+      // 2) items (자동 pot/bat 계산용)
+      getDocs(query(collectionGroup(db, 'items'),
+        where('date', '>=', fetchFrom), where('date', '<=', fetchTo))),
+      // 3) 출근 기록 (자동 attend/leave 계산용)
+      getDocs(query(collectionGroup(db, 'records'),
+        where('date', '>=', fetchFrom), where('date', '<=', fetchTo))),
+      // 4) 제품 DB (냄비/바트 분류)
+      getDocs(collection(db, 'productSettings')),
+      // 5) 멤버
+      getDocs(collection(db, 'members')),
+    ]).then(([prodSnap, itemsSnap, recSnap, settingsSnap, memberSnap]) => {
       if (cancel) return;
+
+      // productSettings → 정규화 키 맵
+      const settingsByNorm = new Map<string, ProductSetting>();
+      settingsSnap.forEach((d) => {
+        const s = d.data() as ProductSetting;
+        settingsByNorm.set(normalizeCode(d.id), s);
+        settingsByNorm.set(normalizeCode(convertErpCode(d.id)), s);
+        settingsByNorm.set(normalizeCode(canonicalShort(d.id)), s);
+      });
+
+      // members (active)
+      const members: Member[] = [];
+      memberSnap.forEach((d) => {
+        const m = d.data() as Member;
+        if (m.active !== false) members.push({ ...m, id: d.id });
+      });
+
+      // items per date → pot/bat 합
+      const potBatByDate: Record<string, { pot: number; bat: number }> = {};
+      itemsSnap.forEach((d) => {
+        const it = d.data() as Item;
+        if (!it.date) return;
+        const qty = it.totalQty || 0;
+        if (qty <= 0) return;
+        const s =
+          settingsByNorm.get(normalizeCode(it.code)) ||
+          settingsByNorm.get(normalizeCode(convertErpCode(it.code))) ||
+          settingsByNorm.get(normalizeCode(canonicalShort(it.code)));
+        if (!potBatByDate[it.date]) potBatByDate[it.date] = { pot: 0, bat: 0 };
+        if (s?.type === '냄비') potBatByDate[it.date].pot += qty;
+        else if (s?.type === '바트') potBatByDate[it.date].bat += qty;
+      });
+
+      // attendance records → date별 그룹화
+      const recsByDate: Record<string, Record<string, AttendanceRecord>> = {};
+      recSnap.forEach((d) => {
+        const r = d.data() as AttendanceRecord;
+        if (!r.date || !r.memberId) return;
+        if (!recsByDate[r.date]) recsByDate[r.date] = {};
+        recsByDate[r.date][r.memberId] = r;
+      });
+
+      // 수동 입력 (productivity 문서)
+      const docByDate: Record<string, any> = {};
+      prodSnap.forEach((d) => { docByDate[d.id] = d.data(); });
+
+      // 통합: fetch 범위 모든 날짜 (월요일~일요일, 토요일 제외 안 함, 나중에 row 단계에서 처리)
+      const allDates = new Set<string>([
+        ...Object.keys(potBatByDate),
+        ...Object.keys(recsByDate),
+        ...Object.keys(docByDate),
+      ]);
+
       const list: DayProd[] = [];
-      snap.forEach((d) => {
-        const data = d.data();
+      allDates.forEach((date) => {
+        const doc = docByDate[date] || {};
+        const auto = potBatByDate[date] || { pot: 0, bat: 0 };
+        const attSummary = summarizeAttendance(members, recsByDate[date] || {}, date);
         list.push({
-          date: d.id,
-          pot: Number(data.pot) || 0,
-          bat: Number(data.bat) || 0,
-          attend: Number(data.attend) || 0,
-          leave: Number(data.leave) || 0,
-          bg_people: data.bg_people, bg_start: data.bg_start, bg_end: data.bg_end,
-          ck_people: data.ck_people, ck_start: data.ck_start, ck_end: data.ck_end,
-          fl_people: data.fl_people, fl_start: data.fl_start, fl_end: data.fl_end,
-          pk_people: data.pk_people, pk_start: data.pk_start, pk_end: data.pk_end,
+          date,
+          pot: Number(doc.pot ?? auto.pot) || 0,
+          bat: Number(doc.bat ?? auto.bat) || 0,
+          attend: Number(doc.attend ?? attSummary.presentN) || 0,
+          leave: Number(doc.leave ?? attSummary.leaveDays) || 0,
+          bg_people: doc.bg_people, bg_start: doc.bg_start, bg_end: doc.bg_end,
+          ck_people: doc.ck_people, ck_start: doc.ck_start, ck_end: doc.ck_end,
+          fl_people: doc.fl_people, fl_start: doc.fl_start, fl_end: doc.fl_end,
+          pk_people: doc.pk_people, pk_start: doc.pk_start, pk_end: doc.pk_end,
         });
       });
       list.sort((a, b) => a.date.localeCompare(b.date));
@@ -118,15 +197,21 @@ export default function Productivity() {
     return () => { cancel = true; };
   }, [fetchFrom, fetchTo]);
 
-  const inRange = (s: string, e: string) => days.filter((d) => d.date >= s && d.date <= e);
+  /** 빈 날(생산 0 & stage 인원 모두 없음) 또는 토요일은 분석에서 제외 */
+  const isMeaningful = (d: DayProd) => {
+    if (dowOf(d.date) === 6) return false;
+    if ((d.pot || 0) + (d.bat || 0) > 0) return true;
+    return !!(d.bg_people || d.ck_people || d.fl_people || d.pk_people);
+  };
+
+  const inRange = (s: string, e: string) =>
+    days.filter((d) => d.date >= s && d.date <= e && isMeaningful(d));
   const rangeDays = useMemo(() => inRange(from, to), [days, from, to]);
 
-  // 요일별 평균 (월~금+일, 토요일 제외)
   const dowAvg = useMemo(() => {
     const buckets: Record<number, { bg: number[]; ck: number[]; fl: number[]; pk: number[]; total: number[] }> = {};
     rangeDays.forEach((d) => {
       const dow = dowOf(d.date);
-      if (dow === 6) return; // 토 제외
       const r = computeRow(d);
       if (!buckets[dow]) buckets[dow] = { bg: [], ck: [], fl: [], pk: [], total: [] };
       buckets[dow].bg.push(r.bg.prod);
@@ -147,14 +232,12 @@ export default function Productivity() {
     }));
   }, [rangeDays]);
 
-  // 비교 A vs B (요일별 평균 비교)
   const compare = useMemo(() => {
     const computeDow = (s: string, e: string) => {
       const list = inRange(s, e);
       const map: Record<number, { bg: number[]; ck: number[]; fl: number[]; pk: number[]; total: number[] }> = {};
       list.forEach((d) => {
         const dow = dowOf(d.date);
-        if (dow === 6) return;
         const r = computeRow(d);
         if (!map[dow]) map[dow] = { bg: [], ck: [], fl: [], pk: [], total: [] };
         map[dow].bg.push(r.bg.prod);
@@ -167,7 +250,8 @@ export default function Productivity() {
     };
     const A = computeDow(aFrom, aTo);
     const B = computeDow(bFrom, bTo);
-    const rows = [1, 2, 3, 4, 5, 0].map((dow) => {
+    const diff = (av: number, bv: number) => (av > 0 ? ((bv - av) / av) * 100 : 0);
+    return [1, 2, 3, 4, 5, 0].map((dow) => {
       const a = {
         bg: avg(A[dow]?.bg || []), ck: avg(A[dow]?.ck || []),
         fl: avg(A[dow]?.fl || []), pk: avg(A[dow]?.pk || []),
@@ -178,55 +262,46 @@ export default function Productivity() {
         fl: avg(B[dow]?.fl || []), pk: avg(B[dow]?.pk || []),
         total: avg(B[dow]?.total || []),
       };
-      const diff = (av: number, bv: number) => (av > 0 ? ((bv - av) / av) * 100 : 0);
       return {
-        dow, label: `${DOW_LABELS[dow]}요일`,
-        a, b,
+        dow, label: `${DOW_LABELS[dow]}요일`, a, b,
         dbg: diff(a.bg, b.bg), dck: diff(a.ck, b.ck),
         dfl: diff(a.fl, b.fl), dpk: diff(a.pk, b.pk),
         dtotal: diff(a.total, b.total),
       };
     });
-    return rows;
   }, [days, aFrom, aTo, bFrom, bTo]);
+
+  const shiftMonth = (delta: number) => {
+    const [y, m] = month.split('-').map(Number);
+    const d = new Date(y, m - 1 + delta, 1);
+    setMonth(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`);
+  };
 
   return (
     <div className="space-y-5">
-      {/* 날짜 범위 */}
+      {/* 월 선택 */}
       <div className="bg-white border rounded-lg p-4 flex items-center gap-3 flex-wrap">
         <span className="font-bold text-gray-800">📊 생산성 분석</span>
         <span className="text-gray-300">|</span>
-        <label className="text-xs text-gray-600">기간</label>
-        <input type="date" value={from} onChange={(e) => e.target.value && setFrom(e.target.value)} className="border rounded px-2 py-1 text-sm" />
-        <span className="text-gray-400">~</span>
-        <input type="date" value={to} onChange={(e) => e.target.value && setTo(e.target.value)} className="border rounded px-2 py-1 text-sm" />
+        <button onClick={() => shiftMonth(-1)} className="w-9 h-9 flex items-center justify-center rounded-full hover:bg-gray-100">◀</button>
+        <input
+          type="month"
+          value={month}
+          onChange={(e) => e.target.value && setMonth(e.target.value)}
+          className="border rounded px-2 py-1 text-sm font-bold"
+        />
+        <button onClick={() => shiftMonth(1)} className="w-9 h-9 flex items-center justify-center rounded-full hover:bg-gray-100">▶</button>
         <span className="text-xs text-gray-500 ml-1">{rangeDays.length}일 데이터</span>
         {loading && <span className="text-xs text-blue-600">불러오는 중...</span>}
-        <div className="ml-auto flex gap-1.5">
+        <div className="ml-auto">
           <button
-            onClick={() => { setFrom(today.slice(0, 8) + '01'); setTo(today); }}
+            onClick={() => setMonth(thisMonth)}
             className="px-2.5 py-1 text-xs rounded border hover:bg-gray-50"
           >이번 달</button>
-          <button
-            onClick={() => {
-              const t = new Date();
-              setFrom(ymd(new Date(t.getFullYear(), t.getMonth() - 1, 1)));
-              setTo(ymd(new Date(t.getFullYear(), t.getMonth(), 0)));
-            }}
-            className="px-2.5 py-1 text-xs rounded border hover:bg-gray-50"
-          >지난 달</button>
-          <button
-            onClick={() => {
-              const t = new Date();
-              setFrom(ymd(new Date(t.getTime() - 29 * 86400000)));
-              setTo(today);
-            }}
-            className="px-2.5 py-1 text-xs rounded border hover:bg-gray-50"
-          >최근 30일</button>
         </div>
       </div>
 
-      {/* 요일별 평균 카드 + 차트 */}
+      {/* 요일별 평균 차트 + 표 */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div className="bg-white border rounded-lg p-4">
           <h3 className="font-bold text-gray-800 mb-3">요일별 평균 생산성 <span className="text-xs text-gray-500 font-normal">(토요일 제외)</span></h3>
@@ -341,11 +416,11 @@ export default function Productivity() {
         </div>
       </div>
 
-      {/* 일별 상세 표 */}
+      {/* 일별 상세 */}
       <div className="bg-white border rounded-lg overflow-hidden">
         <div className="px-4 py-2.5 border-b bg-slate-50 font-bold text-gray-800 text-sm flex items-center gap-2">
-          <span>📋 일별 상세</span>
-          <span className="text-xs text-gray-500 font-normal">{rangeDays.length}일</span>
+          <span>📋 일별 상세 — {month}</span>
+          <span className="text-xs text-gray-500 font-normal">{rangeDays.length}일 (의미 있는 날)</span>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
@@ -385,9 +460,9 @@ export default function Productivity() {
                   <tr key={d.date} className={sunRow ? 'bg-rose-50' : ''}>
                     <td className="border px-2 py-1 font-mono">{d.date.slice(5)}</td>
                     <td className={`border px-2 py-1 text-center ${dow === 0 ? 'text-red-600' : ''}`}>{dowLabel}</td>
-                    <td className="border px-2 py-1 text-right">{d.pot.toLocaleString()}</td>
-                    <td className="border px-2 py-1 text-right">{d.bat.toLocaleString()}</td>
-                    <td className="border px-2 py-1 text-right font-bold">{r.total.toLocaleString()}</td>
+                    <td className="border px-2 py-1 text-right">{d.pot ? d.pot.toLocaleString() : '-'}</td>
+                    <td className="border px-2 py-1 text-right">{d.bat ? d.bat.toLocaleString() : '-'}</td>
+                    <td className="border px-2 py-1 text-right font-bold">{r.total ? r.total.toLocaleString() : '-'}</td>
                     {(['bg','ck','fl','pk'] as const).map((k) => {
                       const peopleKey = `${k}_people` as keyof DayProd;
                       const people = d[peopleKey] as number | undefined;
@@ -407,7 +482,7 @@ export default function Productivity() {
                 );
               })}
               {rangeDays.length === 0 && (
-                <tr><td colSpan={17} className="text-center text-gray-400 py-8">이 기간에 입력된 생산성 데이터가 없습니다</td></tr>
+                <tr><td colSpan={17} className="text-center text-gray-400 py-8">{loading ? '불러오는 중...' : '데이터가 없습니다 — 조직도→생산성 입력 페이지에서 입력하세요'}</td></tr>
               )}
             </tbody>
           </table>
@@ -421,7 +496,7 @@ export default function Productivity() {
 function DowBarChart({ data }: { data: { label: string; bg: number; ck: number; fl: number; pk: number; total: number }[] }) {
   const W = 580, H = 220, padL = 32, padR = 8, padT = 10, padB = 28;
   const maxVal = Math.max(50, ...data.flatMap((d) => [d.bg, d.ck, d.fl, d.pk, d.total]));
-  const niceMax = Math.ceil(maxVal / 100) * 100;
+  const niceMax = Math.ceil(maxVal / 100) * 100 || 100;
   const innerW = W - padL - padR;
   const innerH = H - padT - padB;
   const bandW = innerW / data.length;
@@ -433,7 +508,7 @@ function DowBarChart({ data }: { data: { label: string; bg: number; ck: number; 
       {Array.from({ length: ticks + 1 }, (_, i) => i * (niceMax / ticks)).map((v) => (
         <g key={v}>
           <line x1={padL} x2={W - padR} y1={yFor(v)} y2={yFor(v)} stroke="#eee" />
-          <text x={padL - 4} y={yFor(v) + 3} fontSize={9} textAnchor="end" fill="#999">{v}</text>
+          <text x={padL - 4} y={yFor(v) + 3} fontSize={9} textAnchor="end" fill="#999">{Math.round(v)}</text>
         </g>
       ))}
       {data.map((d, i) => {
@@ -448,7 +523,6 @@ function DowBarChart({ data }: { data: { label: string; bg: number; ck: number; 
           </g>
         );
       })}
-      {/* 전체 line + 라벨 */}
       <polyline
         fill="none"
         stroke={TOTAL_COLOR}
@@ -472,7 +546,7 @@ function CompareChart({ rows }: { rows: { label: string; a: { total: number }; b
   const innerW = W - padL - padR;
   const innerH = H - padT - padB;
   const maxVal = Math.max(50, ...rows.flatMap((r) => [r.a.total, r.b.total]));
-  const niceMax = Math.ceil(maxVal / 100) * 100;
+  const niceMax = Math.ceil(maxVal / 100) * 100 || 100;
   const maxAbsPct = Math.max(20, ...rows.map((r) => Math.abs(r.dtotal)));
   const bandW = innerW / rows.length;
   const barW = (bandW - 12) / 2;
@@ -498,7 +572,6 @@ function CompareChart({ rows }: { rows: { label: string; a: { total: number }; b
           </g>
         );
       })}
-      {/* 증감율 라인 (오른쪽 축) */}
       <polyline
         fill="none"
         stroke="#f59e0b"
@@ -511,11 +584,9 @@ function CompareChart({ rows }: { rows: { label: string; a: { total: number }; b
           <text x={padL + i * bandW + bandW / 2} y={yForPct(r.dtotal) - 6} fontSize={9} textAnchor="middle" fill="#b45309" fontWeight="bold">{r.dtotal ? `${r.dtotal > 0 ? '+' : ''}${r.dtotal.toFixed(1)}%` : ''}</text>
         </g>
       ))}
-      {/* 우측 축 (%) */}
       {[-1, -0.5, 0, 0.5, 1].map((p) => (
         <text key={p} x={W - padR + 4} y={padT + innerH / 2 - p * (innerH / 2) + 3} fontSize={9} fill="#b45309">{Math.round(maxAbsPct * p)}%</text>
       ))}
-      {/* 0% 기준선 */}
       <line x1={padL} x2={W - padR} y1={padT + innerH / 2} y2={padT + innerH / 2} stroke="#fbbf24" strokeDasharray="3,3" />
     </svg>
   );
