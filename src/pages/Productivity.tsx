@@ -608,37 +608,42 @@ function DowBarChart({ data }: { data: { label: string; bg: number; ck: number; 
   const ticks = 4;
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto">
+      {/* 1. 가로 격자선 */}
       {Array.from({ length: ticks + 1 }, (_, i) => i * (niceMax / ticks)).map((v) => (
         <g key={v}>
           <line x1={padL} x2={W - padR} y1={yFor(v)} y2={yFor(v)} stroke="#cbd5e1" strokeWidth={0.8} />
           <text x={padL - 4} y={yFor(v) + 3} fontSize={10} textAnchor="end" fill="#64748b">{Math.round(v)}</text>
         </g>
       ))}
+      {/* 2. 막대 */}
       {data.map((d, i) => {
         const xBase = padL + i * bandW + 4;
         return (
-          <g key={d.label}>
+          <g key={'bar' + d.label}>
             <rect x={xBase + barW * 0} y={yFor(d.bg)} width={barW - 1} height={Math.max(0, innerH - (yFor(d.bg) - padT))} fill={STAGES[0].color} />
             <rect x={xBase + barW * 1} y={yFor(d.ck)} width={barW - 1} height={Math.max(0, innerH - (yFor(d.ck) - padT))} fill={STAGES[1].color} />
             <rect x={xBase + barW * 2} y={yFor(d.fl)} width={barW - 1} height={Math.max(0, innerH - (yFor(d.fl) - padT))} fill={STAGES[2].color} />
             <rect x={xBase + barW * 3} y={yFor(d.pk)} width={barW - 1} height={Math.max(0, innerH - (yFor(d.pk) - padT))} fill={STAGES[3].color} />
-            <text x={xBase + (bandW - 8) / 2} y={H - 10} fontSize={11} textAnchor="middle" fill="#334155" fontWeight="600">{d.label}</text>
           </g>
         );
       })}
+      {/* 3. 전체 라인 (라벨 없이) */}
       <polyline
         fill="none"
         stroke={TOTAL_COLOR}
-        strokeWidth={2.5}
+        strokeWidth={3}
         points={data.map((d, i) => `${padL + i * bandW + bandW / 2},${yFor(d.total)}`).join(' ')}
       />
       {data.map((d, i) => (
-        <g key={'t' + i}>
-          <circle cx={padL + i * bandW + bandW / 2} cy={yFor(d.total)} r={3.5} fill={TOTAL_COLOR} />
-          {d.total > 0 && (
-            <text x={padL + i * bandW + bandW / 2} y={Math.max(padT + 8, yFor(d.total) - 8)} fontSize={11} textAnchor="middle" fill={TOTAL_COLOR} fontWeight="bold" stroke="white" strokeWidth={5} paintOrder="stroke">{d.total}</text>
-          )}
-        </g>
+        <circle key={'tdot' + i} cx={padL + i * bandW + bandW / 2} cy={yFor(d.total)} r={4} fill={TOTAL_COLOR} stroke="white" strokeWidth={1.5} />
+      ))}
+      {/* 4. X축 (요일) */}
+      {data.map((d, i) => (
+        <text key={'x' + i} x={padL + i * bandW + 4 + (bandW - 8) / 2} y={H - 10} fontSize={11} textAnchor="middle" fill="#334155" fontWeight="600">{d.label}</text>
+      ))}
+      {/* 5. 전체 라벨 — 항상 맨 위, 흰 외곽선 */}
+      {data.map((d, i) => d.total > 0 && (
+        <text key={'tlab' + i} x={padL + i * bandW + bandW / 2} y={Math.max(padT + 10, yFor(d.total) - 10)} fontSize={12} textAnchor="middle" fill={TOTAL_COLOR} fontWeight="bold" stroke="white" strokeWidth={6} paintOrder="stroke">{d.total}</text>
       ))}
     </svg>
   );
@@ -655,50 +660,91 @@ function CompareChart({ rows }: { rows: { label: string; a: { total: number }; b
   const barW = (bandW - 12) / 2;
   const yFor = (v: number) => padT + innerH - (v / niceMax) * innerH;
   const yForPct = (v: number) => padT + innerH / 2 - (v / maxAbsPct) * (innerH / 2);
+  // 막대 라벨 위치 계산 (위로 빠지면 클램프)
+  const barLabelY = (v: number) => Math.max(padT + 10, yFor(v) - 6);
   return (
     <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto">
+      {/* 1. 가로 격자선 */}
       {[0, 0.25, 0.5, 0.75, 1].map((p) => (
         <g key={p}>
           <line x1={padL} x2={W - padR} y1={padT + innerH * p} y2={padT + innerH * p} stroke="#cbd5e1" strokeWidth={0.8} />
           <text x={padL - 4} y={padT + innerH * p + 3} fontSize={10} textAnchor="end" fill="#64748b">{Math.round(niceMax * (1 - p))}</text>
         </g>
       ))}
+      {/* 우측 % 축 라벨 */}
+      {[-1, -0.5, 0, 0.5, 1].map((p) => (
+        <text key={p} x={W - padR + 4} y={padT + innerH / 2 - p * (innerH / 2) + 3} fontSize={10} fill={PCT_COLOR} fontWeight="600">{Math.round(maxAbsPct * p)}%</text>
+      ))}
+      {/* 0% 기준선 */}
+      <line x1={padL} x2={W - padR} y1={padT + innerH / 2} y2={padT + innerH / 2} stroke={PCT_COLOR} strokeDasharray="3,3" opacity={0.4} />
+
+      {/* 2. 막대 */}
       {rows.map((r, i) => {
         const xBase = padL + i * bandW + 6;
         return (
-          <g key={r.label}>
+          <g key={'bar' + r.label}>
             <rect x={xBase} y={yFor(r.a.total)} width={barW} height={Math.max(0, innerH - (yFor(r.a.total) - padT))} fill="#3b82f6" />
             <rect x={xBase + barW} y={yFor(r.b.total)} width={barW} height={Math.max(0, innerH - (yFor(r.b.total) - padT))} fill="#ef4444" />
-            <text x={xBase + barW / 2} y={Math.max(padT + 10, yFor(r.a.total) - 6)} fontSize={11} textAnchor="middle" fill="#1e3a8a" fontWeight="bold" stroke="white" strokeWidth={5} paintOrder="stroke">{r.a.total || ''}</text>
-            <text x={xBase + barW + barW / 2} y={Math.max(padT + 10, yFor(r.b.total) - 6)} fontSize={11} textAnchor="middle" fill="#7f1d1d" fontWeight="bold" stroke="white" strokeWidth={5} paintOrder="stroke">{r.b.total || ''}</text>
-            <text x={xBase + barW} y={H - 10} fontSize={11} textAnchor="middle" fill="#334155" fontWeight="600">{r.label}</text>
           </g>
         );
       })}
+
+      {/* 3. 증감율 라인 (라벨 없이) */}
       <polyline
         fill="none"
         stroke={PCT_COLOR}
-        strokeWidth={2.5}
+        strokeWidth={3.5}
         points={rows.map((r, i) => `${padL + i * bandW + bandW / 2},${yForPct(r.dtotal)}`).join(' ')}
       />
       {rows.map((r, i) => {
         const cx = padL + i * bandW + bandW / 2;
         const cy = yForPct(r.dtotal);
-        // 위/아래 자동 위치: 위로 가면 안 잘리게 padT+4 이상 보장
-        const labelY = cy - 8 < padT + 4 ? cy + 14 : cy - 8;
+        return <circle key={'pdot' + i} cx={cx} cy={cy} r={4} fill={PCT_COLOR} stroke="white" strokeWidth={1.5} />;
+      })}
+
+      {/* 4. X축 (요일) */}
+      {rows.map((r, i) => (
+        <text key={'x' + i} x={padL + i * bandW + 6 + barW} y={H - 10} fontSize={11} textAnchor="middle" fill="#334155" fontWeight="600">{r.label}</text>
+      ))}
+
+      {/* 5. 막대 값 라벨 (위에 표시 — 흰 외곽선으로 라인·격자 가림) */}
+      {rows.map((r, i) => {
+        const xBase = padL + i * bandW + 6;
         return (
-          <g key={'p' + i}>
-            <circle cx={cx} cy={cy} r={3.5} fill={PCT_COLOR} />
-            <text x={cx} y={labelY} fontSize={11} textAnchor="middle" fill={PCT_COLOR} fontWeight="bold" stroke="white" strokeWidth={5} paintOrder="stroke">
-              {r.dtotal ? `${r.dtotal > 0 ? '+' : ''}${r.dtotal.toFixed(1)}%` : ''}
-            </text>
+          <g key={'lab' + i}>
+            <text x={xBase + barW / 2} y={barLabelY(r.a.total)} fontSize={11} textAnchor="middle" fill="#1e3a8a" fontWeight="bold" stroke="white" strokeWidth={6} paintOrder="stroke">{r.a.total || ''}</text>
+            <text x={xBase + barW + barW / 2} y={barLabelY(r.b.total)} fontSize={11} textAnchor="middle" fill="#7f1d1d" fontWeight="bold" stroke="white" strokeWidth={6} paintOrder="stroke">{r.b.total || ''}</text>
           </g>
         );
       })}
-      {[-1, -0.5, 0, 0.5, 1].map((p) => (
-        <text key={p} x={W - padR + 4} y={padT + innerH / 2 - p * (innerH / 2) + 3} fontSize={10} fill={PCT_COLOR} fontWeight="600">{Math.round(maxAbsPct * p)}%</text>
-      ))}
-      <line x1={padL} x2={W - padR} y1={padT + innerH / 2} y2={padT + innerH / 2} stroke={PCT_COLOR} strokeDasharray="3,3" opacity={0.4} />
+
+      {/* 6. 증감율 % 라벨 — 막대 값 라벨과 겹치지 않게 자동 배치 */}
+      {rows.map((r, i) => {
+        const cx = padL + i * bandW + bandW / 2;
+        const cy = yForPct(r.dtotal);
+        // 막대 라벨이 점근 위치에 오면 점 아래로 라벨 배치
+        const aY = barLabelY(r.a.total);
+        const bY = barLabelY(r.b.total);
+        const nearBarLabel = Math.abs(cy - aY) < 14 || Math.abs(cy - bY) < 14;
+        const wouldClip = cy - 10 < padT + 4;
+        const labelY = (nearBarLabel || wouldClip) ? cy + 16 : cy - 10;
+        return (
+          <text
+            key={'plab' + i}
+            x={cx}
+            y={labelY}
+            fontSize={11}
+            textAnchor="middle"
+            fill={PCT_COLOR}
+            fontWeight="bold"
+            stroke="white"
+            strokeWidth={6}
+            paintOrder="stroke"
+          >
+            {r.dtotal ? `${r.dtotal > 0 ? '+' : ''}${r.dtotal.toFixed(1)}%` : ''}
+          </text>
+        );
+      })}
     </svg>
   );
 }
