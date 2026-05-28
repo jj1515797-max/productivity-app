@@ -6,6 +6,31 @@ import type { AttendanceRecord, Item, Member, ProductSetting } from '../types';
 import { summarizeAttendance } from '../lib/attendance';
 import { canonicalShort, convertErpCode, normalizeCode } from '../lib/codeUtil';
 
+/* ===== localStorage 캐시 ===== */
+const CACHE_PREFIX = 'productivity:';
+const TTL_PAST    = 24 * 60 * 60 * 1000; // 과거 월: 24h
+const TTL_CURRENT = 5 * 60 * 1000;       // 현재 월: 5분
+
+function getCache<T>(key: string, ttlMs: number): { data: T; ts: number } | null {
+  try {
+    const raw = localStorage.getItem(CACHE_PREFIX + key);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as { ts: number; data: T };
+    if (Date.now() - parsed.ts > ttlMs) return null;
+    return parsed;
+  } catch { return null; }
+}
+function setCache<T>(key: string, data: T) {
+  try { localStorage.setItem(CACHE_PREFIX + key, JSON.stringify({ ts: Date.now(), data })); } catch {}
+}
+function clearAllProdCache() {
+  try {
+    Object.keys(localStorage).forEach((k) => {
+      if (k.startsWith(CACHE_PREFIX)) localStorage.removeItem(k);
+    });
+  } catch {}
+}
+
 type StageKey = 'bg' | 'ck' | 'fl' | 'pk';
 const STAGES: { key: StageKey; label: string; color: string }[] = [
   { key: 'bg', label: '배합',   color: '#3b82f6' },
@@ -91,38 +116,80 @@ export default function Productivity() {
   });
   const [bTo, setBTo] = useState(today);
 
-  const [days, setDays] = useState<DayProd[]>([]);
+  const [daysByMonth, setDaysByMonth] = useState<Record<string, DayProd[]>>({});
   const [loading, setLoading] = useState(false);
+  const [refreshTick, setRefreshTick] = useState(0);
+  const [cacheStatus, setCacheStatus] = useState<{ hit: number; miss: number }>({ hit: 0, miss: 0 });
 
-  // 한 번에 전체 범위 fetch
-  const fetchFrom = useMemo(() => [from, aFrom, bFrom].sort()[0], [from, aFrom, bFrom]);
-  const fetchTo   = useMemo(() => [to, aTo, bTo].sort().reverse()[0], [to, aTo, bTo]);
+  // 필요한 월들: 선택 월 + A·B 범위 포괄 월
+  const neededMonths = useMemo(() => {
+    const s = new Set<string>([month]);
+    const addRange = (f: string, t: string) => {
+      let cur = f.slice(0, 7);
+      const last = t.slice(0, 7);
+      while (cur <= last) {
+        s.add(cur);
+        const [y, m] = cur.split('-').map(Number);
+        const next = new Date(y, m, 1);
+        cur = `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, '0')}`;
+        if (cur > last + '-99') break; // safety
+      }
+    };
+    addRange(aFrom, aTo);
+    addRange(bFrom, bTo);
+    return Array.from(s).sort();
+  }, [month, aFrom, aTo, bFrom, bTo]);
+
+  const days = useMemo(() => {
+    const all: DayProd[] = [];
+    neededMonths.forEach((m) => {
+      const list = daysByMonth[m] || [];
+      list.forEach((d) => all.push(d));
+    });
+    return all;
+  }, [daysByMonth, neededMonths]);
+
+  const thisMonthKey = today.slice(0, 7);
 
   useEffect(() => {
     let cancel = false;
+
+    // 1) 캐시 hit/miss 분류
+    const hits: Record<string, DayProd[]> = {};
+    const misses: string[] = [];
+    neededMonths.forEach((m) => {
+      const ttl = m === thisMonthKey ? TTL_CURRENT : TTL_PAST;
+      const cached = refreshTick === 0 ? getCache<DayProd[]>(m, ttl) : null;
+      if (cached) hits[m] = cached.data;
+      else misses.push(m);
+    });
+    if (Object.keys(hits).length) {
+      setDaysByMonth((prev) => ({ ...prev, ...hits }));
+    }
+    setCacheStatus({ hit: Object.keys(hits).length, miss: misses.length });
+
+    if (misses.length === 0) return;
     setLoading(true);
 
+    // 2) miss 인 월들만 한꺼번에 fetch (월 범위 합치기)
+    const fetchFrom = misses.sort()[0] + '-01';
+    const lastMissMonth = misses.sort()[misses.length - 1];
+    const [ly, lm] = lastMissMonth.split('-').map(Number);
+    const lastDay = new Date(ly, lm, 0).getDate();
+    const fetchTo = `${lastMissMonth}-${String(lastDay).padStart(2, '0')}`;
+
     Promise.all([
-      // 1) 생산성 문서 (수동 입력 우선)
-      getDocs(query(
-        collection(db, 'productivity'),
-        where('date', '>=', fetchFrom),
-        where('date', '<=', fetchTo),
-      )),
-      // 2) items (자동 pot/bat 계산용)
+      getDocs(query(collection(db, 'productivity'),
+        where('date', '>=', fetchFrom), where('date', '<=', fetchTo))),
       getDocs(query(collectionGroup(db, 'items'),
         where('date', '>=', fetchFrom), where('date', '<=', fetchTo))),
-      // 3) 출근 기록 (자동 attend/leave 계산용)
       getDocs(query(collectionGroup(db, 'records'),
         where('date', '>=', fetchFrom), where('date', '<=', fetchTo))),
-      // 4) 제품 DB (냄비/바트 분류)
       getDocs(collection(db, 'productSettings')),
-      // 5) 멤버
       getDocs(collection(db, 'members')),
     ]).then(([prodSnap, itemsSnap, recSnap, settingsSnap, memberSnap]) => {
       if (cancel) return;
 
-      // productSettings → 정규화 키 맵
       const settingsByNorm = new Map<string, ProductSetting>();
       settingsSnap.forEach((d) => {
         const s = d.data() as ProductSetting;
@@ -131,14 +198,12 @@ export default function Productivity() {
         settingsByNorm.set(normalizeCode(canonicalShort(d.id)), s);
       });
 
-      // members (active)
       const members: Member[] = [];
       memberSnap.forEach((d) => {
-        const m = d.data() as Member;
-        if (m.active !== false) members.push({ ...m, id: d.id });
+        const mm = d.data() as Member;
+        if (mm.active !== false) members.push({ ...mm, id: d.id });
       });
 
-      // items per date → pot/bat 합
       const potBatByDate: Record<string, { pot: number; bat: number }> = {};
       itemsSnap.forEach((d) => {
         const it = d.data() as Item;
@@ -154,7 +219,6 @@ export default function Productivity() {
         else if (s?.type === '바트') potBatByDate[it.date].bat += qty;
       });
 
-      // attendance records → date별 그룹화
       const recsByDate: Record<string, Record<string, AttendanceRecord>> = {};
       recSnap.forEach((d) => {
         const r = d.data() as AttendanceRecord;
@@ -163,23 +227,24 @@ export default function Productivity() {
         recsByDate[r.date][r.memberId] = r;
       });
 
-      // 수동 입력 (productivity 문서)
       const docByDate: Record<string, any> = {};
       prodSnap.forEach((d) => { docByDate[d.id] = d.data(); });
 
-      // 통합: fetch 범위 모든 날짜 (월요일~일요일, 토요일 제외 안 함, 나중에 row 단계에서 처리)
+      // 월별로 결과 분리
+      const byMonth: Record<string, DayProd[]> = {};
+      misses.forEach((m) => { byMonth[m] = []; });
       const allDates = new Set<string>([
         ...Object.keys(potBatByDate),
         ...Object.keys(recsByDate),
         ...Object.keys(docByDate),
       ]);
-
-      const list: DayProd[] = [];
       allDates.forEach((date) => {
+        const mk = date.slice(0, 7);
+        if (!misses.includes(mk)) return;
         const doc = docByDate[date] || {};
         const auto = potBatByDate[date] || { pot: 0, bat: 0 };
         const attSummary = summarizeAttendance(members, recsByDate[date] || {}, date);
-        list.push({
+        byMonth[mk].push({
           date,
           pot: Number(doc.pot ?? auto.pot) || 0,
           bat: Number(doc.bat ?? auto.bat) || 0,
@@ -191,11 +256,15 @@ export default function Productivity() {
           pk_people: doc.pk_people, pk_start: doc.pk_start, pk_end: doc.pk_end,
         });
       });
-      list.sort((a, b) => a.date.localeCompare(b.date));
-      setDays(list);
+      // 각 월 정렬 + 캐시 저장
+      Object.entries(byMonth).forEach(([mk, list]) => {
+        list.sort((a, b) => a.date.localeCompare(b.date));
+        setCache(mk, list);
+      });
+      setDaysByMonth((prev) => ({ ...prev, ...byMonth }));
     }).finally(() => { if (!cancel) setLoading(false); });
     return () => { cancel = true; };
-  }, [fetchFrom, fetchTo]);
+  }, [neededMonths.join(','), refreshTick, thisMonthKey]);
 
   /** 빈 날(생산 0 & stage 인원 모두 없음) 또는 토요일은 분석에서 제외 */
   const isMeaningful = (d: DayProd) => {
@@ -293,7 +362,18 @@ export default function Productivity() {
         <button onClick={() => shiftMonth(1)} className="w-9 h-9 flex items-center justify-center rounded-full hover:bg-gray-100">▶</button>
         <span className="text-xs text-gray-500 ml-1">{rangeDays.length}일 데이터</span>
         {loading && <span className="text-xs text-blue-600">불러오는 중...</span>}
-        <div className="ml-auto">
+        {!loading && cacheStatus.hit > 0 && cacheStatus.miss === 0 && (
+          <span className="text-[11px] text-gray-400 flex items-center gap-1.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+            캐시 사용중
+          </span>
+        )}
+        <div className="ml-auto flex gap-1.5">
+          <button
+            onClick={() => { clearAllProdCache(); setRefreshTick((t) => t + 1); }}
+            className="px-2.5 py-1 text-xs rounded border hover:bg-gray-50"
+            title="모든 캐시 무시하고 다시 불러오기"
+          >🔄</button>
           <button
             onClick={() => setMonth(thisMonth)}
             className="px-2.5 py-1 text-xs rounded border hover:bg-gray-50"
