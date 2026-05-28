@@ -183,11 +183,37 @@ export default function Productivity() {
         where('date', '>=', fetchFrom), where('date', '<=', fetchTo))),
       getDocs(query(collectionGroup(db, 'items'),
         where('date', '>=', fetchFrom), where('date', '<=', fetchTo))),
-      getDocs(query(collectionGroup(db, 'records'),
-        where('date', '>=', fetchFrom), where('date', '<=', fetchTo))),
       getDocs(collection(db, 'productSettings')),
       getDocs(collection(db, 'members')),
-    ]).then(([prodSnap, itemsSnap, recSnap, settingsSnap, memberSnap]) => {
+    ]).then(async ([prodSnap, itemsSnap, settingsSnap, memberSnap]) => {
+      if (cancel) return;
+
+      // 출근 기록은 각 미스 월의 각 날짜를 개별 fetch (collectionGroup 인덱스 회피)
+      // 단, productivity 문서에 attend/leave 가 이미 저장돼 있으면 그 날짜는 skip
+      const docByDate: Record<string, any> = {};
+      prodSnap.forEach((d) => { docByDate[d.id] = d.data(); });
+
+      // 모든 후보 날짜 (productivity OR items)
+      const candidateDates = new Set<string>(Object.keys(docByDate));
+      itemsSnap.forEach((d) => {
+        const it = d.data() as Item;
+        if (it.date && misses.includes(it.date.slice(0, 7))) candidateDates.add(it.date);
+      });
+
+      const datesNeedingAttendance = Array.from(candidateDates).filter((date) => {
+        const doc = docByDate[date];
+        return !doc || doc.attend === undefined || doc.attend === null;
+      });
+
+      const recsByDate: Record<string, Record<string, AttendanceRecord>> = {};
+      await Promise.all(datesNeedingAttendance.map(async (date) => {
+        try {
+          const snap = await getDocs(collection(db, 'attendance', date, 'records'));
+          const map: Record<string, AttendanceRecord> = {};
+          snap.forEach((d) => { map[d.id] = d.data() as AttendanceRecord; });
+          recsByDate[date] = map;
+        } catch {}
+      }));
       if (cancel) return;
 
       const settingsByNorm = new Map<string, ProductSetting>();
@@ -218,17 +244,6 @@ export default function Productivity() {
         if (s?.type === '냄비') potBatByDate[it.date].pot += qty;
         else if (s?.type === '바트') potBatByDate[it.date].bat += qty;
       });
-
-      const recsByDate: Record<string, Record<string, AttendanceRecord>> = {};
-      recSnap.forEach((d) => {
-        const r = d.data() as AttendanceRecord;
-        if (!r.date || !r.memberId) return;
-        if (!recsByDate[r.date]) recsByDate[r.date] = {};
-        recsByDate[r.date][r.memberId] = r;
-      });
-
-      const docByDate: Record<string, any> = {};
-      prodSnap.forEach((d) => { docByDate[d.id] = d.data(); });
 
       // 월별로 결과 분리
       const byMonth: Record<string, DayProd[]> = {};
@@ -262,6 +277,8 @@ export default function Productivity() {
         setCache(mk, list);
       });
       setDaysByMonth((prev) => ({ ...prev, ...byMonth }));
+    }).catch((err) => {
+      console.error('[Productivity] fetch failed:', err);
     }).finally(() => { if (!cancel) setLoading(false); });
     return () => { cancel = true; };
   }, [neededMonths.join(','), refreshTick, thisMonthKey]);
