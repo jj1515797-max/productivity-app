@@ -738,7 +738,7 @@ function CompareChart({ rows }: { rows: { label: string; a: { total: number }; b
             fill={PCT_COLOR}
             fontWeight="bold"
             stroke="white"
-            strokeWidth={6}
+            strokeWidth={1.5}
             paintOrder="stroke"
           >
             {r.dtotal ? `${r.dtotal > 0 ? '+' : ''}${r.dtotal.toFixed(1)}%` : ''}
