@@ -141,17 +141,25 @@ export default function Remaining() {
     const qtyCol  = header.indexOf('등록수량');
     if (codeCol < 0 || qtyCol < 0) return alert('제품코드 또는 등록수량 열을 찾을 수 없습니다');
 
-    const batch = writeBatch(db);
-    let count = 0;
+    // 같은 코드 합산 (ERP에서 동일 코드가 여러 행에 나뉘어 들어올 수 있음)
+    const byCode = new Map<string, { qty: number; erpCode: string }>();
     for (let i = hIdx + 1; i < lines.length; i++) {
       const r = lines[i];
       const erpCode = (r[codeCol] || '').trim();
       const qty = parseInt(r[qtyCol] || '0', 10);
       if (!erpCode || isNaN(qty) || qty < 0) continue;
       const ourCode = convertErpCode(erpCode);
+      const prev = byCode.get(ourCode);
+      if (prev) prev.qty += qty;
+      else byCode.set(ourCode, { qty, erpCode });
+    }
+
+    const batch = writeBatch(db);
+    let count = 0;
+    byCode.forEach(({ qty, erpCode }, ourCode) => {
       batch.set(doc(db, 'days', date, 'logistics', ourCode), { code: ourCode, qty, erpCode });
       count++;
-    }
+    });
     await batch.commit();
     setShowModal(false);
     setPasteText('');
