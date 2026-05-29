@@ -466,7 +466,6 @@ export default function Under10() {
                     onClick={() => setSelectedMonth(m)} style={{ cursor: 'pointer' }}>
                     <td className="border px-3 py-1.5 text-center font-semibold">
                       {monthShort(m)}
-                      {hasManual && <span className="ml-1 text-[10px] text-purple-600">✎</span>}
                     </td>
                     <td className="border px-3 py-1.5 text-right">{d.totalProd ? d.totalProd.toLocaleString() : '-'}</td>
                     <td className="border px-3 py-1.5 text-right font-bold">{d.u10Count || '-'}</td>
@@ -629,7 +628,7 @@ function Bars13({ data, color, decimals, onBarClick }: {
             {d.value > 0 && (
               <text x={cx} y={y - 6} fontSize={11} textAnchor="middle" fill="#1f2937" fontWeight="bold"
                 stroke="white" strokeWidth={1.5} paintOrder="stroke">
-                {fmtVal(d.value, decimals)}{d.manual && '*'}
+                {fmtVal(d.value, decimals)}
               </text>
             )}
           </g>
