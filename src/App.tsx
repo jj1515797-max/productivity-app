@@ -10,6 +10,7 @@ import AnalyticsMonthly from './pages/AnalyticsMonthly';
 import Attendance from './pages/Attendance';
 import ProductivityInput from './pages/ProductivityInput';
 import Productivity from './pages/Productivity';
+import Under10 from './pages/Under10';
 import ProductSettings from './pages/ProductSettings';
 import Inventory from './pages/Inventory';
 import Remix from './pages/Remix';
@@ -46,6 +47,7 @@ function MainContainer() {
           <Route path="/analytics/remaining" element={<Remaining />} />
           <Route path="/analytics/remix" element={<Remix />} />
           <Route path="/analytics/productivity" element={<Productivity />} />
+          <Route path="/analytics/under10" element={<Under10 />} />
           <Route path="/analytics/report" element={<Report />} />
           <Route path="/analytics/settings" element={<ProductSettings />} />
         </Route>
@@ -83,6 +85,7 @@ const SUB_TABS: Record<Section, { label: string; to: string; exact?: boolean }[]
     { label: '잔여량', to: '/analytics/remaining' },
     { label: '잔여량/재배합', to: '/analytics/remix' },
     { label: '생산성', to: '/analytics/productivity' },
+    { label: '10ea미만', to: '/analytics/under10' },
     { label: '금속CCP', to: '/analytics/report' },
     { label: '설정', to: '/analytics/settings' },
   ],
