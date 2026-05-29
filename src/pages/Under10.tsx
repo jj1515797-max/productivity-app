@@ -459,12 +459,6 @@ export default function Under10() {
                 const d = display(m);
                 const ratio = d.totalProd > 0 ? (d.u10Qty / d.totalProd) * 100 : 0;
                 const isSel = m === selectedMonth;
-                const hasManual = !!manualByMonth[m] && (
-                  manualByMonth[m].under10Count != null ||
-                  manualByMonth[m].under10Qty != null ||
-                  manualByMonth[m].itemCountAvg != null ||
-                  manualByMonth[m].totalProduction != null
-                );
                 return (
                   <tr key={m} className={`border-t hover:bg-amber-50 ${isSel ? 'bg-amber-100' : ''}`}
                     onClick={() => setSelectedMonth(m)} style={{ cursor: 'pointer' }}>
