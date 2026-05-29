@@ -45,6 +45,8 @@ interface ManualOverride {
   under10Qty?: number | null;
   itemCountAvg?: number | null;
   totalProduction?: number | null;
+  ckCount?: number | null;
+  flCount?: number | null;
   note?: string;
 }
 
@@ -236,9 +238,11 @@ export default function Under10() {
     const u10Qty = ov.under10Qty ?? agg?.under10Qty ?? 0;
     const itemAvg = ov.itemCountAvg ?? agg?.itemCountAvgPerDay ?? 0;
     const totalProd = ov.totalProduction ?? agg?.totalProduction ?? 0;
+    const ckCount = ov.ckCount ?? agg?.ckCount ?? 0;
+    const flCount = ov.flCount ?? agg?.flCount ?? 0;
     const dw = agg?.daysWorked || 0;
     const avgPerDay = dw > 0 ? u10Count / dw : 0;
-    return { agg, ov, u10Count, u10Qty, itemAvg, totalProd, avgPerDay, daysWorked: dw };
+    return { agg, ov, u10Count, u10Qty, itemAvg, totalProd, ckCount, flCount, avgPerDay, daysWorked: dw };
   };
 
   const selDisp = display(selectedMonth);
@@ -284,7 +288,7 @@ export default function Under10() {
       const ratio = dsp.totalProd > 0 ? (dsp.u10Qty / dsp.totalProd) : 0;
       const cells: (number | string)[] = [
         monthShort(m), dsp.totalProd, dsp.u10Count, dsp.u10Qty,
-        ratio, dsp.agg?.ckCount || 0, dsp.agg?.flCount || 0, Math.round(dsp.itemAvg),
+        ratio, dsp.ckCount, dsp.flCount, Math.round(dsp.itemAvg),
       ];
       cells.forEach((v, ci) => {
         const c = ws1.getCell(r, ci + 1);
@@ -471,8 +475,8 @@ export default function Under10() {
                     <td className="border px-3 py-1.5 text-right font-bold">{d.u10Count || '-'}</td>
                     <td className="border px-3 py-1.5 text-right">{d.u10Qty ? d.u10Qty.toLocaleString() : '-'}</td>
                     <td className="border px-3 py-1.5 text-right">{ratio > 0 ? `${ratio.toFixed(2)}%` : '-'}</td>
-                    <td className="border px-3 py-1.5 text-right text-rose-600">{d.agg?.ckCount || '-'}</td>
-                    <td className="border px-3 py-1.5 text-right text-amber-600">{d.agg?.flCount || '-'}</td>
+                    <td className="border px-3 py-1.5 text-right text-rose-600">{d.ckCount || '-'}</td>
+                    <td className="border px-3 py-1.5 text-right text-amber-600">{d.flCount || '-'}</td>
                     <td className="border px-3 py-1.5 text-right">{d.itemAvg ? Math.round(d.itemAvg) : '-'}</td>
                     <td className="border px-3 py-1.5 text-center">
                       <button onClick={(e) => { e.stopPropagation(); setEditTarget(m); }}
@@ -574,7 +578,14 @@ export default function Under10() {
         <ManualEditModal
           month={editTarget}
           current={manualByMonth[editTarget] || {}}
-          autoValue={display(editTarget)}
+          autoValue={{
+            u10Count: display(editTarget).u10Count,
+            u10Qty: display(editTarget).u10Qty,
+            itemAvg: display(editTarget).itemAvg,
+            totalProd: display(editTarget).totalProd,
+            ckCount: display(editTarget).ckCount,
+            flCount: display(editTarget).flCount,
+          }}
           onClose={() => setEditTarget(null)}
           onSave={async (ov) => {
             await saveManual(editTarget, ov);
@@ -654,7 +665,7 @@ function fmtVal(v: number, decimals: number): string {
 function ManualEditModal({ month, current, autoValue, onClose, onSave }: {
   month: string;
   current: ManualOverride;
-  autoValue: { u10Count: number; u10Qty: number; itemAvg: number; totalProd: number };
+  autoValue: { u10Count: number; u10Qty: number; itemAvg: number; totalProd: number; ckCount: number; flCount: number };
   onClose: () => void;
   onSave: (ov: ManualOverride) => Promise<void>;
 }) {
@@ -662,6 +673,8 @@ function ManualEditModal({ month, current, autoValue, onClose, onSave }: {
   const [u10Qty, setU10Qty] = useState<string>(current.under10Qty != null ? String(current.under10Qty) : '');
   const [itemAvg, setItemAvg] = useState<string>(current.itemCountAvg != null ? String(current.itemCountAvg) : '');
   const [totalProd, setTotalProd] = useState<string>(current.totalProduction != null ? String(current.totalProduction) : '');
+  const [ckCount, setCkCount] = useState<string>(current.ckCount != null ? String(current.ckCount) : '');
+  const [flCount, setFlCount] = useState<string>(current.flCount != null ? String(current.flCount) : '');
   const [saving, setSaving] = useState(false);
 
   const save = async () => {
@@ -673,6 +686,8 @@ function ManualEditModal({ month, current, autoValue, onClose, onSave }: {
         under10Qty: parse(u10Qty),
         itemCountAvg: parse(itemAvg),
         totalProduction: parse(totalProd),
+        ckCount: parse(ckCount),
+        flCount: parse(flCount),
       });
     } finally { setSaving(false); }
   };
@@ -691,6 +706,10 @@ function ManualEditModal({ month, current, autoValue, onClose, onSave }: {
           <Field label="월 생산량 (ea)" value={totalProd} onChange={setTotalProd} auto={autoValue.totalProd} />
           <Field label="10EA 미만 건수" value={u10Count} onChange={setU10Count} auto={autoValue.u10Count} />
           <Field label="10EA 미만 수량 (ea)" value={u10Qty} onChange={setU10Qty} auto={autoValue.u10Qty} />
+          <div className="grid grid-cols-2 gap-3">
+            <Field label="취반기 건수" value={ckCount} onChange={setCkCount} auto={autoValue.ckCount} />
+            <Field label="화구 건수" value={flCount} onChange={setFlCount} auto={autoValue.flCount} />
+          </div>
           <Field label="품목수 (평균/일)" value={itemAvg} onChange={setItemAvg} auto={Math.round(autoValue.itemAvg)} />
         </div>
         <div className="px-5 py-3 border-t bg-slate-50 flex items-center gap-2">
