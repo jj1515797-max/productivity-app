@@ -37,6 +37,7 @@ interface MonthAgg {
   byDay: { date: string; count: number; qty: number }[];
   topCodes: { code: string; name: string; freq: number; qty: number }[];
   totalProduction: number;
+  logisticsSum: number;
   totalItems: number;
 }
 interface ManualOverride {
@@ -80,7 +81,18 @@ async function loadSettings(): Promise<Map<string, ProductSetting>> {
   return map;
 }
 
-function aggregateMonth(month: string, items: Item[], settingsByNorm: Map<string, ProductSetting>): MonthAgg {
+/** 월별 logistics(잔여량 수정값) 합산: days/{date}/logistics 일별 fetch */
+async function fetchMonthLogisticsSum(month: string): Promise<number> {
+  const [y, mm] = month.split('-').map(Number);
+  const lastDay = new Date(y, mm, 0).getDate();
+  const dates = Array.from({ length: lastDay }, (_, i) => `${month}-${String(i + 1).padStart(2, '0')}`);
+  const snaps = await Promise.all(dates.map((d) => getDocs(collection(db, 'days', d, 'logistics'))));
+  let sum = 0;
+  snaps.forEach((s) => s.forEach((d) => { sum += (d.data().qty as number) || 0; }));
+  return sum;
+}
+
+function aggregateMonth(month: string, items: Item[], settingsByNorm: Map<string, ProductSetting>, logisticsSum: number): MonthAgg {
   const byDay: Record<string, { count: number; qty: number }> = {};
   const itemsByDay: Record<string, Set<string>> = {};
   const codeFreq: Record<string, { name: string; freq: number; qty: number }> = {};
@@ -132,7 +144,9 @@ function aggregateMonth(month: string, items: Item[], settingsByNorm: Map<string
   return {
     month, daysWorked, under10Count, under10Qty, itemCountAvgPerDay,
     ckCount, flCount, byDay: dayList, topCodes,
-    totalProduction, totalItems: distinctCodes.size,
+    totalProduction: totalProduction + logisticsSum,
+    logisticsSum,
+    totalItems: distinctCodes.size,
   };
 }
 
@@ -179,10 +193,11 @@ export default function Under10() {
         const [fromMonth, toMonth] = [sortedMiss[0], sortedMiss[sortedMiss.length - 1]];
         const [from] = monthRange(fromMonth);
         const [, to] = monthRange(toMonth);
-        const [itemsSnap, manualSnap] = await Promise.all([
+        const [itemsSnap, manualSnap, ...logSums] = await Promise.all([
           getDocs(query(collectionGroup(db, 'items'),
             where('date', '>=', from), where('date', '<=', to))),
           getDocs(collection(db, 'under10Manual')),
+          ...sortedMiss.map((m) => fetchMonthLogisticsSum(m)),
         ]);
         if (cancel) return;
         const items: Item[] = [];
@@ -191,8 +206,8 @@ export default function Under10() {
         manualSnap.forEach((d) => { manualMap[d.id] = d.data() as ManualOverride; });
 
         const newAgg: Record<string, MonthAgg> = {};
-        sortedMiss.forEach((m) => {
-          const agg = aggregateMonth(m, items, settingsByNorm);
+        sortedMiss.forEach((m, i) => {
+          const agg = aggregateMonth(m, items, settingsByNorm, logSums[i]);
           newAgg[m] = agg;
           setCache(m, agg);
         });
