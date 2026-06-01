@@ -71,6 +71,18 @@ function monthShort(m: string): string {
   return y === thisY ? `${mm}월` : `${String(y).slice(2)}년${mm}월`;
 }
 
+/** 해당 월의 평일(월~금) 일수 */
+function workingDaysInMonth(month: string): number {
+  const [y, m] = month.split('-').map(Number);
+  const last = new Date(y, m, 0).getDate();
+  let count = 0;
+  for (let d = 1; d <= last; d++) {
+    const dow = new Date(y, m - 1, d).getDay();
+    if (dow >= 1 && dow <= 5) count++;
+  }
+  return count;
+}
+
 async function loadSettings(): Promise<Map<string, ProductSetting>> {
   const snap = await getDocs(collection(db, 'productSettings'));
   const map = new Map<string, ProductSetting>();
@@ -240,7 +252,10 @@ export default function Under10() {
     const totalProd = ov.totalProduction ?? agg?.totalProduction ?? 0;
     const ckCount = ov.ckCount ?? agg?.ckCount ?? 0;
     const flCount = ov.flCount ?? agg?.flCount ?? 0;
-    const dw = agg?.daysWorked || 0;
+    // 실제 데이터가 있으면 daysWorked, 없는데 수동 입력 건수가 있으면 그 달 평일 수로 나눔
+    const hasManualCount = ov.under10Count != null;
+    const dwReal = agg?.daysWorked || 0;
+    const dw = dwReal > 0 ? dwReal : (hasManualCount ? workingDaysInMonth(m) : 0);
     const avgPerDay = dw > 0 ? u10Count / dw : 0;
     return { agg, ov, u10Count, u10Qty, itemAvg, totalProd, ckCount, flCount, avgPerDay, daysWorked: dw };
   };
