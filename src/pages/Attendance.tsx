@@ -158,22 +158,20 @@ export default function Attendance() {
     return () => { cancel = true; };
   }, [date]);
 
-  // 오늘 자 스냅샷이 없으면 저장 (한 번만)
+  // 오늘 멤버 변경 사항을 오늘 스냅샷에 항상 동기화 (과거 스냅샷은 절대 안 건드림)
+  // → 어제까지 스냅샷은 그 날 마지막 상태 그대로 잠김
+  // → 오늘 수정한 건 자동으로 오늘 스냅샷에 저장되고, 내일부터 잠김
   useEffect(() => {
     if (members.length === 0) return;
     const today = todayKey();
-    const ref = doc(db, 'attendanceSnapshot', today);
-    getDoc(ref).then((s) => {
-      if (s.exists()) return;
-      setDoc(ref, {
-        members: members.map((m) => ({
-          id: m.id, name: m.name, dept: m.dept || '',
-          active: m.active !== false,
-          leaveFrom: m.leaveFrom || null, leaveTo: m.leaveTo || null,
-        })),
-        savedAt: new Date().toISOString(),
-        date: today,
-      }).catch(() => {});
+    setDoc(doc(db, 'attendanceSnapshot', today), {
+      members: members.map((m) => ({
+        id: m.id, name: m.name, dept: m.dept || '',
+        active: m.active !== false,
+        leaveFrom: m.leaveFrom || null, leaveTo: m.leaveTo || null,
+      })),
+      savedAt: new Date().toISOString(),
+      date: today,
     }).catch(() => {});
   }, [members]);
 
