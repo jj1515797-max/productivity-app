@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { collection, collectionGroup, doc, getDocs, query, setDoc, where } from 'firebase/firestore';
 import ExcelJS from 'exceljs';
 import { db } from '../firebase';
-import type { Item, ProductSetting } from '../types';
+import type { Item, MachineEntry, ProductSetting } from '../types';
 import { canonicalShort, convertErpCode, normalizeCode } from '../lib/codeUtil';
 
 /* ===== 캐시 ===== */
@@ -95,30 +95,42 @@ async function loadSettings(): Promise<Map<string, ProductSetting>> {
   return map;
 }
 
-/** 월별 logistics(잔여량 수정값) 합산: days/{date}/logistics 일별 fetch */
-async function fetchMonthLogisticsSum(month: string): Promise<number> {
+/** 월별 logistics(잔여량) 일자별 합산: Record<date, qty> */
+async function fetchMonthLogisticsByDay(month: string): Promise<Record<string, number>> {
   const [y, mm] = month.split('-').map(Number);
   const lastDay = new Date(y, mm, 0).getDate();
   const dates = Array.from({ length: lastDay }, (_, i) => `${month}-${String(i + 1).padStart(2, '0')}`);
   const snaps = await Promise.all(dates.map((d) => getDocs(collection(db, 'days', d, 'logistics'))));
-  let sum = 0;
-  snaps.forEach((s) => s.forEach((d) => { sum += (d.data().qty as number) || 0; }));
-  return sum;
+  const map: Record<string, number> = {};
+  snaps.forEach((s, i) => {
+    if (s.empty) return;
+    let sum = 0;
+    s.forEach((d) => { sum += (d.data().qty as number) || 0; });
+    map[dates[i]] = sum;
+  });
+  return map;
 }
 
-function aggregateMonth(month: string, items: Item[], settingsByNorm: Map<string, ProductSetting>, logisticsSum: number): MonthAgg {
+function aggregateMonth(
+  month: string,
+  items: Item[],
+  entries: MachineEntry[],
+  settingsByNorm: Map<string, ProductSetting>,
+  logisticsByDay: Record<string, number>,
+): MonthAgg {
   const byDay: Record<string, { count: number; qty: number }> = {};
   const itemsByDay: Record<string, Set<string>> = {};
   const codeFreq: Record<string, { name: string; freq: number; qty: number }> = {};
-  let totalProduction = 0;
   let ckCount = 0, flCount = 0;
   const distinctCodes = new Set<string>();
 
+  // 발주 일자별 합계 + 10EA 미만 카운트
+  const totalQtyByDay: Record<string, number> = {};
   items.forEach((it) => {
     if (!it.date || !it.date.startsWith(month)) return;
     const qty = it.totalQty || 0;
     if (qty <= 0) return;
-    totalProduction += qty;
+    totalQtyByDay[it.date] = (totalQtyByDay[it.date] || 0) + qty;
     distinctCodes.add(it.code.toLowerCase());
     if (!itemsByDay[it.date]) itemsByDay[it.date] = new Set();
     itemsByDay[it.date].add(it.code.toLowerCase());
@@ -141,6 +153,33 @@ function aggregateMonth(month: string, items: Item[], settingsByNorm: Map<string
     }
   });
 
+  // 호기 실제 생산량 (machine entries) 일자별 합계
+  const rawColdByDay: Record<string, number> = {};
+  entries.forEach((e) => {
+    if (!e.date || !e.date.startsWith(month)) return;
+    const q = (e.actualProduction || 0) + (e.additionalProduction || 0);
+    rawColdByDay[e.date] = (rawColdByDay[e.date] || 0) + q;
+  });
+
+  // 월 생산량 = AnalyticsMonthly 와 동일 로직
+  //   - 잔여량 override 있는 일: totalQty + logistics
+  //   - 없는 일: 호기 실제 생산량
+  const allColdDates = new Set<string>([
+    ...Object.keys(rawColdByDay),
+    ...Object.keys(logisticsByDay),
+    ...Object.keys(totalQtyByDay),
+  ]);
+  let totalProduction = 0;
+  let logisticsSum = 0;
+  allColdDates.forEach((d) => {
+    if (logisticsByDay[d] !== undefined) {
+      totalProduction += (totalQtyByDay[d] || 0) + logisticsByDay[d];
+      logisticsSum += logisticsByDay[d];
+    } else {
+      totalProduction += rawColdByDay[d] || 0;
+    }
+  });
+
   const dayList = Object.keys(byDay).sort().map((date) => ({
     date, count: byDay[date].count, qty: byDay[date].qty,
   }));
@@ -158,7 +197,7 @@ function aggregateMonth(month: string, items: Item[], settingsByNorm: Map<string
   return {
     month, daysWorked, under10Count, under10Qty, itemCountAvgPerDay,
     ckCount, flCount, byDay: dayList, topCodes,
-    totalProduction: totalProduction + logisticsSum,
+    totalProduction,
     logisticsSum,
     totalItems: distinctCodes.size,
   };
@@ -207,21 +246,25 @@ export default function Under10() {
         const [fromMonth, toMonth] = [sortedMiss[0], sortedMiss[sortedMiss.length - 1]];
         const [from] = monthRange(fromMonth);
         const [, to] = monthRange(toMonth);
-        const [itemsSnap, manualSnap, ...logSums] = await Promise.all([
+        const logResults = await Promise.all(sortedMiss.map((m) => fetchMonthLogisticsByDay(m)));
+        const [itemsSnap, entriesSnap, manualSnap] = await Promise.all([
           getDocs(query(collectionGroup(db, 'items'),
             where('date', '>=', from), where('date', '<=', to))),
+          getDocs(query(collectionGroup(db, 'entries'),
+            where('date', '>=', from), where('date', '<=', to))),
           getDocs(collection(db, 'under10Manual')),
-          ...sortedMiss.map((m) => fetchMonthLogisticsSum(m)),
         ]);
         if (cancel) return;
         const items: Item[] = [];
         itemsSnap.forEach((d) => items.push(d.data() as Item));
+        const entries: MachineEntry[] = [];
+        entriesSnap.forEach((d) => entries.push(d.data() as MachineEntry));
         const manualMap: Record<string, ManualOverride> = {};
         manualSnap.forEach((d) => { manualMap[d.id] = d.data() as ManualOverride; });
 
         const newAgg: Record<string, MonthAgg> = {};
         sortedMiss.forEach((m, i) => {
-          const agg = aggregateMonth(m, items, settingsByNorm, logSums[i]);
+          const agg = aggregateMonth(m, items, entries, settingsByNorm, logResults[i]);
           newAgg[m] = agg;
           setCache(m, agg);
         });
