@@ -173,8 +173,8 @@ export default function Attendance() {
       date: today,
     }).catch(() => {});
 
-    // 과거 90일 자동 백필 (한 번만)
-    if (localStorage.getItem('attendanceSnapshotBackfill_v1')) return;
+    // 과거 90일 자동 백필 (한 번만, v2 — 모든 날짜에 저장)
+    if (localStorage.getItem('attendanceSnapshotBackfill_v2')) return;
     (async () => {
       try {
         const now = new Date();
@@ -187,10 +187,11 @@ export default function Attendance() {
         await Promise.all(dates.map(async (dateStr) => {
           const ref = doc(db, 'attendanceSnapshot', dateStr);
           const s = await getDoc(ref);
-          if (s.exists()) return;
-          // 그날 attendance records가 있을 때만 저장 (운영하지 않은 날은 skip)
-          const recSnap = await getDocs(collection(db, 'attendance', dateStr, 'records'));
-          if (recSnap.empty) return;
+          if (s.exists()) {
+            const data = s.data() as { backfilled?: boolean };
+            // 백필 표식이 있는 스냅샷만 덮어쓰기 (사용자가 직접 그날 작업한 스냅샷은 보존)
+            if (!data.backfilled) return;
+          }
           await setDoc(ref, {
             members: serialize(members),
             savedAt: new Date().toISOString(),
@@ -198,7 +199,7 @@ export default function Attendance() {
             backfilled: true,
           });
         }));
-        localStorage.setItem('attendanceSnapshotBackfill_v1', '1');
+        localStorage.setItem('attendanceSnapshotBackfill_v2', '1');
       } catch (e) {
         console.error('[Attendance] backfill failed:', e);
       }
