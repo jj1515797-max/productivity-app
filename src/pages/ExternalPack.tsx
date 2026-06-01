@@ -34,13 +34,24 @@ export default function ExternalPack() {
 
   /* 표 글자 크기 — 이 기기(브라우저)에만 적용 */
   const FONT_KEY = 'extPackTableFontSize';
-  const FONT_MIN = 12, FONT_MAX = 32, FONT_DEFAULT = 18, FONT_STEP = 2;
+  const FONT_MIN = 12, FONT_MAX = 72, FONT_DEFAULT = 18, FONT_STEP = 2;
   const [fontSize, setFontSize] = useState<number>(() => {
     const v = Number(localStorage.getItem(FONT_KEY));
     return v >= FONT_MIN && v <= FONT_MAX ? v : FONT_DEFAULT;
   });
   useEffect(() => { localStorage.setItem(FONT_KEY, String(fontSize)); }, [fontSize]);
   const codeSize = fontSize + 6;
+  const cellPadY = Math.max(8, Math.round(fontSize * 0.5));
+  const cellPadX = Math.max(8, Math.round(fontSize * 0.45));
+  const cellStyle = { fontSize, paddingTop: cellPadY, paddingBottom: cellPadY, paddingLeft: cellPadX, paddingRight: cellPadX };
+  const codeStyle = { fontSize: codeSize, paddingTop: cellPadY, paddingBottom: cellPadY, paddingLeft: cellPadX, paddingRight: cellPadX };
+
+  /* 실시간 시계 (클라이언트만, Firestore 비용 X) */
+  const [now, setNow] = useState(new Date());
+  useEffect(() => {
+    const id = setInterval(() => setNow(new Date()), 1000);
+    return () => clearInterval(id);
+  }, []);
 
   useEffect(() => {
     return onSnapshot(collection(db, 'days', date, 'items'), (snap) => {
@@ -158,8 +169,12 @@ export default function ExternalPack() {
         {!isToday && (
           <span className="text-xs text-orange-600 font-medium">⚠ 과거 날짜 보는 중</span>
         )}
+        {/* 실시간 시계 */}
+        <span className="ml-auto text-sm font-mono text-gray-700 tabular-nums" aria-label="현재 시각">
+          🕐 {now.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}
+        </span>
         {/* 표 글자 크기 (이 기기에만 적용) */}
-        <div className="ml-auto flex items-center gap-1 border rounded px-1 py-0.5 bg-white" title="이 기기에서만 적용됩니다">
+        <div className="flex items-center gap-1 border rounded px-1 py-0.5 bg-white" title="이 기기에서만 적용됩니다">
           <button
             onClick={() => setFontSize((v) => Math.max(FONT_MIN, v - FONT_STEP))}
             className="px-2.5 py-1 text-sm rounded hover:bg-gray-100 font-bold disabled:text-gray-300"
@@ -181,17 +196,17 @@ export default function ExternalPack() {
           >↺</button>
         </div>
       </div>
-      <div className="bg-white border rounded-lg overflow-hidden">
+      <div className="bg-white border rounded-lg">
         <table className="w-full text-sm">
-          <thead className="bg-slate-100 text-xs text-slate-600">
+          <thead className="text-xs text-slate-600">
             <tr>
-              <th className="p-2 text-left">코드</th>
-              <th className="p-2 text-left">품목명</th>
-              <th className="p-2 text-right">주문수량</th>
-              <th className="p-2 text-right">발주량</th>
-              <th className="p-2 text-right">실제 생산량</th>
-              <th className="p-2 text-right">모자란 수량</th>
-              <th className="p-2 text-right">추가 생산량</th>
+              <th className="p-2 text-left sticky top-0 z-10 bg-slate-100">코드</th>
+              <th className="p-2 text-left sticky top-0 z-10 bg-slate-100">품목명</th>
+              <th className="p-2 text-right sticky top-0 z-10 bg-slate-100">주문수량</th>
+              <th className="p-2 text-right sticky top-0 z-10 bg-slate-100">발주량</th>
+              <th className="p-2 text-right sticky top-0 z-10 bg-slate-100">실제 생산량</th>
+              <th className="p-2 text-right sticky top-0 z-10 bg-slate-100">모자란 수량</th>
+              <th className="p-2 text-right sticky top-0 z-10 bg-slate-100">추가 생산량</th>
             </tr>
           </thead>
           <tbody>
@@ -201,15 +216,15 @@ export default function ExternalPack() {
                 r.combinedDiff < 0 ? 'text-red-700' : '';
               return (
                 <tr key={r.key} className={`border-t border-gray-400 ${r.bg}`}>
-                  <td className="p-2 font-mono font-bold" style={{ fontSize: codeSize }}>{r.code}</td>
-                  <td className="p-2" style={{ fontSize }}>{r.name}</td>
-                  <td className="p-2 text-right" style={{ fontSize }}>{r.orderQty}</td>
-                  <td className="p-2 text-right" style={{ fontSize }}>{r.shipped}</td>
-                  <td className="p-2 text-right font-bold" style={{ fontSize }}>{r.actual || ''}</td>
-                  <td className={`p-2 text-right font-bold ${diffColor}`} style={{ fontSize }}>
+                  <td className="font-mono font-bold" style={codeStyle}>{r.code}</td>
+                  <td style={cellStyle}>{r.name}</td>
+                  <td className="text-right font-bold" style={cellStyle}>{r.orderQty}</td>
+                  <td className="text-right" style={cellStyle}>{r.shipped}</td>
+                  <td className="text-right" style={cellStyle}>{r.actual || ''}</td>
+                  <td className={`text-right font-bold ${diffColor}`} style={cellStyle}>
                     {r.combinedDiff > 0 ? `+${r.combinedDiff}` : r.combinedDiff || ''}
                   </td>
-                  <td className="p-2 text-right font-bold" style={{ fontSize }}>
+                  <td className="text-right" style={cellStyle}>
                     {r.additional > 0 ? r.additional : ''}
                   </td>
                 </tr>
