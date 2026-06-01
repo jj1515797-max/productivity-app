@@ -140,6 +140,10 @@ export default function Report() {
     });
 
     // Data rows — 데이터 있는 행에만 테두리·정렬
+    const maxRows = Math.max(0, ...MACHINES.map((m) => (byMachine[m] || []).length));
+    for (let i = 0; i < maxRows; i++) {
+      ws.getRow(6 + i).height = 12;
+    }
     MACHINES.forEach((m, mi) => {
       const start = MACHINE_START_COL[mi];
       const startCode = start.charCodeAt(0);
