@@ -43,8 +43,8 @@ export default function ExternalPack() {
   const codeSize = fontSize + 6;
   const cellPadY = Math.max(8, Math.round(fontSize * 0.5));
   const cellPadX = Math.max(8, Math.round(fontSize * 0.45));
-  const cellStyle = { fontSize, paddingTop: cellPadY, paddingBottom: cellPadY, paddingLeft: cellPadX, paddingRight: cellPadX };
-  const codeStyle = { fontSize: codeSize, paddingTop: cellPadY, paddingBottom: cellPadY, paddingLeft: cellPadX, paddingRight: cellPadX };
+  const cellStyle: React.CSSProperties = { fontSize, paddingTop: cellPadY, paddingBottom: cellPadY, paddingLeft: cellPadX, paddingRight: cellPadX, verticalAlign: 'middle', lineHeight: 1.2, whiteSpace: 'nowrap' };
+  const codeStyle: React.CSSProperties = { fontSize: codeSize, paddingTop: cellPadY, paddingBottom: cellPadY, paddingLeft: cellPadX, paddingRight: cellPadX, verticalAlign: 'middle', lineHeight: 1.2, whiteSpace: 'nowrap' };
 
   /* 실시간 시계 (클라이언트만, Firestore 비용 X) */
   const [now, setNow] = useState(new Date());
@@ -169,9 +169,9 @@ export default function ExternalPack() {
         {!isToday && (
           <span className="text-xs text-orange-600 font-medium">⚠ 과거 날짜 보는 중</span>
         )}
-        {/* 실시간 시계 */}
-        <span className="ml-auto text-sm font-mono text-gray-700 tabular-nums" aria-label="현재 시각">
-          🕐 {now.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false })}
+        {/* 실시간 시계 (초 제외, 크게) */}
+        <span className="ml-auto text-3xl font-mono font-bold text-gray-800 tabular-nums" aria-label="현재 시각">
+          🕐 {now.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false })}
         </span>
         {/* 표 글자 크기 (이 기기에만 적용) */}
         <div className="flex items-center gap-1 border rounded px-1 py-0.5 bg-white" title="이 기기에서만 적용됩니다">
@@ -196,17 +196,17 @@ export default function ExternalPack() {
           >↺</button>
         </div>
       </div>
-      <div className="bg-white border rounded-lg">
+      <div className="bg-white border rounded-lg overflow-y-auto" style={{ maxHeight: 'calc(100vh - 200px)' }}>
         <table className="w-full text-sm">
           <thead className="text-xs text-slate-600">
             <tr>
-              <th className="p-2 text-left sticky top-0 z-10 bg-slate-100">코드</th>
+              <th className="p-2 text-left sticky top-0 z-10 bg-slate-100 whitespace-nowrap">코드</th>
               <th className="p-2 text-left sticky top-0 z-10 bg-slate-100">품목명</th>
-              <th className="p-2 text-right sticky top-0 z-10 bg-slate-100">주문수량</th>
-              <th className="p-2 text-right sticky top-0 z-10 bg-slate-100">발주량</th>
-              <th className="p-2 text-right sticky top-0 z-10 bg-slate-100">실제 생산량</th>
-              <th className="p-2 text-right sticky top-0 z-10 bg-slate-100">모자란 수량</th>
-              <th className="p-2 text-right sticky top-0 z-10 bg-slate-100">추가 생산량</th>
+              <th className="p-2 text-right sticky top-0 z-10 bg-slate-100 whitespace-nowrap">주문수량</th>
+              <th className="p-2 text-right sticky top-0 z-10 bg-slate-100 whitespace-nowrap">발주량</th>
+              <th className="p-2 text-right sticky top-0 z-10 bg-slate-100 whitespace-nowrap">실제 생산량</th>
+              <th className="p-2 text-right sticky top-0 z-10 bg-slate-100 whitespace-nowrap">모자란 수량</th>
+              <th className="p-2 text-right sticky top-0 z-10 bg-slate-100 whitespace-nowrap">추가 생산량</th>
             </tr>
           </thead>
           <tbody>
