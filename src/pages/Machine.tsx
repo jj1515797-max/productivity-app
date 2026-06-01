@@ -201,8 +201,9 @@ export default function Machine() {
               <button onClick={() => setQty(Math.max(0, qty - 1))} className="w-12 h-12 border rounded-md text-xl">−</button>
               <input
                 type="number"
-                value={qty}
+                value={qty || ''}
                 onChange={(e) => setQty(Number(e.target.value) || 0)}
+                placeholder="0"
                 className="flex-1 border rounded-md px-3 py-3 text-center text-xl font-bold"
               />
               <button onClick={() => setQty(qty + 1)} className="w-12 h-12 border rounded-md text-xl">+</button>
