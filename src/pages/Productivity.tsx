@@ -336,7 +336,10 @@ export default function Productivity() {
 
       const datesNeedingAttendance = Array.from(candidateDates).filter((date) => {
         const doc = docByDate[date];
-        return !doc || doc.attend === undefined || doc.attend === null;
+        if (!doc) return true;
+        // attend 또는 leave 둘 중 하나라도 비어있으면 records fetch
+        return doc.attend === undefined || doc.attend === null
+            || doc.leave === undefined || doc.leave === null;
       });
 
       const recsByDate: Record<string, Record<string, AttendanceRecord>> = {};
