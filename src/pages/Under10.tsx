@@ -406,8 +406,6 @@ export default function Under10() {
       <div className="bg-white border rounded-lg p-4">
         <div className="flex items-center justify-between mb-2">
           <h3 className="font-bold text-gray-800">10EA 미만 생산 건수 <span className="text-xs text-gray-500 font-normal">(13개월 · 평균/일)</span></h3>
-          <button onClick={() => setEditTarget(months13[12])}
-            className="text-xs px-2 py-1 border rounded hover:bg-gray-50">✎ 수동 입력</button>
         </div>
         <Bars13
           color="#10b981"

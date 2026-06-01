@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { collection, collectionGroup, getDocs, query, where } from 'firebase/firestore';
+import { collection, collectionGroup, doc, getDoc, getDocs, query, where } from 'firebase/firestore';
 import ExcelJS from 'exceljs';
 import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
@@ -340,12 +340,20 @@ export default function Productivity() {
       });
 
       const recsByDate: Record<string, Record<string, AttendanceRecord>> = {};
+      const snapshotByDate: Record<string, Member[]> = {};
       await Promise.all(datesNeedingAttendance.map(async (date) => {
         try {
-          const snap = await getDocs(collection(db, 'attendance', date, 'records'));
+          const [recSnap, memSnap] = await Promise.all([
+            getDocs(collection(db, 'attendance', date, 'records')),
+            getDoc(doc(db, 'attendanceSnapshot', date)),
+          ]);
           const map: Record<string, AttendanceRecord> = {};
-          snap.forEach((d) => { map[d.id] = d.data() as AttendanceRecord; });
+          recSnap.forEach((d) => { map[d.id] = d.data() as AttendanceRecord; });
           recsByDate[date] = map;
+          if (memSnap.exists()) {
+            const data = memSnap.data() as { members?: Member[] };
+            if (Array.isArray(data.members)) snapshotByDate[date] = data.members;
+          }
         } catch {}
       }));
       if (cancel) return;
@@ -392,7 +400,8 @@ export default function Productivity() {
         if (!misses.includes(mk)) return;
         const doc = docByDate[date] || {};
         const auto = potBatByDate[date] || { pot: 0, bat: 0 };
-        const attSummary = summarizeAttendance(members, recsByDate[date] || {}, date);
+        const memsForDate = snapshotByDate[date] || members;
+        const attSummary = summarizeAttendance(memsForDate, recsByDate[date] || {}, date);
         byMonth[mk].push({
           date,
           pot: Number(doc.pot ?? auto.pot) || 0,
