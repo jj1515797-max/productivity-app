@@ -521,7 +521,7 @@ export default function Attendance() {
       {showTable && (
         <AttendanceTableModal
           date={date}
-          members={members}
+          members={effectiveMembers}
           records={records}
           onClose={() => setShowTable(false)}
         />
