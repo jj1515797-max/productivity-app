@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { addDoc, collection, deleteDoc, doc, getDoc, onSnapshot, setDoc, updateDoc } from 'firebase/firestore';
+import { addDoc, collection, deleteDoc, doc, getDoc, getDocs, onSnapshot, setDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
 import { loadViewDate, saveViewDate } from '../lib/viewDate';
@@ -159,20 +159,50 @@ export default function Attendance() {
   }, [date]);
 
   // 오늘 멤버 변경 사항을 오늘 스냅샷에 항상 동기화 (과거 스냅샷은 절대 안 건드림)
-  // → 어제까지 스냅샷은 그 날 마지막 상태 그대로 잠김
-  // → 오늘 수정한 건 자동으로 오늘 스냅샷에 저장되고, 내일부터 잠김
   useEffect(() => {
     if (members.length === 0) return;
     const today = todayKey();
+    const serialize = (ms: Member[]) => ms.map((m) => ({
+      id: m.id, name: m.name, dept: m.dept || '',
+      active: m.active !== false,
+      leaveFrom: m.leaveFrom || null, leaveTo: m.leaveTo || null,
+    }));
     setDoc(doc(db, 'attendanceSnapshot', today), {
-      members: members.map((m) => ({
-        id: m.id, name: m.name, dept: m.dept || '',
-        active: m.active !== false,
-        leaveFrom: m.leaveFrom || null, leaveTo: m.leaveTo || null,
-      })),
+      members: serialize(members),
       savedAt: new Date().toISOString(),
       date: today,
     }).catch(() => {});
+
+    // 과거 90일 자동 백필 (한 번만)
+    if (localStorage.getItem('attendanceSnapshotBackfill_v1')) return;
+    (async () => {
+      try {
+        const now = new Date();
+        const dates: string[] = [];
+        for (let i = 1; i <= 90; i++) {
+          const d = new Date(now);
+          d.setDate(d.getDate() - i);
+          dates.push(`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`);
+        }
+        await Promise.all(dates.map(async (dateStr) => {
+          const ref = doc(db, 'attendanceSnapshot', dateStr);
+          const s = await getDoc(ref);
+          if (s.exists()) return;
+          // 그날 attendance records가 있을 때만 저장 (운영하지 않은 날은 skip)
+          const recSnap = await getDocs(collection(db, 'attendance', dateStr, 'records'));
+          if (recSnap.empty) return;
+          await setDoc(ref, {
+            members: serialize(members),
+            savedAt: new Date().toISOString(),
+            date: dateStr,
+            backfilled: true,
+          });
+        }));
+        localStorage.setItem('attendanceSnapshotBackfill_v1', '1');
+      } catch (e) {
+        console.error('[Attendance] backfill failed:', e);
+      }
+    })();
   }, [members]);
 
   const counts = useMemo(() => {
