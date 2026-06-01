@@ -68,6 +68,9 @@ export default function Attendance() {
   useEffect(() => { saveViewDate(date); }, [date]);
 
   const [members, setMembers] = useState<Member[]>([]);
+  /** 과거 날짜에 적용되는 멤버 상태 (스냅샷). null 이면 live members 사용 */
+  const [snapshotMembers, setSnapshotMembers] = useState<Member[] | null>(null);
+  const effectiveMembers = snapshotMembers || members;
   const [records, setRecords] = useState<Record<string, AttendanceRecord>>({});
   const [search, setSearch] = useState('');
   const [showAdd, setShowAdd] = useState(false);
@@ -140,14 +143,48 @@ export default function Attendance() {
     });
   }, [date]);
 
+  // 날짜 변경 시 스냅샷 로드 (오늘은 항상 live, 과거 날짜는 스냅샷 우선)
+  useEffect(() => {
+    setSnapshotMembers(null);
+    if (date === todayKey()) return;
+    let cancel = false;
+    getDoc(doc(db, 'attendanceSnapshot', date)).then((s) => {
+      if (cancel) return;
+      if (s.exists()) {
+        const data = s.data() as { members?: Member[] };
+        if (Array.isArray(data.members)) setSnapshotMembers(data.members);
+      }
+    }).catch(() => {});
+    return () => { cancel = true; };
+  }, [date]);
+
+  // 오늘 자 스냅샷이 없으면 저장 (한 번만)
+  useEffect(() => {
+    if (members.length === 0) return;
+    const today = todayKey();
+    const ref = doc(db, 'attendanceSnapshot', today);
+    getDoc(ref).then((s) => {
+      if (s.exists()) return;
+      setDoc(ref, {
+        members: members.map((m) => ({
+          id: m.id, name: m.name, dept: m.dept || '',
+          active: m.active !== false,
+          leaveFrom: m.leaveFrom || null, leaveTo: m.leaveTo || null,
+        })),
+        savedAt: new Date().toISOString(),
+        date: today,
+      }).catch(() => {});
+    }).catch(() => {});
+  }, [members]);
+
   const counts = useMemo(() => {
-    const totalN = members.length;
+    const totalN = effectiveMembers.length;
     // 각 상태가 등장한 멤버 수 (한 사람이 여러 상태면 각각 +1)
     const breakdown: Record<AttendanceStatus, number> = {
       출근: 0, 연차: 0, 반차: 0, 반반차: 0, 결혼반차: 0, 생일반차: 0, 병가: 0, 경조사: 0, 휴무: 0,
     };
     let onLeaveN = 0, presentN = 0, restN = 0, leaveDays = 0;
-    members.forEach((m) => {
+    effectiveMembers.forEach((m) => {
       if (isOnLeave(m, date)) { onLeaveN++; return; }
       const statuses = effectiveStatuses(records[m.id], date);
       if (statuses.length === 0 || (statuses.length === 1 && statuses[0] === '출근')) {
@@ -161,13 +198,13 @@ export default function Attendance() {
     const leaveN = totalN - onLeaveN - presentN - restN; // 연차/반차/결혼반차/병가/경조사 (인원수)
     const workforceN = totalN - onLeaveN - restN;
     return { totalN, presentN, leaveN, restN, onLeaveN, workforceN, leaveDays, breakdown };
-  }, [members, records, date]);
+  }, [effectiveMembers, records, date]);
 
   const grouped = useMemo(() => {
     const q = search.trim().toLowerCase();
     const list = q
-      ? members.filter((m) => m.name.toLowerCase().includes(q) || (m.dept || '').toLowerCase().includes(q))
-      : members;
+      ? effectiveMembers.filter((m) => m.name.toLowerCase().includes(q) || (m.dept || '').toLowerCase().includes(q))
+      : effectiveMembers;
     const map = new Map<string, Member[]>();
     list.forEach((m) => {
       const key = m.dept || '미지정';
@@ -175,7 +212,7 @@ export default function Attendance() {
       map.get(key)!.push(m);
     });
     return Array.from(map.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-  }, [members, search]);
+  }, [effectiveMembers, search]);
 
   const setStatuses = async (m: Member, statuses: AttendanceStatus[]) => {
     if (statuses.length === 0) {
@@ -488,7 +525,7 @@ export default function Attendance() {
 
       {/* 상태 팝오버 (모바일=중앙 모달 / PC=fixed 위치) */}
       {openStatusFor && popoverPos && (() => {
-        const m = members.find((mm) => mm.id === openStatusFor);
+        const m = effectiveMembers.find((mm) => mm.id === openStatusFor);
         if (!m) return null;
         const statuses = getStatuses(records[m.id]);
         const close = () => { setOpenStatusFor(null); setPopoverPos(null); };
