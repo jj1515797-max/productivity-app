@@ -32,6 +32,16 @@ export default function ExternalPack() {
     '1호기': {}, '2호기': {}, '3호기': {},
   });
 
+  /* 표 글자 크기 — 이 기기(브라우저)에만 적용 */
+  const FONT_KEY = 'extPackTableFontSize';
+  const FONT_MIN = 12, FONT_MAX = 32, FONT_DEFAULT = 18, FONT_STEP = 2;
+  const [fontSize, setFontSize] = useState<number>(() => {
+    const v = Number(localStorage.getItem(FONT_KEY));
+    return v >= FONT_MIN && v <= FONT_MAX ? v : FONT_DEFAULT;
+  });
+  useEffect(() => { localStorage.setItem(FONT_KEY, String(fontSize)); }, [fontSize]);
+  const codeSize = fontSize + 6;
+
   useEffect(() => {
     return onSnapshot(collection(db, 'days', date, 'items'), (snap) => {
       const list: Item[] = [];
@@ -148,6 +158,28 @@ export default function ExternalPack() {
         {!isToday && (
           <span className="text-xs text-orange-600 font-medium">⚠ 과거 날짜 보는 중</span>
         )}
+        {/* 표 글자 크기 (이 기기에만 적용) */}
+        <div className="ml-auto flex items-center gap-1 border rounded px-1 py-0.5 bg-white" title="이 기기에서만 적용됩니다">
+          <button
+            onClick={() => setFontSize((v) => Math.max(FONT_MIN, v - FONT_STEP))}
+            className="px-2.5 py-1 text-sm rounded hover:bg-gray-100 font-bold disabled:text-gray-300"
+            disabled={fontSize <= FONT_MIN}
+            aria-label="글자 작게"
+          >A−</button>
+          <span className="text-xs text-gray-500 min-w-[36px] text-center">{fontSize}px</span>
+          <button
+            onClick={() => setFontSize((v) => Math.min(FONT_MAX, v + FONT_STEP))}
+            className="px-2.5 py-1 text-sm rounded hover:bg-gray-100 font-bold disabled:text-gray-300"
+            disabled={fontSize >= FONT_MAX}
+            aria-label="글자 크게"
+          >A+</button>
+          <button
+            onClick={() => setFontSize(FONT_DEFAULT)}
+            className="px-2 py-1 text-xs rounded hover:bg-gray-100 text-gray-500"
+            aria-label="기본 크기"
+            title="기본 크기로"
+          >↺</button>
+        </div>
       </div>
       <div className="bg-white border rounded-lg overflow-hidden">
         <table className="w-full text-sm">
@@ -169,15 +201,15 @@ export default function ExternalPack() {
                 r.combinedDiff < 0 ? 'text-red-700' : '';
               return (
                 <tr key={r.key} className={`border-t border-gray-400 ${r.bg}`}>
-                  <td className="p-2 font-mono text-2xl font-bold">{r.code}</td>
-                  <td className="p-2 text-lg">{r.name}</td>
-                  <td className="p-2 text-right text-lg">{r.orderQty}</td>
-                  <td className="p-2 text-right text-lg">{r.shipped}</td>
-                  <td className="p-2 text-right font-bold text-lg">{r.actual || ''}</td>
-                  <td className={`p-2 text-right font-bold text-lg ${diffColor}`}>
+                  <td className="p-2 font-mono font-bold" style={{ fontSize: codeSize }}>{r.code}</td>
+                  <td className="p-2" style={{ fontSize }}>{r.name}</td>
+                  <td className="p-2 text-right" style={{ fontSize }}>{r.orderQty}</td>
+                  <td className="p-2 text-right" style={{ fontSize }}>{r.shipped}</td>
+                  <td className="p-2 text-right font-bold" style={{ fontSize }}>{r.actual || ''}</td>
+                  <td className={`p-2 text-right font-bold ${diffColor}`} style={{ fontSize }}>
                     {r.combinedDiff > 0 ? `+${r.combinedDiff}` : r.combinedDiff || ''}
                   </td>
-                  <td className="p-2 text-right font-bold text-lg">
+                  <td className="p-2 text-right font-bold" style={{ fontSize }}>
                     {r.additional > 0 ? r.additional : ''}
                   </td>
                 </tr>
