@@ -879,7 +879,7 @@ function RecipeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
                             <tr>
                               <th className="text-right pr-2 w-12">순번</th>
                               <th className="text-left">원재료</th>
-                              <th className="text-right pr-2 w-32">총투입량(g)</th>
+                              <th className="text-right pr-2 w-32">식재료필요량(g)</th>
                             </tr>
                           </thead>
                           <tbody>
@@ -917,23 +917,34 @@ function RecipeImportModal({ onClose }: { onClose: () => void }) {
     const lines = text.trim().split('\n').map((l) => l.split('\t'));
     const errors: string[] = [];
     if (lines.length < 2) return { recipes: [], errors: ['데이터가 없습니다'] };
-    const hIdx = lines.findIndex((r) =>
-      r.some((c) => c.trim() === '제품코드') &&
-      r.some((c) => c.trim() === '원재료') &&
-      r.some((c) => /총투입량/.test(c.trim()))
-    );
+
+    // 헤더 정규화: 공백·괄호단위·줄바꿈 제거하고 비교
+    const norm = (s: string) => (s || '').replace(/\s+/g, '').replace(/\(.*?\)/g, '').trim();
+
+    // raw 환산량 컬럼 후보 (있는 것 중 우선순위 첫 번째 사용)
+    const RAW_CANDIDATES = ['식재료필요량', '식재료소요량', '필요량', '소요량', '총투입량'];
+
+    const hIdx = lines.findIndex((r) => {
+      const cells = r.map(norm);
+      return cells.includes('제품코드') && cells.includes('원재료') &&
+        RAW_CANDIDATES.some((cand) => cells.includes(cand));
+    });
     if (hIdx < 0) {
-      errors.push('헤더(제품코드 / 원재료 / 총투입량(g)) 행을 찾을 수 없습니다');
+      errors.push('헤더(제품코드 / 원재료 / 식재료 필요량 [또는 총투입량]) 행을 찾을 수 없습니다');
       return { recipes: [], errors };
     }
-    const header = lines[hIdx].map((c) => c.trim());
+    const header = lines[hIdx].map(norm);
     const codeCol = header.indexOf('제품코드');
-    const nameCol = header.findIndex((c) => c === '제품명');
-    const seqCol = header.findIndex((c) => c === '순번');
+    const nameCol = header.indexOf('제품명');
+    const seqCol = header.indexOf('순번');
     const ingCol = header.indexOf('원재료');
-    const totCol = header.findIndex((c) => /총투입량/.test(c));
-    if (codeCol < 0 || ingCol < 0 || totCol < 0) {
-      errors.push('필수 컬럼(제품코드/원재료/총투입량) 누락');
+    let rawCol = -1;
+    for (const cand of RAW_CANDIDATES) {
+      rawCol = header.indexOf(cand);
+      if (rawCol >= 0) break;
+    }
+    if (codeCol < 0 || ingCol < 0 || rawCol < 0) {
+      errors.push('필수 컬럼(제품코드/원재료/식재료필요량) 누락');
       return { recipes: [], errors };
     }
     const map = new Map<string, RecipeDoc>();
@@ -941,7 +952,7 @@ function RecipeImportModal({ onClose }: { onClose: () => void }) {
       const r = lines[i];
       const code = (r[codeCol] || '').trim();
       const ingName = (r[ingCol] || '').trim();
-      const gStr = (r[totCol] || '').trim().replace(/,/g, '');
+      const gStr = (r[rawCol] || '').trim().replace(/,/g, '');
       if (!code || !ingName) continue;
       const g = parseFloat(gStr);
       if (isNaN(g) || g <= 0) continue;
@@ -993,11 +1004,13 @@ function RecipeImportModal({ onClose }: { onClose: () => void }) {
         </div>
         <div className="flex-1 overflow-y-auto p-5 space-y-3">
           <div className="text-xs text-gray-600 bg-slate-50 p-3 rounded border">
-            엑셀에서 행 단위 복사 (탭 구분) 후 페이스트. 필수 컬럼: <b>제품코드 / 원재료 / 총투입량(g)</b>. 선택: 제품명, 순번.
-            같은 제품코드의 여러 행이 자동으로 한 레시피로 묶입니다.
+            엑셀에서 <b>헤더 포함 표 전체</b>를 복사해서 붙여넣으세요 (탭 구분).<br />
+            필수 컬럼: <b>제품코드</b> / <b>원재료</b> / <b>식재료 필요량</b> (없으면 총투입량). 선택: 제품명, 순번.<br />
+            나머지 컬럼(배합비, 비가식부수율, 공정수율, 바트당투입량 등)은 자동으로 무시됩니다.
+            같은 제품코드의 여러 행이 한 레시피로 묶여요.
           </div>
           <textarea value={text} onChange={(e) => setText(e.target.value)}
-            placeholder="제품코드	제품명	순번	원재료	총투입량(g)..."
+            placeholder="제품코드	제품명	순번	원재료	... 식재료 필요량 ..."
             className="w-full h-48 border rounded p-2 text-xs font-mono" />
           {text.trim() && (
             <div className="text-xs">
