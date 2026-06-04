@@ -2,7 +2,10 @@ import { useEffect, useState } from 'react';
 import { doc, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase';
 
+type StageKey = 'pp' | 'bg' | 'ck' | 'fl' | 'pk';
 type DayProductivity = {
+  pot?: number; bat?: number;
+  pp_people?: number; pp_start?: string; pp_end?: string;
   bg_people?: number; bg_start?: string; bg_end?: string;
   ck_people?: number; ck_start?: string; ck_end?: string;
   fl_people?: number; fl_start?: string; fl_end?: string;
@@ -10,7 +13,7 @@ type DayProductivity = {
 };
 
 type Stage = {
-  key: 'bg' | 'ck' | 'fl' | 'pk';
+  key: StageKey;
   label: string;
   emoji: string;
   fill: string;
@@ -21,11 +24,22 @@ type Stage = {
 };
 
 const STAGES: Stage[] = [
+  { key: 'pp', label: '전처리', emoji: '🔪', fill: '#8b5cf6', fillLight: '#ede9fe', textOn: '#ffffff', textOff: '#5b21b6', border: '#c4b5fd' },
   { key: 'bg', label: '배합',   emoji: '🥣', fill: '#2563eb', fillLight: '#dbeafe', textOn: '#ffffff', textOff: '#1e40af', border: '#93c5fd' },
   { key: 'ck', label: '취반기', emoji: '🍚', fill: '#059669', fillLight: '#d1fae5', textOn: '#ffffff', textOff: '#065f46', border: '#6ee7b7' },
   { key: 'fl', label: '화구',   emoji: '🔥', fill: '#ea580c', fillLight: '#ffedd5', textOn: '#ffffff', textOff: '#9a3412', border: '#fdba74' },
   { key: 'pk', label: '내포장', emoji: '📦', fill: '#7c3aed', fillLight: '#ede9fe', textOn: '#ffffff', textOff: '#5b21b6', border: '#c4b5fd' },
 ];
+
+/** 공정별 생산성 = numerator(생산갯수) / (인원 × 시간) */
+function computeProd(key: StageKey, pot: number, bat: number, people: number, mins: number): number {
+  if (!people || people <= 0 || mins <= 0) return 0;
+  const total = pot + bat;
+  const numerator = key === 'ck' ? bat : key === 'fl' ? pot : total; // 취반기=바트, 화구=냄비, 나머지=전체
+  if (numerator <= 0) return 0;
+  const hrs = mins / 60;
+  return Math.round(numerator / (people * hrs));
+}
 
 function parseHM(s?: string): number | null {
   if (!s) return null;
@@ -76,9 +90,10 @@ export default function ProcessTimeline({ date }: { date: string }) {
   const axisEnd = Math.ceil(maxMins / 60) * 60;
   const axisRange = Math.max(60, axisEnd - axisStart);
 
-  // 합계: 인시 (사람×분) 환산은 필요시 추후 추가
+  // 합계: 가동시간 합
   const totalDuration = completed.reduce((s, r) => s + ((r.end as number) - (r.start as number)), 0);
-  const totalPeopleHours = completed.reduce((s, r) => s + (((r.end as number) - (r.start as number)) / 60) * (r.people || 0), 0);
+  const pot = data.pot || 0;
+  const bat = data.bat || 0;
 
   // SVG 치수
   const padL = 90, padR = 24, padT = 30, padB = 36;
@@ -106,9 +121,6 @@ export default function ProcessTimeline({ date }: { date: string }) {
           <div className="flex items-center gap-3 text-xs">
             <span className="px-2 py-1 rounded-full bg-blue-100 text-blue-700 font-medium">
               총 가동 <b>{formatDuration(totalDuration)}</b>
-            </span>
-            <span className="px-2 py-1 rounded-full bg-emerald-100 text-emerald-700 font-medium">
-              인시 <b>{totalPeopleHours.toFixed(1)}</b>h
             </span>
           </div>
         )}
@@ -153,12 +165,12 @@ export default function ProcessTimeline({ date }: { date: string }) {
                   {/* 라벨 (좌측) */}
                   <g transform={`translate(0, ${y})`}>
                     <rect x={0} y={0} width={padL - 8} height={rowH} fill={stage.fillLight} rx={6} />
-                    <text x={padL / 2 - 4} y={rowH / 2 - 4} textAnchor="middle" fontSize="13" fill={stage.textOff} fontWeight="bold">
+                    <text x={padL / 2 - 4} y={rowH / 2 - 6} textAnchor="middle" fontSize="13" fill={stage.textOff} fontWeight="bold">
                       {stage.emoji} {stage.label}
                     </text>
                     {r.people !== undefined && r.people !== null && (
-                      <text x={padL / 2 - 4} y={rowH / 2 + 13} textAnchor="middle" fontSize="11" fill={stage.textOff}>
-                        👥 {r.people}명
+                      <text x={padL / 2 - 4} y={rowH / 2 + 8} textAnchor="middle" fontSize="10" fill={stage.textOff}>
+                        👥 {r.people}명{valid && r.people ? `  ·  ${computeProd(stage.key, pot, bat, r.people, dur)}` : ''}
                       </text>
                     )}
                   </g>
@@ -220,11 +232,12 @@ export default function ProcessTimeline({ date }: { date: string }) {
           </svg>
 
           {/* 하단 통계 카드 */}
-          <div className="mt-4 grid grid-cols-2 md:grid-cols-4 gap-2">
+          <div className="mt-4 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-5 gap-2">
             {rows.map((r) => {
               const stage = r.stage;
               const valid = r.start !== null && r.end !== null && (r.end as number) >= (r.start as number);
               const dur = valid ? (r.end as number) - (r.start as number) : 0;
+              const prod = valid && r.people ? computeProd(stage.key, pot, bat, r.people, dur) : 0;
               return (
                 <div
                   key={stage.key}
@@ -246,8 +259,11 @@ export default function ProcessTimeline({ date }: { date: string }) {
                         {' ~ '}
                         {pad2(Math.floor((r.end as number) / 60))}:{pad2((r.end as number) % 60)}
                       </div>
-                      <div className="text-[10px] mt-0.5" style={{ color: stage.textOff }}>
-                        {formatDuration(dur)}
+                      <div className="flex items-center justify-between mt-0.5">
+                        <span className="text-[10px]" style={{ color: stage.textOff }}>{formatDuration(dur)}</span>
+                        {prod > 0 && (
+                          <span className="text-[11px] font-bold" style={{ color: stage.textOff }}>생산성 {prod}</span>
+                        )}
                       </div>
                     </>
                   ) : (
