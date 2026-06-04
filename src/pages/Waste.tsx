@@ -46,10 +46,24 @@ function monthShort(m: string): string {
   return y === thisY ? `${mm}월` : `${String(y).slice(2)}년${mm}월`;
 }
 
+/** 데이터 입력 시작월 — 이 월부터 현재월까지만 표시 */
+const DATA_START = '2026-05';
+
+function monthsBetween(start: string, end: string): string[] {
+  const out: string[] = [];
+  let cur = start;
+  // end 가 start 보다 과거면 start 한 개만
+  if (end < start) return [start];
+  while (cur <= end) {
+    out.push(cur);
+    cur = shiftMonthKey(cur, 1);
+  }
+  return out;
+}
+
 export default function Waste() {
   const todayMonth = thisMonthKey();
-  const [baseMonth, setBaseMonth] = useState(todayMonth);
-  const [selectedMonth, setSelectedMonth] = useState(todayMonth);
+  const [selectedMonth, setSelectedMonth] = useState(todayMonth >= DATA_START ? todayMonth : DATA_START);
 
   /* 마스터 DB 구독 (recipes + materialPrices) */
   const [recipeMap, setRecipeMap] = useState<Map<string, Recipe>>(new Map());
@@ -81,9 +95,10 @@ export default function Waste() {
   const [entriesByMonth, setEntriesByMonth] = useState<Record<string, WasteEntry[]>>({});
   const [loading, setLoading] = useState(false);
   const [refreshTick, setRefreshTick] = useState(0);
+  // 데이터 시작월(DATA_START) ~ 현재월 까지만 표시
   const months13 = useMemo(
-    () => Array.from({ length: 13 }, (_, i) => shiftMonthKey(baseMonth, -12 + i)),
-    [baseMonth]
+    () => monthsBetween(DATA_START, todayMonth >= DATA_START ? todayMonth : DATA_START),
+    [todayMonth]
   );
 
   useEffect(() => {
@@ -165,7 +180,6 @@ export default function Waste() {
   const onSavedEntry = () => { clearAllCache(); setRefreshTick((t) => t + 1); };
 
   const shiftSel = (delta: number) => setSelectedMonth(shiftMonthKey(selectedMonth, delta));
-  const shiftBase = (delta: number) => setBaseMonth(shiftMonthKey(baseMonth, delta));
 
   /* 엑셀 다운로드 */
   const downloadXlsx = async () => {
@@ -180,7 +194,7 @@ export default function Waste() {
     ws1.columns = [{ width: 12 }, { width: 14 }, { width: 14 }, { width: 18 }];
     ws1.mergeCells('A1:D1');
     const t1 = ws1.getCell('A1');
-    t1.value = `폐기금액 — ${months13[0]} ~ ${months13[12]}`;
+    t1.value = `폐기금액 — ${months13[0]} ~ ${months13[months13.length - 1]}`;
     t1.font = { size: 14, bold: true, name: '맑은 고딕' };
     t1.alignment = { horizontal: 'center', vertical: 'middle' };
     ['월', '폐기 건수', '폐기 갯수합', '폐기금액(₩)'].forEach((h, i) => {
@@ -255,7 +269,7 @@ export default function Waste() {
     const buf = await wb.xlsx.writeBuffer();
     const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = `폐기금액_${baseMonth}.xlsx`; a.click();
+    const a = document.createElement('a'); a.href = url; a.download = `폐기금액_${months13[0]}_${months13[months13.length - 1]}.xlsx`; a.click();
     URL.revokeObjectURL(url);
   };
 
@@ -282,7 +296,7 @@ export default function Waste() {
         {loading && <span className="text-xs text-blue-600">불러오는 중...</span>}
         <div className="ml-auto flex gap-1.5">
           <button onClick={() => { clearAllCache(); setRefreshTick((t) => t + 1); }} className="px-2.5 py-1 text-xs rounded border hover:bg-gray-50" title="캐시 무시하고 다시 불러오기">🔄</button>
-          <button onClick={() => { setBaseMonth(todayMonth); setSelectedMonth(todayMonth); }} className="px-2.5 py-1 text-xs rounded border hover:bg-gray-50">이번 달</button>
+          <button onClick={() => setSelectedMonth(todayMonth >= DATA_START ? todayMonth : DATA_START)} className="px-2.5 py-1 text-xs rounded border hover:bg-gray-50">이번 달</button>
           <button onClick={downloadXlsx} className="px-3 py-1.5 text-xs rounded bg-emerald-600 text-white font-semibold hover:bg-emerald-700">📥 엑셀</button>
           <button onClick={() => setShowInput(true)} className="px-4 py-1.5 text-sm rounded bg-rose-600 text-white font-semibold hover:bg-rose-700 shadow-sm">+ 폐기 등록</button>
         </div>
@@ -300,8 +314,8 @@ export default function Waste() {
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
         <KpiCard label={`${selectedMonth.slice(5).replace(/^0/, '')}월 폐기금액`} value={Math.round(selTotal).toLocaleString() + '₩'} accent="rose" />
         <KpiCard label={`${selectedMonth.slice(5).replace(/^0/, '')}월 폐기 건수`} value={selEntries.length + '건'} accent="slate" />
-        <KpiCard label="13개월 누적 폐기금액" value={Math.round(yearTotal).toLocaleString() + '₩'} accent="amber" />
-        <KpiCard label="13개월 폐기 갯수합" value={yearQty.toLocaleString() + '개'} accent="slate" />
+        <KpiCard label="누적 폐기금액" value={Math.round(yearTotal).toLocaleString() + '₩'} accent="amber" />
+        <KpiCard label="누적 폐기 갯수합" value={yearQty.toLocaleString() + '개'} accent="slate" />
       </div>
 
       {/* 선택 월 상세 (가장 중요 — 위로) */}
@@ -313,16 +327,11 @@ export default function Waste() {
         <DetailTable entries={selEntries} recipeMap={recipeMap} priceMap={priceMap} onChanged={onSavedEntry} />
       </div>
 
-      {/* 13개월 표 */}
+      {/* 월별 요약 표 */}
       <div className="bg-white border rounded-lg overflow-hidden">
         <div className="px-4 py-2.5 border-b bg-slate-50 font-bold text-gray-800 text-sm flex items-center gap-2">
-          <span>📅 13개월 월별 요약</span>
-          <span className="text-xs text-gray-500 font-normal">{months13[0]} ~ {months13[12]} · 행 클릭으로 해당월 보기</span>
-          <div className="ml-auto flex items-center gap-1">
-            <button onClick={() => shiftBase(-1)} className="w-7 h-7 rounded hover:bg-gray-100 text-xs">◀</button>
-            <input type="month" value={baseMonth} onChange={(e) => e.target.value && setBaseMonth(e.target.value)} className="border rounded px-2 py-0.5 text-xs" />
-            <button onClick={() => shiftBase(1)} className="w-7 h-7 rounded hover:bg-gray-100 text-xs">▶</button>
-          </div>
+          <span>📅 월별 요약</span>
+          <span className="text-xs text-gray-500 font-normal">{months13[0]} ~ {months13[months13.length - 1]} · 행 클릭으로 해당월 보기</span>
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
@@ -353,9 +362,9 @@ export default function Waste() {
         </div>
       </div>
 
-      {/* 13개월 차트 (맨 아래) */}
+      {/* 월별 차트 (맨 아래) */}
       <div className="bg-white border rounded-lg p-4">
-        <h3 className="font-bold text-gray-800 mb-2 text-sm">📊 월별 폐기금액 추이 <span className="text-xs text-gray-500 font-normal">(13개월 · 막대 클릭으로 해당월 보기)</span></h3>
+        <h3 className="font-bold text-gray-800 mb-2 text-sm">📊 월별 폐기금액 추이 <span className="text-xs text-gray-500 font-normal">(막대 클릭으로 해당월 보기)</span></h3>
         {hasAnyData ? (
           <CostBars13
             data={months13.map((m) => ({ label: monthShort(m), value: monthTotals.get(m)?.cost || 0 }))}
