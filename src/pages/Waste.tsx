@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { addDoc, collection, collectionGroup, deleteDoc, doc, getDocs, onSnapshot, query, where } from 'firebase/firestore';
 import ExcelJS from 'exceljs';
 import { db } from '../firebase';
@@ -422,6 +422,21 @@ function DetailTable({
     rows: expandWasteEntry(e, recipeMap.get(e.code), priceMap),
   }));
 
+  // 접힘/펼침 상태 (기본: 모두 접힘)
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const toggle = (key: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  };
+  const allKeys = groups.map(({ entry }, gi) => entry.id || String(gi));
+  const allExpanded = allKeys.length > 0 && allKeys.every((k) => expanded.has(k));
+  const toggleAll = () => {
+    setExpanded(allExpanded ? new Set() : new Set(allKeys));
+  };
+
   const delEntry = async (e: WasteEntry) => {
     if (!e.id) return;
     if (!confirm(`${e.date} ${e.code} ${e.name} (×${e.qty}) 폐기 기록을 삭제할까요?`)) return;
@@ -435,63 +450,74 @@ function DetailTable({
 
   return (
     <div className="overflow-x-auto">
+      <div className="px-3 py-1.5 border-b bg-white text-xs text-gray-500 flex items-center justify-end">
+        <button onClick={toggleAll} className="px-2 py-0.5 rounded border hover:bg-gray-50">
+          {allExpanded ? '전체 접기' : '전체 펼치기'}
+        </button>
+      </div>
       <table className="w-full text-xs">
         <thead className="bg-slate-50 text-gray-600">
           <tr>
+            <th className="border px-2 py-1.5 w-10"></th>
             <th className="border px-2 py-1.5">일자</th>
             <th className="border px-2 py-1.5">코드</th>
             <th className="border px-2 py-1.5 text-left">제품</th>
             <th className="border px-2 py-1.5 text-right">갯수</th>
-            <th className="border px-2 py-1.5 text-right">순번</th>
-            <th className="border px-2 py-1.5 text-left">원재료</th>
-            <th className="border px-2 py-1.5 text-right">중량(g)</th>
-            <th className="border px-2 py-1.5 text-right">단가(₩/g)</th>
+            <th className="border px-2 py-1.5 text-right">원재료수</th>
             <th className="border px-2 py-1.5 text-right">폐기금액(₩)</th>
-            <th className="border px-2 py-1.5"></th>
+            <th className="border px-2 py-1.5 w-16"></th>
           </tr>
         </thead>
         <tbody>
           {groups.map(({ entry, rows }, gi) => {
+            const key = entry.id || String(gi);
+            const isOpen = expanded.has(key);
             const total = rows.reduce((s, r) => s + r.cost, 0);
-            if (rows.length === 0) {
-              return (
-                <tr key={entry.id || gi} className="border-t bg-rose-50">
-                  <td className="border px-2 py-1 text-center">{entry.date.slice(5)}</td>
-                  <td className="border px-2 py-1 text-center font-mono">{entry.code}</td>
-                  <td className="border px-2 py-1">{entry.name}</td>
-                  <td className="border px-2 py-1 text-right">{entry.qty}</td>
-                  <td className="border px-2 py-1 text-center text-amber-700" colSpan={5}>⚠️ 레시피 미등록</td>
-                  <td className="border px-2 py-1 text-center">
-                    <button onClick={() => delEntry(entry)} className="text-red-500 hover:underline">삭제</button>
+            const missing = rows.length === 0;
+            return (
+              <Fragment key={key}>
+                {/* 요약 행 — 클릭으로 토글 */}
+                <tr
+                  onClick={() => !missing && toggle(key)}
+                  className={`border-t border-t-2 border-t-gray-300 ${missing ? 'bg-rose-50' : 'hover:bg-amber-50 cursor-pointer'}`}
+                >
+                  <td className="border px-2 py-1.5 text-center text-gray-500">
+                    {missing ? '⚠️' : (isOpen ? '▼' : '▶')}
+                  </td>
+                  <td className="border px-2 py-1.5 text-center">{entry.date.slice(5)}</td>
+                  <td className="border px-2 py-1.5 text-center font-mono">{entry.code}</td>
+                  <td className="border px-2 py-1.5">{entry.name}</td>
+                  <td className="border px-2 py-1.5 text-right font-bold">{entry.qty}</td>
+                  <td className="border px-2 py-1.5 text-right text-gray-600">
+                    {missing ? <span className="text-amber-700">레시피 미등록</span> : rows.length}
+                  </td>
+                  <td className="border px-2 py-1.5 text-right font-bold text-rose-700">
+                    {missing ? '-' : Math.round(total).toLocaleString()}
+                  </td>
+                  <td className="border px-2 py-1.5 text-center">
+                    <button onClick={(e) => { e.stopPropagation(); delEntry(entry); }} className="text-xs text-red-500 hover:underline">삭제</button>
                   </td>
                 </tr>
-              );
-            }
-            return rows.map((r, ri) => (
-              <tr key={(entry.id || gi) + '-' + r.seq} className={`border-t ${ri === 0 ? 'border-t-2 border-t-gray-400' : ''}`}>
-                {ri === 0 && (
-                  <>
-                    <td className="border px-2 py-1 text-center align-top" rowSpan={rows.length}>{entry.date.slice(5)}</td>
-                    <td className="border px-2 py-1 text-center font-mono align-top" rowSpan={rows.length}>{entry.code}</td>
-                    <td className="border px-2 py-1 align-top" rowSpan={rows.length}>{entry.name}</td>
-                    <td className="border px-2 py-1 text-right align-top font-bold" rowSpan={rows.length}>{entry.qty}</td>
-                  </>
-                )}
-                <td className="border px-2 py-1 text-right text-gray-500">{r.seq}</td>
-                <td className="border px-2 py-1">{r.ingredient}</td>
-                <td className="border px-2 py-1 text-right">{r.weight.toLocaleString(undefined, { maximumFractionDigits: 2 })}</td>
-                <td className={`border px-2 py-1 text-right ${r.hasPrice ? '' : 'text-amber-600'}`}>
-                  {r.hasPrice ? r.price.toLocaleString() : '단가 없음'}
-                </td>
-                <td className="border px-2 py-1 text-right font-bold text-rose-700">{Math.round(r.cost).toLocaleString()}</td>
-                {ri === 0 && (
-                  <td className="border px-2 py-1 text-center align-top" rowSpan={rows.length}>
-                    <div className="font-bold text-rose-700">{Math.round(total).toLocaleString()}</div>
-                    <button onClick={() => delEntry(entry)} className="text-xs text-red-500 hover:underline mt-1">삭제</button>
-                  </td>
-                )}
-              </tr>
-            ));
+                {/* 펼친 상태 — 원재료 행들 */}
+                {isOpen && !missing && rows.map((r) => (
+                  <tr key={key + '-' + r.seq} className="bg-slate-50/60">
+                    <td className="border px-2 py-1"></td>
+                    <td className="border px-2 py-1 text-right text-gray-500" colSpan={2}>순번 {r.seq}</td>
+                    <td className="border px-2 py-1">{r.ingredient}</td>
+                    <td className="border px-2 py-1 text-right text-gray-600">
+                      <span className="text-gray-400 mr-1">중량</span>
+                      {r.weight.toLocaleString(undefined, { maximumFractionDigits: 2 })}g
+                    </td>
+                    <td className={`border px-2 py-1 text-right ${r.hasPrice ? 'text-gray-600' : 'text-amber-600'}`}>
+                      <span className="text-gray-400 mr-1">단가</span>
+                      {r.hasPrice ? `${r.price.toLocaleString()}₩/g` : '없음'}
+                    </td>
+                    <td className="border px-2 py-1 text-right font-bold text-rose-700">{Math.round(r.cost).toLocaleString()}</td>
+                    <td className="border px-2 py-1"></td>
+                  </tr>
+                ))}
+              </Fragment>
+            );
           })}
         </tbody>
       </table>
