@@ -3,7 +3,7 @@ import { addDoc, collection, collectionGroup, deleteDoc, doc, getDocs, onSnapsho
 import ExcelJS from 'exceljs';
 import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
-import { expandAll, expandWasteEntry, normalizeMaterialName } from '../lib/wasteCompute';
+import { CODE_KEY_PREFIX, expandAll, expandWasteEntry, normalizeCode, normalizeMaterialName } from '../lib/wasteCompute';
 import type { Recipe, WasteEntry } from '../lib/wasteCompute';
 
 /* ===== 캐시 (월별) ===== */
@@ -84,8 +84,11 @@ export default function Waste() {
     return onSnapshot(collection(db, 'materialPrices'), (snap) => {
       const map = new Map<string, number>();
       snap.forEach((d) => {
-        const data = d.data() as { name: string; pricePerGram?: number };
-        map.set(normalizeMaterialName(data.name || d.id), Number(data.pricePerGram) || 0);
+        const data = d.data() as { name?: string; pricePerGram?: number; code?: string };
+        const price = Number(data.pricePerGram) || 0;
+        // 이름 키 + 코드 키 둘 다 등록 (코드 우선 매칭)
+        if (data.name) map.set(normalizeMaterialName(data.name), price);
+        if (data.code) map.set(CODE_KEY_PREFIX + normalizeCode(data.code), price);
       });
       setPriceMap(map);
     });
