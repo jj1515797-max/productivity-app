@@ -7,9 +7,10 @@ import type { AttendanceRecord, Item, Member, ProductSetting } from '../types';
 import { summarizeAttendance } from '../lib/attendance';
 import { convertErpCode, normalizeCode } from '../lib/codeUtil';
 
-type StageKey = 'bg' | 'ck' | 'fl' | 'pk';
+type StageKey = 'pp' | 'bg' | 'ck' | 'fl' | 'pk';
 
 const STAGES: { key: StageKey; label: string; tone: string }[] = [
+  { key: 'pp', label: '전처리', tone: 'border-purple-500' },
   { key: 'bg', label: '배합',   tone: 'border-blue-500' },
   { key: 'ck', label: '취반기', tone: 'border-emerald-500' },
   { key: 'fl', label: '화구',   tone: 'border-orange-500' },
@@ -22,6 +23,7 @@ type DayData = {
   bat?: number;
   attend?: number;
   leave?: number;
+  pp_people?: number; pp_start?: string; pp_end?: string;
   bg_people?: number; bg_start?: string; bg_end?: string;
   ck_people?: number; ck_start?: string; ck_end?: string;
   fl_people?: number; fl_start?: string; fl_end?: string;
@@ -167,14 +169,13 @@ export default function ProductivityInput() {
     }
   };
 
-  // 진행률: 12개 필드 (4 stage × 3)
+  // 진행률: STAGES × 3 필드
   const progress = useMemo(() => {
-    const fields: (keyof DayData)[] = [
-      'bg_people', 'bg_start', 'bg_end',
-      'ck_people', 'ck_start', 'ck_end',
-      'fl_people', 'fl_start', 'fl_end',
-      'pk_people', 'pk_start', 'pk_end',
-    ];
+    const fields: (keyof DayData)[] = STAGES.flatMap((s) => [
+      `${s.key}_people` as keyof DayData,
+      `${s.key}_start` as keyof DayData,
+      `${s.key}_end` as keyof DayData,
+    ]);
     let filled = 0;
     fields.forEach((f) => {
       const v = data[f];

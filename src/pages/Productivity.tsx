@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { collection, collectionGroup, doc, getDoc, getDocs, query, where } from 'firebase/firestore';
 import ExcelJS from 'exceljs';
 import { db } from '../firebase';
@@ -32,8 +32,9 @@ function clearAllProdCache() {
   } catch {}
 }
 
-type StageKey = 'bg' | 'ck' | 'fl' | 'pk';
+type StageKey = 'pp' | 'bg' | 'ck' | 'fl' | 'pk';
 const STAGES: { key: StageKey; label: string; color: string }[] = [
+  { key: 'pp', label: '전처리', color: '#8b5cf6' },
   { key: 'bg', label: '배합',   color: '#3b82f6' },
   { key: 'ck', label: '취반기', color: '#ef4444' },
   { key: 'fl', label: '화구',   color: '#f59e0b' },
@@ -46,6 +47,7 @@ const DOW_LABELS = ['일', '월', '화', '수', '목', '금', '토'];
 interface DayProd {
   date: string;
   pot: number; bat: number; attend: number; leave: number;
+  pp_people?: number; pp_start?: string; pp_end?: string;
   bg_people?: number; bg_start?: string; bg_end?: string;
   ck_people?: number; ck_start?: string; ck_end?: string;
   fl_people?: number; fl_start?: string; fl_end?: string;
@@ -82,13 +84,14 @@ function computeRow(d: DayProd) {
     if (!people || people <= 0 || hrs <= 0 || numerator <= 0) return { hrs, prod: 0 };
     return { hrs, prod: Math.round(numerator / (people * hrs)) };
   };
+  const pp = stage(total, d.pp_people, d.pp_start, d.pp_end);
   const bg = stage(total, d.bg_people, d.bg_start, d.bg_end);
   const ck = stage(bat,   d.ck_people, d.ck_start, d.ck_end);
   const fl = stage(pot,   d.fl_people, d.fl_start, d.fl_end);
   const pk = stage(total, d.pk_people, d.pk_start, d.pk_end);
   const denom = (d.attend || 0) + (d.leave || 0);
   const totalProd = denom > 0 && total > 0 ? Math.round(total / denom) : 0;
-  return { total, pot, bat, bg, ck, fl, pk, totalProd };
+  return { total, pot, bat, pp, bg, ck, fl, pk, totalProd };
 }
 
 async function downloadXlsx(month: string, days: DayProd[]) {
@@ -106,6 +109,7 @@ async function downloadXlsx(month: string, days: DayProd[]) {
     { width: 6 }, { width: 7 }, { width: 9 },
     { width: 6 }, { width: 7 }, { width: 9 },
     { width: 6 }, { width: 7 }, { width: 9 },
+    { width: 6 }, { width: 7 }, { width: 9 },
     { width: 7 }, { width: 7 }, { width: 11 },
   ];
 
@@ -114,30 +118,48 @@ async function downloadXlsx(month: string, days: DayProd[]) {
   const headerFill = (argb: string) => ({ type: 'pattern' as const, pattern: 'solid' as const, fgColor: { argb } });
   const baseFont = { size: 11, name: '맑은 고딕' } as const;
 
+  // 동적 컬럼 인덱스: [날짜, 요일, 냄비, 바트, 합계] + 각 STAGE 3컬럼 + [출근, 연차, 전체생산성]
+  const STAGE_FILLS: Record<StageKey, string> = {
+    pp: 'FFEDE9FE', bg: 'FFDBEAFE', ck: 'FFFEE2E2', fl: 'FFFEF3C7', pk: 'FFD1FAE5',
+  };
+  const stageStartCol = 6; // F
+  const stageWidth = 3;
+  const tailStartCol = stageStartCol + STAGES.length * stageWidth; // 6 + 15 = 21
+  const totalCols = tailStartCol + 2; // +출근, +연차, +전체생산성 → 23
+
+  const colLetter = (n: number) => {
+    let s = ''; let x = n;
+    while (x > 0) { const m = (x - 1) % 26; s = String.fromCharCode(65 + m) + s; x = Math.floor((x - 1) / 26); }
+    return s;
+  };
+
   // 1행: 타이틀
-  ws.mergeCells('A1:T1');
+  ws.mergeCells(`A1:${colLetter(totalCols)}1`);
   const title = ws.getCell('A1');
   title.value = `${month} 생산성 일별 상세`;
   title.font = { size: 14, bold: true, name: '맑은 고딕' };
   title.alignment = { horizontal: 'center', vertical: 'middle' };
   ws.getRow(1).height = 22;
 
-  // 2~3행: 헤더 (병합)
-  const groupHeaders = [
+  // 2~3행: 헤더
+  const fixedLeft: { range: string; text: string; fill: string }[] = [
     { range: 'A2:A3', text: '날짜', fill: 'FFE2E8F0' },
     { range: 'B2:B3', text: '요일', fill: 'FFE2E8F0' },
     { range: 'C2:C3', text: '냄비', fill: 'FFE2E8F0' },
     { range: 'D2:D3', text: '바트', fill: 'FFE2E8F0' },
     { range: 'E2:E3', text: '합계', fill: 'FFE2E8F0' },
-    { range: 'F2:H2', text: '배합',   fill: 'FFDBEAFE' },
-    { range: 'I2:K2', text: '취반기', fill: 'FFFEE2E2' },
-    { range: 'L2:N2', text: '화구',   fill: 'FFFEF3C7' },
-    { range: 'O2:Q2', text: '내포장', fill: 'FFD1FAE5' },
-    { range: 'R2:R3', text: '출근', fill: 'FFE2E8F0' },
-    { range: 'S2:S3', text: '연차', fill: 'FFE2E8F0' },
-    { range: 'T2:T3', text: '전체생산성', fill: 'FFE2E8F0' },
   ];
-  groupHeaders.forEach(({ range, text, fill }) => {
+  const stageHeaders = STAGES.map((s, i) => {
+    const c1 = stageStartCol + i * stageWidth;
+    const c2 = c1 + stageWidth - 1;
+    return { range: `${colLetter(c1)}2:${colLetter(c2)}2`, text: s.label, fill: STAGE_FILLS[s.key] };
+  });
+  const fixedRight: { range: string; text: string; fill: string }[] = [
+    { range: `${colLetter(tailStartCol)}2:${colLetter(tailStartCol)}3`,     text: '출근',       fill: 'FFE2E8F0' },
+    { range: `${colLetter(tailStartCol + 1)}2:${colLetter(tailStartCol + 1)}3`, text: '연차',     fill: 'FFE2E8F0' },
+    { range: `${colLetter(tailStartCol + 2)}2:${colLetter(tailStartCol + 2)}3`, text: '전체생산성', fill: 'FFE2E8F0' },
+  ];
+  [...fixedLeft, ...stageHeaders, ...fixedRight].forEach(({ range, text, fill }) => {
     ws.mergeCells(range);
     const c = ws.getCell(range.split(':')[0]);
     c.value = text;
@@ -145,23 +167,20 @@ async function downloadXlsx(month: string, days: DayProd[]) {
     c.alignment = { horizontal: 'center', vertical: 'middle' };
     c.fill = headerFill(fill);
   });
-  // 3행 (stage sub-headers)
-  const subHeaders: { col: string; text: string; fill: string }[] = [
-    { col: 'F3', text: '인원', fill: 'FFDBEAFE' }, { col: 'G3', text: '시간', fill: 'FFDBEAFE' }, { col: 'H3', text: '생산성', fill: 'FFDBEAFE' },
-    { col: 'I3', text: '인원', fill: 'FFFEE2E2' }, { col: 'J3', text: '시간', fill: 'FFFEE2E2' }, { col: 'K3', text: '생산성', fill: 'FFFEE2E2' },
-    { col: 'L3', text: '인원', fill: 'FFFEF3C7' }, { col: 'M3', text: '시간', fill: 'FFFEF3C7' }, { col: 'N3', text: '생산성', fill: 'FFFEF3C7' },
-    { col: 'O3', text: '인원', fill: 'FFD1FAE5' }, { col: 'P3', text: '시간', fill: 'FFD1FAE5' }, { col: 'Q3', text: '생산성', fill: 'FFD1FAE5' },
-  ];
-  subHeaders.forEach(({ col, text, fill }) => {
-    const c = ws.getCell(col);
-    c.value = text;
-    c.font = { ...baseFont, bold: true, size: 10 };
-    c.alignment = { horizontal: 'center', vertical: 'middle' };
-    c.fill = headerFill(fill);
+  // 3행 stage sub-headers (인원/시간/생산성)
+  STAGES.forEach((s, i) => {
+    const base = stageStartCol + i * stageWidth;
+    ['인원', '시간', '생산성'].forEach((label, k) => {
+      const c = ws.getCell(3, base + k);
+      c.value = label;
+      c.font = { ...baseFont, bold: true, size: 10 };
+      c.alignment = { horizontal: 'center', vertical: 'middle' };
+      c.fill = headerFill(STAGE_FILLS[s.key]);
+    });
   });
   // 2~3행 전체에 border 적용
   for (let r = 2; r <= 3; r++) {
-    for (let c = 1; c <= 20; c++) {
+    for (let c = 1; c <= totalCols; c++) {
       ws.getCell(r, c).border = border;
     }
   }
@@ -179,27 +198,23 @@ async function downloadXlsx(month: string, days: DayProd[]) {
     row.getCell(3).value = d.pot || null;
     row.getCell(4).value = d.bat || null;
     row.getCell(5).value = r.total || null;
-    const stageVals: [number | null, number | null, number | null][] = [
-      [d.bg_people ?? null, r.bg.hrs ? Number(r.bg.hrs.toFixed(1)) : null, r.bg.prod || null],
-      [d.ck_people ?? null, r.ck.hrs ? Number(r.ck.hrs.toFixed(1)) : null, r.ck.prod || null],
-      [d.fl_people ?? null, r.fl.hrs ? Number(r.fl.hrs.toFixed(1)) : null, r.fl.prod || null],
-      [d.pk_people ?? null, r.pk.hrs ? Number(r.pk.hrs.toFixed(1)) : null, r.pk.prod || null],
-    ];
-    stageVals.forEach(([p, h, prod], si) => {
-      const base = 6 + si * 3;
-      row.getCell(base).value = p;
-      row.getCell(base + 1).value = h;
-      row.getCell(base + 2).value = prod;
+    STAGES.forEach((s, si) => {
+      const base = stageStartCol + si * stageWidth;
+      const st = (r as any)[s.key] as { hrs: number; prod: number };
+      const people = (d as any)[`${s.key}_people`] as number | undefined;
+      row.getCell(base).value = people ?? null;
+      row.getCell(base + 1).value = st.hrs ? Number(st.hrs.toFixed(1)) : null;
+      row.getCell(base + 2).value = st.prod || null;
     });
-    row.getCell(18).value = d.attend || null;
-    row.getCell(19).value = d.leave || null;
-    row.getCell(20).value = r.totalProd || null;
+    row.getCell(tailStartCol).value = d.attend || null;
+    row.getCell(tailStartCol + 1).value = d.leave || null;
+    row.getCell(tailStartCol + 2).value = r.totalProd || null;
 
     // 스타일
-    for (let c = 1; c <= 20; c++) {
+    for (let c = 1; c <= totalCols; c++) {
       const cell = row.getCell(c);
       cell.border = border;
-      cell.font = { ...baseFont, ...(c === 20 ? { bold: true, color: { argb: 'FFDC2626' } } : {}) };
+      cell.font = { ...baseFont, ...(c === totalCols ? { bold: true, color: { argb: 'FFDC2626' } } : {}) };
       cell.alignment = { horizontal: c <= 2 ? 'center' : 'right', vertical: 'middle' };
       if (sun) cell.fill = headerFill('FFFEF2F2');
       if (typeof cell.value === 'number' && c >= 3 && c <= 5) cell.numFmt = '#,##0';
@@ -411,6 +426,7 @@ export default function Productivity() {
           bat: Number(doc.bat ?? auto.bat) || 0,
           attend: Number(doc.attend ?? attSummary.presentN) || 0,
           leave: Number(doc.leave ?? attSummary.leaveDays) || 0,
+          pp_people: doc.pp_people, pp_start: doc.pp_start, pp_end: doc.pp_end,
           bg_people: doc.bg_people, bg_start: doc.bg_start, bg_end: doc.bg_end,
           ck_people: doc.ck_people, ck_start: doc.ck_start, ck_end: doc.ck_end,
           fl_people: doc.fl_people, fl_start: doc.fl_start, fl_end: doc.fl_end,
@@ -433,49 +449,46 @@ export default function Productivity() {
   const isMeaningful = (d: DayProd) => {
     if (dowOf(d.date) === 6) return false;
     if ((d.pot || 0) + (d.bat || 0) > 0) return true;
-    return !!(d.bg_people || d.ck_people || d.fl_people || d.pk_people);
+    return STAGES.some((s) => !!(d as any)[`${s.key}_people`]);
   };
 
   const inRange = (s: string, e: string) =>
     days.filter((d) => d.date >= s && d.date <= e && isMeaningful(d));
   const rangeDays = useMemo(() => inRange(from, to), [days, from, to]);
 
+  // 요일별 평균 — STAGES 동적
+  type StageRecord = Record<StageKey, number[]> & { total: number[] };
+  const newStageBucket = (): StageRecord => {
+    const o: any = { total: [] };
+    STAGES.forEach((s) => { o[s.key] = []; });
+    return o as StageRecord;
+  };
+
   const dowAvg = useMemo(() => {
-    const buckets: Record<number, { bg: number[]; ck: number[]; fl: number[]; pk: number[]; total: number[] }> = {};
+    const buckets: Record<number, StageRecord> = {};
     rangeDays.forEach((d) => {
       const dow = dowOf(d.date);
       const r = computeRow(d);
-      if (!buckets[dow]) buckets[dow] = { bg: [], ck: [], fl: [], pk: [], total: [] };
-      buckets[dow].bg.push(r.bg.prod);
-      buckets[dow].ck.push(r.ck.prod);
-      buckets[dow].fl.push(r.fl.prod);
-      buckets[dow].pk.push(r.pk.prod);
+      if (!buckets[dow]) buckets[dow] = newStageBucket();
+      STAGES.forEach((s) => { buckets[dow][s.key].push((r as any)[s.key].prod); });
       buckets[dow].total.push(r.totalProd);
     });
-    return [1, 2, 3, 4, 5, 0].map((dow) => ({
-      dow,
-      label: `${DOW_LABELS[dow]}요일`,
-      bg: avg(buckets[dow]?.bg || []),
-      ck: avg(buckets[dow]?.ck || []),
-      fl: avg(buckets[dow]?.fl || []),
-      pk: avg(buckets[dow]?.pk || []),
-      total: avg(buckets[dow]?.total || []),
-      n: (buckets[dow]?.total || []).filter((v) => v > 0).length,
-    }));
+    return [1, 2, 3, 4, 5, 0].map((dow) => {
+      const out: any = { dow, label: `${DOW_LABELS[dow]}요일`, total: avg(buckets[dow]?.total || []), n: (buckets[dow]?.total || []).filter((v) => v > 0).length };
+      STAGES.forEach((s) => { out[s.key] = avg(buckets[dow]?.[s.key] || []); });
+      return out as { dow: number; label: string; total: number; n: number } & Record<StageKey, number>;
+    });
   }, [rangeDays]);
 
   const compare = useMemo(() => {
     const computeDow = (s: string, e: string) => {
       const list = inRange(s, e);
-      const map: Record<number, { bg: number[]; ck: number[]; fl: number[]; pk: number[]; total: number[] }> = {};
+      const map: Record<number, StageRecord> = {};
       list.forEach((d) => {
         const dow = dowOf(d.date);
         const r = computeRow(d);
-        if (!map[dow]) map[dow] = { bg: [], ck: [], fl: [], pk: [], total: [] };
-        map[dow].bg.push(r.bg.prod);
-        map[dow].ck.push(r.ck.prod);
-        map[dow].fl.push(r.fl.prod);
-        map[dow].pk.push(r.pk.prod);
+        if (!map[dow]) map[dow] = newStageBucket();
+        STAGES.forEach((st) => { map[dow][st.key].push((r as any)[st.key].prod); });
         map[dow].total.push(r.totalProd);
       });
       return map;
@@ -484,22 +497,15 @@ export default function Productivity() {
     const B = computeDow(bFrom, bTo);
     const diff = (av: number, bv: number) => (av > 0 ? ((bv - av) / av) * 100 : 0);
     return [1, 2, 3, 4, 5, 0].map((dow) => {
-      const a = {
-        bg: avg(A[dow]?.bg || []), ck: avg(A[dow]?.ck || []),
-        fl: avg(A[dow]?.fl || []), pk: avg(A[dow]?.pk || []),
-        total: avg(A[dow]?.total || []),
-      };
-      const b = {
-        bg: avg(B[dow]?.bg || []), ck: avg(B[dow]?.ck || []),
-        fl: avg(B[dow]?.fl || []), pk: avg(B[dow]?.pk || []),
-        total: avg(B[dow]?.total || []),
-      };
-      return {
-        dow, label: `${DOW_LABELS[dow]}요일`, a, b,
-        dbg: diff(a.bg, b.bg), dck: diff(a.ck, b.ck),
-        dfl: diff(a.fl, b.fl), dpk: diff(a.pk, b.pk),
-        dtotal: diff(a.total, b.total),
-      };
+      const a: any = { total: avg(A[dow]?.total || []) };
+      const b: any = { total: avg(B[dow]?.total || []) };
+      const d: any = { dtotal: diff(a.total, b.total) };
+      STAGES.forEach((s) => {
+        a[s.key] = avg(A[dow]?.[s.key] || []);
+        b[s.key] = avg(B[dow]?.[s.key] || []);
+        d[`d${s.key}`] = diff(a[s.key], b[s.key]);
+      });
+      return { dow, label: `${DOW_LABELS[dow]}요일`, a, b, ...d };
     });
   }, [days, aFrom, aTo, bFrom, bTo]);
 
@@ -580,10 +586,9 @@ export default function Productivity() {
               {dowAvg.map((r) => (
                 <tr key={r.dow} className="border-t">
                   <td className="px-3 py-1.5 font-semibold">{r.label}</td>
-                  <td className="px-3 py-1.5 text-right">{r.bg || '-'}</td>
-                  <td className="px-3 py-1.5 text-right">{r.ck || '-'}</td>
-                  <td className="px-3 py-1.5 text-right">{r.fl || '-'}</td>
-                  <td className="px-3 py-1.5 text-right">{r.pk || '-'}</td>
+                  {STAGES.map((s) => (
+                    <td key={s.key} className="px-3 py-1.5 text-right">{(r as any)[s.key] || '-'}</td>
+                  ))}
                   <td className="px-3 py-1.5 text-right font-bold" style={{ color: TOTAL_COLOR }}>{r.total || '-'}</td>
                   <td className="px-2 py-1.5 text-right text-xs text-gray-400">{r.n}</td>
                 </tr>
@@ -635,16 +640,17 @@ export default function Productivity() {
               {compare.map((r) => (
                 <tr key={r.dow}>
                   <td className="border px-2 py-1 font-semibold">{r.label}</td>
-                  {(['bg','ck','fl','pk'] as const).map((k) => {
-                    const d = r[`d${k}` as keyof typeof r] as number;
+                  {STAGES.map((s) => {
+                    const k = s.key;
+                    const d = (r as any)[`d${k}`] as number;
                     return (
-                      <>
-                        <td key={k+'a'} className="border px-1.5 py-1 text-right">{r.a[k] || '-'}</td>
-                        <td key={k+'b'} className="border px-1.5 py-1 text-right">{r.b[k] || '-'}</td>
-                        <td key={k+'d'} className={`border px-1.5 py-1 text-right font-semibold ${d > 0 ? 'text-green-600 bg-green-50' : d < 0 ? 'text-red-600 bg-red-50' : 'text-gray-400'}`}>
+                      <Fragment key={k}>
+                        <td className="border px-1.5 py-1 text-right">{(r.a as any)[k] || '-'}</td>
+                        <td className="border px-1.5 py-1 text-right">{(r.b as any)[k] || '-'}</td>
+                        <td className={`border px-1.5 py-1 text-right font-semibold ${d > 0 ? 'text-green-600 bg-green-50' : d < 0 ? 'text-red-600 bg-red-50' : 'text-gray-400'}`}>
                           {d ? `${d > 0 ? '+' : ''}${d.toFixed(1)}%` : '-'}
                         </td>
-                      </>
+                      </Fragment>
                     );
                   })}
                   <td className="border px-1.5 py-1 text-right font-bold">{r.a.total || '-'}</td>
@@ -689,11 +695,11 @@ export default function Productivity() {
               <tr className="bg-slate-100 text-[10px] text-gray-500">
                 <th className="border" colSpan={5}></th>
                 {STAGES.map((s) => (
-                  <>
-                    <th key={s.key + 'p'} className="border px-1 py-0.5">인원</th>
-                    <th key={s.key + 'h'} className="border px-1 py-0.5">시간</th>
-                    <th key={s.key + 'r'} className="border px-1 py-0.5">생산성</th>
-                  </>
+                  <Fragment key={s.key}>
+                    <th className="border px-1 py-0.5">인원</th>
+                    <th className="border px-1 py-0.5">시간</th>
+                    <th className="border px-1 py-0.5">생산성</th>
+                  </Fragment>
                 ))}
                 <th className="border" colSpan={3}></th>
               </tr>
@@ -711,16 +717,17 @@ export default function Productivity() {
                     <td className="border px-2 py-1 text-right">{d.pot ? d.pot.toLocaleString() : '-'}</td>
                     <td className="border px-2 py-1 text-right">{d.bat ? d.bat.toLocaleString() : '-'}</td>
                     <td className="border px-2 py-1 text-right font-bold">{r.total ? r.total.toLocaleString() : '-'}</td>
-                    {(['bg','ck','fl','pk'] as const).map((k) => {
+                    {STAGES.map((s) => {
+                      const k = s.key;
                       const peopleKey = `${k}_people` as keyof DayProd;
                       const people = d[peopleKey] as number | undefined;
-                      const stage = r[k];
+                      const stage = (r as any)[k] as { hrs: number; prod: number };
                       return (
-                        <>
-                          <td key={k+'p'} className="border px-1 py-1 text-right">{people || '-'}</td>
-                          <td key={k+'h'} className="border px-1 py-1 text-right">{stage.hrs ? stage.hrs.toFixed(1) : '-'}</td>
-                          <td key={k+'r'} className="border px-1 py-1 text-right font-semibold">{stage.prod || '-'}</td>
-                        </>
+                        <Fragment key={k}>
+                          <td className="border px-1 py-1 text-right">{people || '-'}</td>
+                          <td className="border px-1 py-1 text-right">{stage.hrs ? stage.hrs.toFixed(1) : '-'}</td>
+                          <td className="border px-1 py-1 text-right font-semibold">{stage.prod || '-'}</td>
+                        </Fragment>
                       );
                     })}
                     <td className="border px-2 py-1 text-right">{d.attend || '-'}</td>
@@ -730,7 +737,7 @@ export default function Productivity() {
                 );
               })}
               {rangeDays.length === 0 && (
-                <tr><td colSpan={17} className="text-center text-gray-400 py-8">{loading ? '불러오는 중...' : '데이터가 없습니다 — 조직도→생산성 입력 페이지에서 입력하세요'}</td></tr>
+                <tr><td colSpan={5 + STAGES.length * 3 + 3} className="text-center text-gray-400 py-8">{loading ? '불러오는 중...' : '데이터가 없습니다 — 조직도→생산성 입력 페이지에서 입력하세요'}</td></tr>
               )}
             </tbody>
           </table>
@@ -741,14 +748,15 @@ export default function Productivity() {
 }
 
 /* ===== 차트 컴포넌트 ===== */
-function DowBarChart({ data }: { data: { label: string; bg: number; ck: number; fl: number; pk: number; total: number }[] }) {
+type DowBarRow = { label: string; total: number } & Record<StageKey, number>;
+function DowBarChart({ data }: { data: DowBarRow[] }) {
   const W = 580, H = 240, padL = 36, padR = 12, padT = 24, padB = 28;
-  const maxVal = Math.max(50, ...data.flatMap((d) => [d.bg, d.ck, d.fl, d.pk, d.total]));
+  const maxVal = Math.max(50, ...data.flatMap((d) => [...STAGES.map((s) => d[s.key]), d.total]));
   const niceMax = Math.ceil(maxVal / 100) * 100 || 100;
   const innerW = W - padL - padR;
   const innerH = H - padT - padB;
   const bandW = innerW / data.length;
-  const barW = (bandW - 8) / 4;
+  const barW = (bandW - 8) / STAGES.length;
   const yFor = (v: number) => padT + innerH - (v / niceMax) * innerH;
   const ticks = 4;
   return (
@@ -765,10 +773,12 @@ function DowBarChart({ data }: { data: { label: string; bg: number; ck: number; 
         const xBase = padL + i * bandW + 4;
         return (
           <g key={'bar' + d.label}>
-            <rect x={xBase + barW * 0} y={yFor(d.bg)} width={barW - 1} height={Math.max(0, innerH - (yFor(d.bg) - padT))} fill={STAGES[0].color} />
-            <rect x={xBase + barW * 1} y={yFor(d.ck)} width={barW - 1} height={Math.max(0, innerH - (yFor(d.ck) - padT))} fill={STAGES[1].color} />
-            <rect x={xBase + barW * 2} y={yFor(d.fl)} width={barW - 1} height={Math.max(0, innerH - (yFor(d.fl) - padT))} fill={STAGES[2].color} />
-            <rect x={xBase + barW * 3} y={yFor(d.pk)} width={barW - 1} height={Math.max(0, innerH - (yFor(d.pk) - padT))} fill={STAGES[3].color} />
+            {STAGES.map((s, k) => {
+              const v = d[s.key];
+              return (
+                <rect key={s.key} x={xBase + barW * k} y={yFor(v)} width={barW - 1} height={Math.max(0, innerH - (yFor(v) - padT))} fill={s.color} />
+              );
+            })}
           </g>
         );
       })}

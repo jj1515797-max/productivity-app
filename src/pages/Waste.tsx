@@ -281,8 +281,10 @@ export default function Waste() {
 
   // 전체 13개월 데이터가 있는지 (없으면 차트 빈 상태로 표시)
   const hasAnyData = months13.some((m) => (monthTotals.get(m)?.count || 0) > 0);
-  const yearTotal = months13.reduce((s, m) => s + (monthTotals.get(m)?.cost || 0), 0);
-  const yearQty = months13.reduce((s, m) => s + (monthTotals.get(m)?.qtySum || 0), 0);
+  // 누적 KPI: DATA_START ~ selectedMonth 까지만 합산
+  const cumulMonths = months13.filter((m) => m <= selectedMonth);
+  const yearTotal = cumulMonths.reduce((s, m) => s + (monthTotals.get(m)?.cost || 0), 0);
+  const yearQty = cumulMonths.reduce((s, m) => s + (monthTotals.get(m)?.qtySum || 0), 0);
 
   return (
     <div className="space-y-5">
@@ -318,7 +320,7 @@ export default function Waste() {
         <KpiCard label={`${selectedMonth.slice(5).replace(/^0/, '')}월 폐기금액`} value={Math.round(selTotal).toLocaleString() + '원'} accent="rose" />
         <KpiCard label={`${selectedMonth.slice(5).replace(/^0/, '')}월 폐기 건수`} value={selEntries.length + '건'} accent="slate" />
         <KpiCard label="누적 폐기금액" value={Math.round(yearTotal).toLocaleString() + '원'} accent="amber" />
-        <KpiCard label="누적 폐기 갯수합" value={yearQty.toLocaleString() + '개'} accent="slate" />
+        <KpiCard label="누적 폐기 수량" value={yearQty.toLocaleString() + '개'} accent="slate" />
       </div>
 
       {/* 선택 월 상세 (가장 중요 — 위로) */}
