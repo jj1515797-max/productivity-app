@@ -836,6 +836,17 @@ function RecipeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
     await deleteDoc(doc(db, 'recipes', code));
   };
 
+  // 식재료필요량(gPerPiece) 인라인 수정 → 해당 레시피 문서 ingredients 통째로 갱신
+  const updateGram = async (recipe: RecipeDoc, seq: number, newVal: number) => {
+    const next = (recipe.ingredients || []).map((ing) =>
+      ing.seq === seq ? { ...ing, gPerPiece: newVal } : ing
+    );
+    await updateDoc(doc(db, 'recipes', recipe.code), {
+      ingredients: next,
+      updatedAt: new Date().toISOString(),
+    });
+  };
+
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2 flex-wrap">
@@ -887,7 +898,19 @@ function RecipeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
                               <tr key={ing.seq} className="border-t border-gray-200">
                                 <td className="text-right pr-2 text-gray-500">{ing.seq}</td>
                                 <td>{ing.name}</td>
-                                <td className="text-right pr-2 font-mono">{(ing.gPerPiece || 0).toLocaleString(undefined, { maximumFractionDigits: 3 })}</td>
+                                <td className="text-right pr-1 py-0.5">
+                                  <input
+                                    key={`${r.code}-${ing.seq}-${ing.gPerPiece}`}
+                                    type="number"
+                                    step="0.001"
+                                    defaultValue={ing.gPerPiece ?? 0}
+                                    onBlur={(e) => {
+                                      const v = parseFloat(e.target.value);
+                                      if (!isNaN(v) && v >= 0 && v !== ing.gPerPiece) updateGram(r, ing.seq, v);
+                                    }}
+                                    className="w-28 border rounded px-2 py-0.5 text-right text-xs font-mono focus:ring-1 focus:ring-blue-400"
+                                  />
+                                </td>
                               </tr>
                             ))}
                           </tbody>
