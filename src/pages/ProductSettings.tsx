@@ -861,8 +861,9 @@ function RecipeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
         <div className="p-12 text-center text-gray-400 text-sm border rounded-lg">등록된 레시피가 없습니다 — 📋 일괄 입력 으로 엑셀에서 페이스트</div>
       ) : (
         <div className="border rounded-lg overflow-hidden">
+          <div className="max-h-[600px] overflow-y-auto">
           <table className="w-full text-sm">
-            <thead className="bg-slate-50 text-xs text-gray-600">
+            <thead className="bg-slate-50 text-xs text-gray-600 sticky top-0 z-10">
               <tr>
                 <th className="px-3 py-2 text-left">코드</th>
                 <th className="px-3 py-2 text-left">제품명</th>
@@ -871,7 +872,7 @@ function RecipeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
               </tr>
             </thead>
             <tbody>
-              {filtered.slice(0, 200).map((r) => (
+              {filtered.map((r) => (
                 <>
                   <tr key={r.code} className="border-t hover:bg-slate-50">
                     <td className="px-3 py-1.5 font-mono">{r.code}</td>
@@ -925,9 +926,7 @@ function RecipeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
               ))}
             </tbody>
           </table>
-          {filtered.length > 200 && (
-            <div className="px-3 py-2 text-xs text-gray-500 bg-slate-50 border-t">처음 200개만 표시됨. 검색으로 좁히세요.</div>
-          )}
+          </div>
         </div>
       )}
       {showImport && <RecipeImportModal onClose={() => setShowImport(false)} />}
@@ -1164,8 +1163,9 @@ function MaterialPriceDB({ onCountChange }: { onCountChange: (n: number) => void
         <div className="p-12 text-center text-gray-400 text-sm border rounded-lg">등록된 단가가 없습니다 — 📋 일괄 입력 으로 추가하세요</div>
       ) : (
         <div className="border rounded-lg overflow-hidden">
+          <div className="max-h-[600px] overflow-y-auto">
           <table className="w-full text-sm">
-            <thead className="bg-slate-50 text-xs text-gray-600">
+            <thead className="bg-slate-50 text-xs text-gray-600 sticky top-0 z-10">
               <tr>
                 <th className="px-3 py-2 text-left">원재료명</th>
                 <th className="px-3 py-2 text-left w-36">원재료코드</th>
@@ -1174,7 +1174,7 @@ function MaterialPriceDB({ onCountChange }: { onCountChange: (n: number) => void
               </tr>
             </thead>
             <tbody>
-              {filtered.slice(0, 300).map((p) => (
+              {filtered.map((p) => (
                 <tr key={p.id} className="border-t">
                   <td className="px-3 py-1.5">{p.name}</td>
                   <td className="px-3 py-1 text-left">
@@ -1201,9 +1201,7 @@ function MaterialPriceDB({ onCountChange }: { onCountChange: (n: number) => void
               ))}
             </tbody>
           </table>
-          {filtered.length > 300 && (
-            <div className="px-3 py-2 text-xs text-gray-500 bg-slate-50 border-t">처음 300개만 표시됨</div>
-          )}
+          </div>
         </div>
       )}
       {showImport && <PriceImportModal onClose={() => setShowImport(false)} />}
