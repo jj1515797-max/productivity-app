@@ -1002,7 +1002,10 @@ function RecipeImportModal({ onClose }: { onClose: () => void }) {
       if (rawCol >= 0) break;
     }
     // 원재료 ERP코드 컬럼 (선택) — 단가 매칭 우선키
-    const MATCODE_CANDIDATES = ['원재료코드', '원재료erp코드', 'erp코드', '자재코드', '품목코드', '원재료ERP코드'.toLowerCase()];
+    const MATCODE_CANDIDATES = [
+      '원재료erp코드', '원재료erp', '원재료코드', 'erp코드', 'erp',
+      '자재코드', '품목코드', '재료코드', '재료erp코드', '원재료품목코드',
+    ];
     let matCodeCol = -1;
     for (const cand of MATCODE_CANDIDATES) {
       matCodeCol = header.findIndex((h) => h.toLowerCase() === cand);
@@ -1081,18 +1084,30 @@ function RecipeImportModal({ onClose }: { onClose: () => void }) {
           <textarea value={text} onChange={(e) => setText(e.target.value)}
             placeholder="제품코드	제품명	순번	원재료	... 식재료 필요량 ..."
             className="w-full h-48 border rounded p-2 text-xs font-mono" />
-          {text.trim() && (
-            <div className="text-xs">
-              <div className="font-bold mb-1">미리보기 ({preview.recipes.length}개 제품)</div>
-              {preview.errors.length > 0 && <div className="text-red-600 mb-1">{preview.errors.join(', ')}</div>}
-              {preview.recipes.slice(0, 5).map((r) => (
-                <div key={r.code} className="border-t py-1">
-                  <span className="font-mono font-bold">{r.code}</span> {r.name} — 원재료 {r.ingredients.length}종
+          {text.trim() && (() => {
+            const totalIng = preview.recipes.reduce((s, r) => s + r.ingredients.length, 0);
+            const codedIng = preview.recipes.reduce((s, r) => s + r.ingredients.filter((i) => i.code).length, 0);
+            return (
+              <div className="text-xs">
+                <div className="font-bold mb-1">
+                  미리보기 ({preview.recipes.length}개 제품 · 원재료 {totalIng}건)
+                  <span className={`ml-2 ${codedIng === totalIng && totalIng > 0 ? 'text-emerald-700' : 'text-amber-700'}`}>
+                    {codedIng === 0 ? '⚠️ 원재료코드 컬럼 미인식 — 헤더 확인 필요'
+                      : codedIng === totalIng ? `✓ 코드 ${codedIng}/${totalIng} 인식`
+                      : `⚠️ 코드 ${codedIng}/${totalIng} 만 인식 — 일부 행에 코드 비어있음`}
+                  </span>
                 </div>
-              ))}
-              {preview.recipes.length > 5 && <div className="text-gray-400">... 외 {preview.recipes.length - 5}개</div>}
-            </div>
-          )}
+                {preview.errors.length > 0 && <div className="text-red-600 mb-1">{preview.errors.join(', ')}</div>}
+                {preview.recipes.slice(0, 5).map((r) => (
+                  <div key={r.code} className="border-t py-1">
+                    <span className="font-mono font-bold">{r.code}</span> {r.name} — 원재료 {r.ingredients.length}종
+                    <span className="text-gray-400 ml-2">(코드: {r.ingredients.filter((i) => i.code).length}/{r.ingredients.length})</span>
+                  </div>
+                ))}
+                {preview.recipes.length > 5 && <div className="text-gray-400">... 외 {preview.recipes.length - 5}개</div>}
+              </div>
+            );
+          })()}
         </div>
         <div className="px-5 py-3 border-t bg-slate-50 flex items-center gap-2">
           <button onClick={onClose} className="px-3 py-2 border rounded text-sm font-medium hover:bg-gray-100">취소</button>
