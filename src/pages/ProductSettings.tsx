@@ -848,6 +848,27 @@ function RecipeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
     });
   };
 
+  // 일괄 삭제 (전체 또는 필터된 목록)
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const bulkDelete = async (target: RecipeDoc[]) => {
+    if (target.length === 0) return;
+    const isFiltered = target.length !== recipes.length;
+    const label = isFiltered ? `검색결과 ${target.length}개` : `전체 ${target.length}개`;
+    const confirmText = `삭제`;
+    const input = prompt(`⚠️ ${label} 레시피를 모두 삭제합니다.\n되돌릴 수 없습니다. 진행하려면 "${confirmText}" 를 입력하세요.`);
+    if (input !== confirmText) return;
+    setBulkDeleting(true);
+    try {
+      const CHUNK = 400;
+      for (let i = 0; i < target.length; i += CHUNK) {
+        const batch = writeBatch(db);
+        target.slice(i, i + CHUNK).forEach((r) => batch.delete(doc(db, 'recipes', r.code)));
+        await batch.commit();
+      }
+      alert(`${target.length}개 삭제됨`);
+    } finally { setBulkDeleting(false); }
+  };
+
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2 flex-wrap">
@@ -856,6 +877,18 @@ function RecipeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
           className="flex-1 min-w-[240px] border rounded-md px-3 py-2 text-sm" />
         <span className="text-xs text-gray-500">{filtered.length}/{recipes.length}개</span>
         <button onClick={() => setShowImport(true)} className="px-3 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700">📋 일괄 입력</button>
+        {search.trim() && filtered.length > 0 && filtered.length !== recipes.length && (
+          <button onClick={() => bulkDelete(filtered)} disabled={bulkDeleting}
+            className="px-3 py-2 bg-orange-600 text-white rounded text-sm font-medium hover:bg-orange-700 disabled:bg-gray-300">
+            🗑️ 검색결과 삭제 ({filtered.length})
+          </button>
+        )}
+        {recipes.length > 0 && (
+          <button onClick={() => bulkDelete(recipes)} disabled={bulkDeleting}
+            className="px-3 py-2 bg-red-600 text-white rounded text-sm font-medium hover:bg-red-700 disabled:bg-gray-300">
+            {bulkDeleting ? '삭제중...' : `🗑️ 전체 삭제 (${recipes.length})`}
+          </button>
+        )}
       </div>
       {recipes.length === 0 ? (
         <div className="p-12 text-center text-gray-400 text-sm border rounded-lg">등록된 레시피가 없습니다 — 📋 일괄 입력 으로 엑셀에서 페이스트</div>
@@ -1138,6 +1171,26 @@ function MaterialPriceDB({ onCountChange }: { onCountChange: (n: number) => void
     await deleteDoc(doc(db, 'materialPrices', id));
   };
 
+  // 일괄 삭제 (전체 또는 필터된 목록)
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+  const bulkDelete = async (target: MaterialPriceDoc[]) => {
+    if (target.length === 0) return;
+    const isFiltered = target.length !== prices.length;
+    const label = isFiltered ? `검색결과 ${target.length}개` : `전체 ${target.length}개`;
+    const input = prompt(`⚠️ ${label} 원재료 단가를 모두 삭제합니다.\n되돌릴 수 없습니다. 진행하려면 "삭제" 를 입력하세요.`);
+    if (input !== '삭제') return;
+    setBulkDeleting(true);
+    try {
+      const CHUNK = 400;
+      for (let i = 0; i < target.length; i += CHUNK) {
+        const batch = writeBatch(db);
+        target.slice(i, i + CHUNK).forEach((p) => batch.delete(doc(db, 'materialPrices', p.id)));
+        await batch.commit();
+      }
+      alert(`${target.length}개 삭제됨`);
+    } finally { setBulkDeleting(false); }
+  };
+
   return (
     <div className="space-y-3">
       <div className="flex items-center gap-2 flex-wrap">
@@ -1146,6 +1199,18 @@ function MaterialPriceDB({ onCountChange }: { onCountChange: (n: number) => void
           className="flex-1 min-w-[200px] border rounded-md px-3 py-2 text-sm" />
         <span className="text-xs text-gray-500">{filtered.length}/{prices.length}개</span>
         <button onClick={() => setShowImport(true)} className="px-3 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700">📋 일괄 입력</button>
+        {search.trim() && filtered.length > 0 && filtered.length !== prices.length && (
+          <button onClick={() => bulkDelete(filtered)} disabled={bulkDeleting}
+            className="px-3 py-2 bg-orange-600 text-white rounded text-sm font-medium hover:bg-orange-700 disabled:bg-gray-300">
+            🗑️ 검색결과 삭제 ({filtered.length})
+          </button>
+        )}
+        {prices.length > 0 && (
+          <button onClick={() => bulkDelete(prices)} disabled={bulkDeleting}
+            className="px-3 py-2 bg-red-600 text-white rounded text-sm font-medium hover:bg-red-700 disabled:bg-gray-300">
+            {bulkDeleting ? '삭제중...' : `🗑️ 전체 삭제 (${prices.length})`}
+          </button>
+        )}
       </div>
       {/* 한 개 추가 */}
       <div className="flex items-center gap-2 flex-wrap bg-slate-50 border rounded p-2">
