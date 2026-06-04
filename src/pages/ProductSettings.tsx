@@ -798,6 +798,7 @@ interface RecipeIngredient {
   seq: number;
   name: string;
   gPerPiece: number;
+  code?: string;
 }
 interface RecipeDoc {
   code: string;
@@ -890,6 +891,7 @@ function RecipeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
                             <tr>
                               <th className="text-right pr-2 w-12">순번</th>
                               <th className="text-left">원재료</th>
+                              <th className="text-left w-28">원재료코드</th>
                               <th className="text-right pr-2 w-32">식재료필요량(g)</th>
                             </tr>
                           </thead>
@@ -898,6 +900,7 @@ function RecipeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
                               <tr key={ing.seq} className="border-t border-gray-200">
                                 <td className="text-right pr-2 text-gray-500">{ing.seq}</td>
                                 <td>{ing.name}</td>
+                                <td className="font-mono text-gray-500">{ing.code || <span className="text-gray-300">-</span>}</td>
                                 <td className="text-right pr-1 py-0.5">
                                   <input
                                     key={`${r.code}-${ing.seq}-${ing.gPerPiece}`}
@@ -966,6 +969,13 @@ function RecipeImportModal({ onClose }: { onClose: () => void }) {
       rawCol = header.indexOf(cand);
       if (rawCol >= 0) break;
     }
+    // 원재료 ERP코드 컬럼 (선택) — 단가 매칭 우선키
+    const MATCODE_CANDIDATES = ['원재료코드', '원재료erp코드', 'erp코드', '자재코드', '품목코드', '원재료ERP코드'.toLowerCase()];
+    let matCodeCol = -1;
+    for (const cand of MATCODE_CANDIDATES) {
+      matCodeCol = header.findIndex((h) => h.toLowerCase() === cand);
+      if (matCodeCol >= 0) break;
+    }
     if (codeCol < 0 || ingCol < 0 || rawCol < 0) {
       errors.push('필수 컬럼(제품코드/원재료/식재료필요량) 누락');
       return { recipes: [], errors };
@@ -981,13 +991,16 @@ function RecipeImportModal({ onClose }: { onClose: () => void }) {
       if (isNaN(g) || g <= 0) continue;
       const prodName = nameCol >= 0 ? (r[nameCol] || '').trim() : '';
       const seq = seqCol >= 0 ? (parseInt((r[seqCol] || '').trim(), 10) || 0) : 0;
+      const matCode = matCodeCol >= 0 ? (r[matCodeCol] || '').trim() : '';
       let rec = map.get(code);
       if (!rec) {
         rec = { code, name: prodName, ingredients: [] };
         map.set(code, rec);
       }
       if (prodName && !rec.name) rec.name = prodName;
-      rec.ingredients.push({ seq: seq || rec.ingredients.length + 1, name: ingName, gPerPiece: g });
+      const ing: RecipeIngredient = { seq: seq || rec.ingredients.length + 1, name: ingName, gPerPiece: g };
+      if (matCode) ing.code = matCode;
+      rec.ingredients.push(ing);
     }
     // 순번 정렬
     Array.from(map.values()).forEach((r) => r.ingredients.sort((a, b) => a.seq - b.seq));
@@ -1029,6 +1042,7 @@ function RecipeImportModal({ onClose }: { onClose: () => void }) {
           <div className="text-xs text-gray-600 bg-slate-50 p-3 rounded border">
             엑셀에서 <b>헤더 포함 표 전체</b>를 복사해서 붙여넣으세요 (탭 구분).<br />
             필수 컬럼: <b>제품코드</b> / <b>원재료</b> / <b>식재료 필요량</b> (없으면 총투입량). 선택: 제품명, 순번.<br />
+            <b className="text-blue-700">원재료코드</b>(ERP) 컬럼이 있으면 단가표와 코드로 매칭돼요 (이름이 조금 달라도 OK).<br />
             나머지 컬럼(배합비, 비가식부수율, 공정수율, 바트당투입량 등)은 자동으로 무시됩니다.
             같은 제품코드의 여러 행이 한 레시피로 묶여요.
           </div>
@@ -1069,6 +1083,7 @@ interface MaterialPriceDoc {
   id: string;
   name: string;
   pricePerGram: number;
+  code?: string;
   updatedAt?: string;
 }
 
@@ -1081,14 +1096,15 @@ function MaterialPriceDB({ onCountChange }: { onCountChange: (n: number) => void
   const [search, setSearch] = useState('');
   const [showImport, setShowImport] = useState(false);
   const [newName, setNewName] = useState('');
+  const [newCode, setNewCode] = useState('');
   const [newPrice, setNewPrice] = useState<number>(0);
 
   useEffect(() => {
     return onSnapshot(collection(db, 'materialPrices'), (snap) => {
       const list: MaterialPriceDoc[] = [];
       snap.forEach((d) => {
-        const data = d.data() as { name?: string; pricePerGram?: number; updatedAt?: string };
-        list.push({ id: d.id, name: data.name || d.id, pricePerGram: Number(data.pricePerGram) || 0, updatedAt: data.updatedAt });
+        const data = d.data() as { name?: string; pricePerGram?: number; code?: string; updatedAt?: string };
+        list.push({ id: d.id, name: data.name || d.id, pricePerGram: Number(data.pricePerGram) || 0, code: data.code, updatedAt: data.updatedAt });
       });
       list.sort((a, b) => a.name.localeCompare(b.name));
       setPrices(list);
@@ -1099,17 +1115,24 @@ function MaterialPriceDB({ onCountChange }: { onCountChange: (n: number) => void
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     if (!q) return prices;
-    return prices.filter((p) => p.name.toLowerCase().includes(q));
+    return prices.filter((p) => p.name.toLowerCase().includes(q) || (p.code || '').toLowerCase().includes(q));
   }, [prices, search]);
 
-  const updatePrice = async (id: string, name: string, v: number) => {
-    await setDoc(doc(db, 'materialPrices', id), { name, pricePerGram: v, updatedAt: new Date().toISOString() }, { merge: true });
+  const updatePrice = async (id: string, v: number) => {
+    await setDoc(doc(db, 'materialPrices', id), { pricePerGram: v, updatedAt: new Date().toISOString() }, { merge: true });
+  };
+  const updateCode = async (id: string, code: string) => {
+    await setDoc(doc(db, 'materialPrices', id), { code: code.trim(), updatedAt: new Date().toISOString() }, { merge: true });
   };
   const addOne = async () => {
     if (!newName.trim() || newPrice <= 0) return;
     const id = normalizeName(newName);
-    await setDoc(doc(db, 'materialPrices', id), { name: newName.trim(), pricePerGram: newPrice, updatedAt: new Date().toISOString() });
-    setNewName(''); setNewPrice(0);
+    await setDoc(doc(db, 'materialPrices', id), {
+      name: newName.trim(), pricePerGram: newPrice,
+      ...(newCode.trim() ? { code: newCode.trim() } : {}),
+      updatedAt: new Date().toISOString(),
+    });
+    setNewName(''); setNewCode(''); setNewPrice(0);
   };
   const delPrice = async (id: string, name: string) => {
     if (!confirm(`'${name}' 단가를 삭제할까요?`)) return;
@@ -1120,7 +1143,7 @@ function MaterialPriceDB({ onCountChange }: { onCountChange: (n: number) => void
     <div className="space-y-3">
       <div className="flex items-center gap-2 flex-wrap">
         <input value={search} onChange={(e) => setSearch(e.target.value)}
-          placeholder="🔍 원재료명 검색..."
+          placeholder="🔍 원재료명·코드 검색..."
           className="flex-1 min-w-[200px] border rounded-md px-3 py-2 text-sm" />
         <span className="text-xs text-gray-500">{filtered.length}/{prices.length}개</span>
         <button onClick={() => setShowImport(true)} className="px-3 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700">📋 일괄 입력</button>
@@ -1130,6 +1153,8 @@ function MaterialPriceDB({ onCountChange }: { onCountChange: (n: number) => void
         <span className="text-xs text-gray-600">+ 하나 추가:</span>
         <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="원재료명"
           className="flex-1 min-w-[150px] border rounded px-2 py-1 text-sm" />
+        <input value={newCode} onChange={(e) => setNewCode(e.target.value)} placeholder="원재료코드(선택)"
+          className="w-32 border rounded px-2 py-1 text-sm font-mono" />
         <input type="number" value={newPrice || ''} onChange={(e) => setNewPrice(Number(e.target.value) || 0)} placeholder="₩/g"
           className="w-28 border rounded px-2 py-1 text-sm text-right" />
         <button onClick={addOne} disabled={!newName.trim() || newPrice <= 0}
@@ -1143,6 +1168,7 @@ function MaterialPriceDB({ onCountChange }: { onCountChange: (n: number) => void
             <thead className="bg-slate-50 text-xs text-gray-600">
               <tr>
                 <th className="px-3 py-2 text-left">원재료명</th>
+                <th className="px-3 py-2 text-left w-36">원재료코드</th>
                 <th className="px-3 py-2 text-right w-32">단가 (₩/g)</th>
                 <th className="px-3 py-2 w-20"></th>
               </tr>
@@ -1151,11 +1177,20 @@ function MaterialPriceDB({ onCountChange }: { onCountChange: (n: number) => void
               {filtered.slice(0, 300).map((p) => (
                 <tr key={p.id} className="border-t">
                   <td className="px-3 py-1.5">{p.name}</td>
+                  <td className="px-3 py-1 text-left">
+                    <input key={`${p.id}-${p.code || ''}`} defaultValue={p.code || ''}
+                      onBlur={(e) => {
+                        const v = e.target.value.trim();
+                        if (v !== (p.code || '')) updateCode(p.id, v);
+                      }}
+                      placeholder="-"
+                      className="w-28 border rounded px-2 py-1 text-sm font-mono" />
+                  </td>
                   <td className="px-3 py-1 text-right">
-                    <input type="number" defaultValue={p.pricePerGram}
+                    <input type="number" key={`${p.id}-${p.pricePerGram}`} defaultValue={p.pricePerGram}
                       onBlur={(e) => {
                         const v = Number(e.target.value) || 0;
-                        if (v !== p.pricePerGram) updatePrice(p.id, p.name, v);
+                        if (v !== p.pricePerGram) updatePrice(p.id, v);
                       }}
                       className="w-24 border rounded px-2 py-1 text-right text-sm" step="0.01" />
                   </td>
@@ -1180,15 +1215,38 @@ function PriceImportModal({ onClose }: { onClose: () => void }) {
   const [text, setText] = useState('');
   const [saving, setSaving] = useState(false);
   const parsed = useMemo(() => {
-    const lines = text.trim().split('\n');
-    const list: { name: string; price: number }[] = [];
-    for (const line of lines) {
-      const parts = line.split(/[\t,]/).map((s) => s.trim());
-      if (parts.length < 2) continue;
-      const name = parts[0];
-      const price = parseFloat((parts[1] || '').replace(/[^\d.]/g, ''));
-      if (!name || isNaN(price) || price <= 0) continue;
-      list.push({ name, price });
+    const rows = text.trim().split('\n').map((l) => l.split(/[\t,]/).map((s) => s.trim()));
+    const list: { name: string; price: number; code: string }[] = [];
+    if (rows.length === 0) return list;
+
+    // 헤더 감지: 원재료/품목명 + 단가/가격 컬럼이 있는 행
+    const norm = (s: string) => (s || '').replace(/\s+/g, '').replace(/\(.*?\)/g, '').toLowerCase();
+    const NAME_H = ['원재료', '원재료명', '품목명', '품명', 'name'];
+    const PRICE_H = ['단가', '가격', 'price', 'g단가'];
+    const CODE_H = ['원재료코드', 'erp코드', '원재료erp코드', '자재코드', '품목코드', '코드', 'code'];
+    let nameCol = 0, priceCol = 1, codeCol = -1, startRow = 0;
+    const hRow = rows.findIndex((r) => {
+      const c = r.map(norm);
+      return c.some((x) => NAME_H.includes(x)) && c.some((x) => PRICE_H.includes(x));
+    });
+    if (hRow >= 0) {
+      const h = rows[hRow].map(norm);
+      nameCol = h.findIndex((x) => NAME_H.includes(x));
+      priceCol = h.findIndex((x) => PRICE_H.includes(x));
+      codeCol = h.findIndex((x) => CODE_H.includes(x));
+      startRow = hRow + 1;
+    } else {
+      // 헤더 없음 → 위치 기반: 원재료명 [tab] 단가 [tab] 코드(선택)
+      nameCol = 0; priceCol = 1; codeCol = rows[0]?.length >= 3 ? 2 : -1;
+    }
+
+    for (let i = startRow; i < rows.length; i++) {
+      const r = rows[i];
+      const name = (r[nameCol] || '').trim();
+      const price = parseFloat((r[priceCol] || '').replace(/[^\d.]/g, ''));
+      const code = codeCol >= 0 ? (r[codeCol] || '').trim() : '';
+      if (!name || isNaN(price) || price < 0) continue;
+      list.push({ name, price, code });
     }
     return list;
   }, [text]);
@@ -1203,8 +1261,10 @@ function PriceImportModal({ onClose }: { onClose: () => void }) {
         parsed.slice(i, i + CHUNK).forEach((p) => {
           const id = normalizeName(p.name);
           batch.set(doc(db, 'materialPrices', id), {
-            name: p.name, pricePerGram: p.price, updatedAt: new Date().toISOString(),
-          });
+            name: p.name, pricePerGram: p.price,
+            ...(p.code ? { code: p.code } : {}),
+            updatedAt: new Date().toISOString(),
+          }, { merge: true });
         });
         await batch.commit();
       }
@@ -1222,18 +1282,21 @@ function PriceImportModal({ onClose }: { onClose: () => void }) {
         </div>
         <div className="flex-1 overflow-y-auto p-5 space-y-3">
           <div className="text-xs text-gray-600 bg-slate-50 p-3 rounded border">
-            한 줄에 한 원재료. 형식: <code className="bg-white px-1 rounded">원재료명[탭 또는 콤마]단가</code>
+            한 줄에 한 원재료. 형식: <code className="bg-white px-1 rounded">원재료명 [탭] 단가 [탭] 원재료코드(선택)</code><br />
+            <b className="text-blue-700">원재료코드</b>를 넣으면 레시피와 코드로 매칭돼요 (이름이 조금 달라도 OK).
+            헤더 줄(원재료명/단가/코드)을 같이 붙여도 자동 인식합니다.
           </div>
           <textarea value={text} onChange={(e) => setText(e.target.value)}
-            placeholder={'순수본베이스\t5.2\n닭가슴살\t12.5\n무\t0.8'}
+            placeholder={'캐슈넛(인도산)\t23.18\tM0123\n닭가슴살(무항생제)\t5.00\tM0456\n무\t4.00'}
             className="w-full h-48 border rounded p-2 text-xs font-mono" />
           {text.trim() && (
             <div className="text-xs">
               <div className="font-bold mb-1">미리보기 ({parsed.length}개)</div>
               {parsed.slice(0, 8).map((p, i) => (
-                <div key={i} className="border-t py-1 flex justify-between">
-                  <span>{p.name}</span>
-                  <span className="font-mono">{p.price} ₩/g</span>
+                <div key={i} className="border-t py-1 flex justify-between gap-2">
+                  <span className="flex-1">{p.name}</span>
+                  <span className="font-mono text-gray-400">{p.code || '-'}</span>
+                  <span className="font-mono w-20 text-right">{p.price} ₩/g</span>
                 </div>
               ))}
               {parsed.length > 8 && <div className="text-gray-400">... 외 {parsed.length - 8}개</div>}

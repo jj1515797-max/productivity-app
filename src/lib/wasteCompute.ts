@@ -5,6 +5,8 @@ export interface RecipeIngredient {
   name: string;
   /** 제품 1개당 총투입량 (g) */
   gPerPiece: number;
+  /** 원재료 ERP코드 (단가 매칭 우선키, 선택) */
+  code?: string;
 }
 
 export interface Recipe {
@@ -46,10 +48,18 @@ export interface WasteRow {
   hasPrice: boolean;
 }
 
-/** 원재료명 정규화 (단가 매칭용) */
+/** 원재료명 정규화 (단가 매칭용 - 이름 fallback) */
 export function normalizeMaterialName(name: string): string {
   return (name || '').trim().toLowerCase().replace(/\s+/g, '');
 }
+
+/** 원재료 ERP코드 정규화 (단가 매칭 우선키) */
+export function normalizeCode(code: string): string {
+  return (code || '').trim().toUpperCase().replace(/\s+/g, '');
+}
+
+/** priceMap 안에서 코드 키는 이 접두사로 구분 (이름 키와 충돌 방지) */
+export const CODE_KEY_PREFIX = '__c__';
 
 /** 한 폐기 entry 를 원재료별 행 목록으로 확장 */
 export function expandWasteEntry(
@@ -63,7 +73,12 @@ export function expandWasteEntry(
     .filter((ing) => !excluded.has(normalizeMaterialName(ing.name)))
     .map((ing) => {
       const weight = (ing.gPerPiece || 0) * (entry.qty || 0);
-      const price = priceMap.get(normalizeMaterialName(ing.name)) ?? 0;
+      // 코드 우선 매칭 → 없으면 이름 매칭 (하위호환)
+      const codeKey = ing.code ? CODE_KEY_PREFIX + normalizeCode(ing.code) : '';
+      const nameKey = normalizeMaterialName(ing.name);
+      const hasCode = !!codeKey && priceMap.has(codeKey);
+      const hasPrice = hasCode || priceMap.has(nameKey);
+      const price = hasCode ? (priceMap.get(codeKey) ?? 0) : (priceMap.get(nameKey) ?? 0);
       const cost = weight * price;
       return {
         entryId: entry.id,
@@ -76,7 +91,7 @@ export function expandWasteEntry(
         weight,
         price,
         cost,
-        hasPrice: priceMap.has(normalizeMaterialName(ing.name)),
+        hasPrice,
       };
     })
     .sort((a, b) => a.seq - b.seq);
