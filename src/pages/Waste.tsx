@@ -262,50 +262,68 @@ export default function Waste() {
   const recipeCount = recipeMap.size;
   const priceCount = priceMap.size;
 
+  // 전체 13개월 데이터가 있는지 (없으면 차트 빈 상태로 표시)
+  const hasAnyData = months13.some((m) => (monthTotals.get(m)?.count || 0) > 0);
+  const yearTotal = months13.reduce((s, m) => s + (monthTotals.get(m)?.cost || 0), 0);
+  const yearQty = months13.reduce((s, m) => s + (monthTotals.get(m)?.qtySum || 0), 0);
+
   return (
     <div className="space-y-5">
-      {/* 상단 컨트롤 */}
+      {/* 상단 액션바 */}
       <div className="bg-white border rounded-lg p-4 flex items-center gap-3 flex-wrap">
-        <span className="font-bold text-gray-800">🗑️ 폐기금액</span>
+        <span className="font-bold text-gray-800 text-lg">🗑️ 폐기금액</span>
         <span className="text-gray-300">|</span>
-        <label className="text-xs text-gray-600">기준월 (13개월)</label>
-        <button onClick={() => shiftBase(-1)} className="w-8 h-8 rounded-full hover:bg-gray-100">◀</button>
-        <input type="month" value={baseMonth} onChange={(e) => e.target.value && setBaseMonth(e.target.value)} className="border rounded px-2 py-1 text-sm font-bold" />
-        <button onClick={() => shiftBase(1)} className="w-8 h-8 rounded-full hover:bg-gray-100">▶</button>
-        <span className="text-xs text-gray-500">{months13[0]} ~ {months13[12]}</span>
+        <div className="flex items-center gap-1">
+          <button onClick={() => shiftSel(-1)} className="w-8 h-8 rounded hover:bg-gray-100">◀</button>
+          <input type="month" value={selectedMonth} onChange={(e) => e.target.value && setSelectedMonth(e.target.value)}
+            className="border rounded px-2 py-1 text-sm font-bold" />
+          <button onClick={() => shiftSel(1)} className="w-8 h-8 rounded hover:bg-gray-100">▶</button>
+        </div>
         {loading && <span className="text-xs text-blue-600">불러오는 중...</span>}
         <div className="ml-auto flex gap-1.5">
           <button onClick={() => { clearAllCache(); setRefreshTick((t) => t + 1); }} className="px-2.5 py-1 text-xs rounded border hover:bg-gray-50" title="캐시 무시하고 다시 불러오기">🔄</button>
           <button onClick={() => { setBaseMonth(todayMonth); setSelectedMonth(todayMonth); }} className="px-2.5 py-1 text-xs rounded border hover:bg-gray-50">이번 달</button>
-          <button onClick={() => setShowInput(true)} className="px-3 py-1.5 text-xs rounded bg-rose-600 text-white font-semibold hover:bg-rose-700">+ 폐기 등록</button>
           <button onClick={downloadXlsx} className="px-3 py-1.5 text-xs rounded bg-emerald-600 text-white font-semibold hover:bg-emerald-700">📥 엑셀</button>
+          <button onClick={() => setShowInput(true)} className="px-4 py-1.5 text-sm rounded bg-rose-600 text-white font-semibold hover:bg-rose-700 shadow-sm">+ 폐기 등록</button>
         </div>
       </div>
 
       {/* DB 상태 알림 */}
       {(recipeCount === 0 || priceCount === 0) && (
         <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
-          ⚠️ 분석 → <b>설정</b> 페이지에서 레시피·원재료 단가 DB 를 먼저 입력해야 폐기금액이 계산됩니다.
+          ⚠️ <b>설정</b> 페이지에서 레시피·원재료 단가 DB 를 먼저 입력해야 폐기금액이 계산됩니다.
           (현재 레시피 {recipeCount}건 / 단가 {priceCount}건)
         </div>
       )}
 
-      {/* 13개월 차트 */}
-      <div className="bg-white border rounded-lg p-4">
-        <h3 className="font-bold text-gray-800 mb-2">월별 폐기금액 <span className="text-xs text-gray-500 font-normal">(13개월)</span></h3>
-        <CostBars13
-          data={months13.map((m) => ({
-            label: monthShort(m),
-            value: monthTotals.get(m)?.cost || 0,
-          }))}
-          onBarClick={(idx) => setSelectedMonth(months13[idx])}
-          selectedIdx={months13.indexOf(selectedMonth)}
-        />
+      {/* KPI 카드 — 한눈에 */}
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <KpiCard label={`${selectedMonth.slice(5).replace(/^0/, '')}월 폐기금액`} value={Math.round(selTotal).toLocaleString() + '₩'} accent="rose" />
+        <KpiCard label={`${selectedMonth.slice(5).replace(/^0/, '')}월 폐기 건수`} value={selEntries.length + '건'} accent="slate" />
+        <KpiCard label="13개월 누적 폐기금액" value={Math.round(yearTotal).toLocaleString() + '₩'} accent="amber" />
+        <KpiCard label="13개월 폐기 갯수합" value={yearQty.toLocaleString() + '개'} accent="slate" />
+      </div>
+
+      {/* 선택 월 상세 (가장 중요 — 위로) */}
+      <div className="bg-white border rounded-lg overflow-hidden">
+        <div className="px-4 py-3 border-b bg-rose-50 font-bold text-gray-800 flex items-center gap-2 flex-wrap">
+          <span>📋 {selectedMonth} 폐기 상세</span>
+          <span className="text-xs text-gray-500 font-normal">{selEntries.length}건 / 합계 <b className="text-rose-700">{Math.round(selTotal).toLocaleString()}₩</b></span>
+        </div>
+        <DetailTable entries={selEntries} recipeMap={recipeMap} priceMap={priceMap} onChanged={onSavedEntry} />
       </div>
 
       {/* 13개월 표 */}
       <div className="bg-white border rounded-lg overflow-hidden">
-        <div className="px-4 py-2.5 border-b bg-slate-50 font-bold text-gray-800 text-sm">13개월 월별 요약</div>
+        <div className="px-4 py-2.5 border-b bg-slate-50 font-bold text-gray-800 text-sm flex items-center gap-2">
+          <span>📅 13개월 월별 요약</span>
+          <span className="text-xs text-gray-500 font-normal">{months13[0]} ~ {months13[12]} · 행 클릭으로 해당월 보기</span>
+          <div className="ml-auto flex items-center gap-1">
+            <button onClick={() => shiftBase(-1)} className="w-7 h-7 rounded hover:bg-gray-100 text-xs">◀</button>
+            <input type="month" value={baseMonth} onChange={(e) => e.target.value && setBaseMonth(e.target.value)} className="border rounded px-2 py-0.5 text-xs" />
+            <button onClick={() => shiftBase(1)} className="w-7 h-7 rounded hover:bg-gray-100 text-xs">▶</button>
+          </div>
+        </div>
         <div className="overflow-x-auto">
           <table className="w-full text-sm">
             <thead className="bg-slate-50 text-xs text-gray-600">
@@ -335,19 +353,20 @@ export default function Waste() {
         </div>
       </div>
 
-      {/* 선택 월 상세 */}
-      <div className="bg-white border rounded-lg overflow-hidden">
-        <div className="px-4 py-2.5 border-b bg-slate-50 font-bold text-gray-800 text-sm flex items-center gap-2 flex-wrap">
-          <span>📋 {selectedMonth} 상세</span>
-          <span className="text-xs text-gray-500 font-normal">{selEntries.length}건 / 총 {Math.round(selTotal).toLocaleString()}₩</span>
-          <div className="ml-auto flex items-center gap-2">
-            <button onClick={() => shiftSel(-1)} className="text-xs px-2 py-0.5 rounded border hover:bg-gray-50">◀</button>
-            <input type="month" value={selectedMonth} onChange={(e) => e.target.value && setSelectedMonth(e.target.value)}
-              className="border rounded px-2 py-0.5 text-xs" />
-            <button onClick={() => shiftSel(1)} className="text-xs px-2 py-0.5 rounded border hover:bg-gray-50">▶</button>
+      {/* 13개월 차트 (맨 아래) */}
+      <div className="bg-white border rounded-lg p-4">
+        <h3 className="font-bold text-gray-800 mb-2 text-sm">📊 월별 폐기금액 추이 <span className="text-xs text-gray-500 font-normal">(13개월 · 막대 클릭으로 해당월 보기)</span></h3>
+        {hasAnyData ? (
+          <CostBars13
+            data={months13.map((m) => ({ label: monthShort(m), value: monthTotals.get(m)?.cost || 0 }))}
+            onBarClick={(idx) => setSelectedMonth(months13[idx])}
+            selectedIdx={months13.indexOf(selectedMonth)}
+          />
+        ) : (
+          <div className="py-12 text-center text-gray-400 text-sm">
+            아직 폐기 등록 데이터가 없습니다. 위쪽 <b className="text-rose-600">+ 폐기 등록</b> 으로 첫 데이터를 입력해보세요.
           </div>
-        </div>
-        <DetailTable entries={selEntries} recipeMap={recipeMap} priceMap={priceMap} onChanged={onSavedEntry} />
+        )}
       </div>
 
       {/* 입력 모달 */}
@@ -358,6 +377,20 @@ export default function Waste() {
           onSaved={() => { setShowInput(false); onSavedEntry(); }}
         />
       )}
+    </div>
+  );
+}
+
+function KpiCard({ label, value, accent }: { label: string; value: string; accent: 'rose' | 'amber' | 'slate' }) {
+  const styles = {
+    rose:  { box: 'bg-rose-50 border-rose-200',   txt: 'text-rose-700'   },
+    amber: { box: 'bg-amber-50 border-amber-200', txt: 'text-amber-700'  },
+    slate: { box: 'bg-slate-50 border-slate-200', txt: 'text-slate-700'  },
+  }[accent];
+  return (
+    <div className={`border rounded-lg p-3 ${styles.box}`}>
+      <div className="text-xs text-gray-600">{label}</div>
+      <div className={`mt-1 text-xl font-bold ${styles.txt}`}>{value}</div>
     </div>
   );
 }
