@@ -200,7 +200,7 @@ export default function Waste() {
     t1.value = `폐기금액 — ${months13[0]} ~ ${months13[months13.length - 1]}`;
     t1.font = { size: 14, bold: true, name: '맑은 고딕' };
     t1.alignment = { horizontal: 'center', vertical: 'middle' };
-    ['월', '폐기 건수', '폐기 갯수합', '폐기금액(₩)'].forEach((h, i) => {
+    ['월', '폐기 건수', '폐기 갯수합', '폐기금액(원)'].forEach((h, i) => {
       const c = ws1.getCell(3, i + 1);
       c.value = h; c.font = { ...baseFont, bold: true };
       c.alignment = { horizontal: 'center', vertical: 'middle' };
@@ -232,7 +232,7 @@ export default function Waste() {
     t2.value = `${selectedMonth} 폐기 상세`;
     t2.font = { size: 14, bold: true, name: '맑은 고딕' };
     t2.alignment = { horizontal: 'center', vertical: 'middle' };
-    ['일자', '코드', '제품', '갯수', '순번', '원재료', '중량(g)', '단가(₩/g)', '폐기금액(₩)'].forEach((h, i) => {
+    ['일자', '코드', '제품', '갯수', '순번', '원재료', '중량(g)', '단가', '폐기금액(원)'].forEach((h, i) => {
       const c = ws2.getCell(3, i + 1);
       c.value = h; c.font = { ...baseFont, bold: true };
       c.alignment = { horizontal: 'center', vertical: 'middle' };
@@ -315,9 +315,9 @@ export default function Waste() {
 
       {/* KPI 카드 — 한눈에 */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <KpiCard label={`${selectedMonth.slice(5).replace(/^0/, '')}월 폐기금액`} value={Math.round(selTotal).toLocaleString() + '₩'} accent="rose" />
+        <KpiCard label={`${selectedMonth.slice(5).replace(/^0/, '')}월 폐기금액`} value={Math.round(selTotal).toLocaleString() + '원'} accent="rose" />
         <KpiCard label={`${selectedMonth.slice(5).replace(/^0/, '')}월 폐기 건수`} value={selEntries.length + '건'} accent="slate" />
-        <KpiCard label="누적 폐기금액" value={Math.round(yearTotal).toLocaleString() + '₩'} accent="amber" />
+        <KpiCard label="누적 폐기금액" value={Math.round(yearTotal).toLocaleString() + '원'} accent="amber" />
         <KpiCard label="누적 폐기 갯수합" value={yearQty.toLocaleString() + '개'} accent="slate" />
       </div>
 
@@ -325,7 +325,7 @@ export default function Waste() {
       <div className="bg-white border rounded-lg overflow-hidden">
         <div className="px-4 py-3 border-b bg-rose-50 font-bold text-gray-800 flex items-center gap-2 flex-wrap">
           <span>📋 {selectedMonth} 폐기 상세</span>
-          <span className="text-xs text-gray-500 font-normal">{selEntries.length}건 / 합계 <b className="text-rose-700">{Math.round(selTotal).toLocaleString()}₩</b></span>
+          <span className="text-xs text-gray-500 font-normal">{selEntries.length}건 / 합계 <b className="text-rose-700">{Math.round(selTotal).toLocaleString()}원</b></span>
         </div>
         <DetailTable entries={selEntries} recipeMap={recipeMap} priceMap={priceMap} onChanged={onSavedEntry} />
       </div>
@@ -343,7 +343,7 @@ export default function Waste() {
                 <th className="border px-3 py-2 text-center">월</th>
                 <th className="border px-3 py-2 text-right">폐기 건수</th>
                 <th className="border px-3 py-2 text-right">폐기 갯수합</th>
-                <th className="border px-3 py-2 text-right">폐기금액 (₩)</th>
+                <th className="border px-3 py-2 text-right">폐기금액 (원)</th>
               </tr>
             </thead>
             <tbody>
@@ -464,7 +464,7 @@ function DetailTable({
             <th className="border px-2 py-1.5 text-left">제품</th>
             <th className="border px-2 py-1.5 text-right">갯수</th>
             <th className="border px-2 py-1.5 text-right">원재료수</th>
-            <th className="border px-2 py-1.5 text-right">폐기금액(₩)</th>
+            <th className="border px-2 py-1.5 text-right">폐기금액(원)</th>
             <th className="border px-2 py-1.5 w-16"></th>
           </tr>
         </thead>
@@ -510,7 +510,7 @@ function DetailTable({
                     </td>
                     <td className={`border px-2 py-1 text-right ${r.hasPrice ? 'text-gray-600' : 'text-amber-600'}`}>
                       <span className="text-gray-400 mr-1">단가</span>
-                      {r.hasPrice ? `${r.price.toLocaleString()}₩/g` : '없음'}
+                      {r.hasPrice ? r.price.toLocaleString() : '없음'}
                     </td>
                     <td className="border px-2 py-1 text-right font-bold text-rose-700">{Math.round(r.cost).toLocaleString()}</td>
                     <td className="border px-2 py-1"></td>
