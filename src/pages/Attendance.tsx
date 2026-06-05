@@ -70,7 +70,15 @@ export default function Attendance() {
   const [members, setMembers] = useState<Member[]>([]);
   /** 과거 날짜에 적용되는 멤버 상태 (스냅샷). null 이면 live members 사용 */
   const [snapshotMembers, setSnapshotMembers] = useState<Member[] | null>(null);
-  const effectiveMembers = snapshotMembers || members;
+  // 스냅샷이 없으면 live members 사용하되, 조회 날짜보다 늦게 입사(createdAt)한 사람은 제외
+  // → 오늘 추가한 신입이 어제/과거 조회 시 안 보이게
+  const effectiveMembers = useMemo(() => {
+    if (snapshotMembers) return snapshotMembers;
+    return members.filter((m) => {
+      const created = (m.createdAt || '').slice(0, 10);
+      return !created || created <= date;
+    });
+  }, [snapshotMembers, members, date]);
   const [records, setRecords] = useState<Record<string, AttendanceRecord>>({});
   const [search, setSearch] = useState('');
   const [showAdd, setShowAdd] = useState(false);
