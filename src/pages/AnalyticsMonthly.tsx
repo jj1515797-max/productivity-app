@@ -52,9 +52,19 @@ function getCache<T>(key: string, ttlMs: number): { data: T; ts: number } | null
   } catch { return null; }
 }
 function setCache<T>(key: string, data: T) {
+  const payload = JSON.stringify({ ts: Date.now(), data });
   try {
-    localStorage.setItem(CACHE_PREFIX + key, JSON.stringify({ ts: Date.now(), data }));
-  } catch {}
+    localStorage.setItem(CACHE_PREFIX + key, payload);
+  } catch {
+    // 용량 초과 → 큰 월별 스냅샷 캐시(m:, pm:)부터 비우고 재시도
+    // (작은 직전3개월/월평균 캐시는 반드시 살아남게 해서 매번 재계산 방지)
+    try {
+      Object.keys(localStorage)
+        .filter((k) => k.startsWith(CACHE_PREFIX + 'm:') || k.startsWith(CACHE_PREFIX + 'pm:'))
+        .forEach((k) => localStorage.removeItem(k));
+      localStorage.setItem(CACHE_PREFIX + key, payload);
+    } catch {}
+  }
 }
 function clearCache(key: string) {
   try { localStorage.removeItem(CACHE_PREFIX + key); } catch {}
