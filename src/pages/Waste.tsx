@@ -195,7 +195,8 @@ export default function Waste() {
     const fill = (argb: string) => ({ type: 'pattern' as const, pattern: 'solid' as const, fgColor: { argb } });
     const baseFont = { size: 11, name: '맑은 고딕' };
 
-    // 시트 1: 월별 요약
+    // 시트 순서: 상세 먼저, 월별 요약 나중 (탭 순서 결정)
+    const ws2 = wb.addWorksheet(`${selectedMonth} 상세`);
     const ws1 = wb.addWorksheet('월별 요약');
     ws1.columns = [{ width: 12 }, { width: 14 }, { width: 14 }, { width: 18 }];
     ws1.mergeCells('A1:D1');
@@ -225,7 +226,6 @@ export default function Waste() {
     });
 
     // 시트 2: 선택 월 상세
-    const ws2 = wb.addWorksheet(`${selectedMonth} 상세`);
     ws2.columns = [
       { width: 12 }, { width: 10 }, { width: 22 }, { width: 6 },
       { width: 6 }, { width: 20 }, { width: 12 }, { width: 10 }, { width: 14 },
