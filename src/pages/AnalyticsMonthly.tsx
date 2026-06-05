@@ -327,10 +327,10 @@ export default function AnalyticsMonthly() {
   // 과거 월(확정)의 일평균 개별 저장용 TTL
   const MONTH_AVG_TTL = 365 * 24 * 60 * 60 * 1000; // 1년 (과거월은 변동 없음)
 
-  // 직전 3개월 일평균: 각 월 평균을 개별 캐시에서 읽고, 없는 월만 fetch
+  // 직전 3개월 일평균: 각 월의 "화면 표시 일평균"을 그대로 평균 (= 월별 avgPerDay)
   useEffect(() => {
     let cancelled = false;
-    const key = `prev3avg:${month}`;
+    const key = `prev3avg2:${month}`; // 계산식 변경으로 캐시 버전업
     const TTL = 30 * 24 * 60 * 60 * 1000; // 30일
     const cached = prev3Tick === 0 ? getCache<{ avg: number }>(key, TTL) : null;
     if (cached) {
@@ -339,7 +339,7 @@ export default function AnalyticsMonthly() {
       return () => { cancelled = true; };
     }
     const prevMs = prevMonths(month, 3);
-    // 1차: 월별 평균 캐시에서 읽기
+    // 1차: 월별 평균 캐시에서 읽기 (각 월을 한 번이라도 열어봤으면 fetch 0)
     const avgByMonth = new Map<string, number>();
     const misses: string[] = [];
     prevMs.forEach((pm) => {
@@ -359,21 +359,26 @@ export default function AnalyticsMonthly() {
     if (misses.length === 0) { finish(); return () => { cancelled = true; }; }
 
     setPrev3Refreshing(true);
+    // 누락 월: 화면과 동일하게 entries + ambient + items + logistics 모두 fetch 후 computeMonthStats
     Promise.all(
       misses.flatMap((pm) => [
         getDocs(query(collectionGroup(db, 'entries'), where('date', '>=', `${pm}-01`), where('date', '<=', `${pm}-31`))),
         getDocs(query(collectionGroup(db, 'ambient'), where('date', '>=', `${pm}-01`), where('date', '<=', `${pm}-31`))),
+        getDocs(query(collectionGroup(db, 'items'), where('date', '>=', `${pm}-01`), where('date', '<=', `${pm}-31`))),
+        fetchMonthLogistics(pm),
       ])
     )
-      .then((snaps) => {
+      .then((results) => {
         if (cancelled) return;
         misses.forEach((pm, i) => {
-          const ents = snaps[i * 2].docs.map((d) => d.data() as MachineEntry);
-          const ambs = snaps[i * 2 + 1].docs.map((d) => d.data() as AmbientEntry);
-          const ms = computeMonthStats(ents, ambs);
+          const ents = (results[i * 4] as any).docs.map((d: any) => d.data() as MachineEntry);
+          const ambs = (results[i * 4 + 1] as any).docs.map((d: any) => d.data() as AmbientEntry);
+          const its = (results[i * 4 + 2] as any).docs.map((d: any) => d.data() as Item);
+          const log = results[i * 4 + 3] as Record<string, number>;
+          const ms = computeMonthStats(ents, ambs, its, log);
           if (ms.daysWorked > 0) {
             avgByMonth.set(pm, ms.totalAvg);
-            setCache(`monthAvg:${pm}`, { avg: ms.totalAvg }); // 개별 월 캐시에도 저장
+            setCache(`monthAvg:${pm}`, { avg: ms.totalAvg });
           }
         });
         finish();
@@ -390,7 +395,8 @@ export default function AnalyticsMonthly() {
   };
 
   const refreshPrev3 = () => {
-    clearCache(`prev3avg:${month}`);
+    clearCache(`prev3avg2:${month}`);
+    prevMonths(month, 3).forEach((pm) => clearCache(`monthAvg:${pm}`));
     setPrev3Tick((t) => t + 1);
   };
 
