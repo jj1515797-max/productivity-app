@@ -80,6 +80,28 @@ type MonthStats = {
 
 type MonthStatsLite = Omit<MonthStats, never>;
 
+/**
+ * 그 날이 "작업 완료일"인지 판정.
+ * - 잔여량(logistics) 입력이 있으면 = 마감된 날 → 완료
+ * - 계획(totalQty)이 있으면 = 생산/계획 >= 99% 일 때만 완료 (진행중인 날 제외)
+ * - 계획 정보가 없으면(과거 데이터 보호) = 생산 또는 실온 데이터가 있으면 완료로 간주
+ */
+function isDayComplete(
+  d: string,
+  rawColdByDay: Record<string, number>,
+  totalQtyByDay: Record<string, number>,
+  logisticsByDay: Record<string, number>,
+  ambByDay: Record<string, number>,
+): boolean {
+  if (logisticsByDay[d] !== undefined) return true;
+  const planned = totalQtyByDay[d] || 0;
+  if (planned > 0) {
+    const produced = rawColdByDay[d] || 0;
+    return produced / planned >= 0.99;
+  }
+  return (rawColdByDay[d] || 0) > 0 || (ambByDay[d] || 0) > 0;
+}
+
 function computeMonthStats(
   entries: MachineEntry[],
   ambient: AmbientEntry[],
@@ -124,9 +146,14 @@ function computeMonthStats(
   const coldTotal = Object.values(coldByDay).reduce((s, v) => s + v, 0);
   const ambientTotal = Object.values(ambByDay).reduce((s, v) => s + v, 0);
   const total = coldTotal + ambientTotal;
-  const daysWorked = allDays.size;
-  const coldDaysN = Object.keys(coldByDay).length;
-  const ambDaysN = Object.keys(ambByDay).length;
+
+  // 작업일 수·일평균은 "완료된 날"만 집계 (진행률 99% 미만 진행중인 날 제외)
+  const workedDays = [...allDays].filter((d) => isDayComplete(d, rawColdByDay, totalQtyByDay, useLogistics, ambByDay));
+  const daysWorked = workedDays.length;
+  const workedColdTotal = workedDays.reduce((s, d) => s + (coldByDay[d] || 0), 0);
+  const workedAmbTotal = workedDays.reduce((s, d) => s + (ambByDay[d] || 0), 0);
+  const coldDaysN = workedDays.filter((d) => (coldByDay[d] || 0) > 0).length;
+  const ambDaysN = workedDays.filter((d) => (ambByDay[d] || 0) > 0).length;
 
   // 품목수는 냉장만 카운트
   const itemsByDay: Record<string, Set<string>> = {};
@@ -165,9 +192,9 @@ function computeMonthStats(
 
   return {
     daysWorked,
-    totalAvg: daysWorked ? total / daysWorked : 0,
-    coldAvg: coldDaysN ? coldTotal / coldDaysN : 0,
-    ambientAvg: ambDaysN ? ambientTotal / ambDaysN : 0,
+    totalAvg: daysWorked ? (workedColdTotal + workedAmbTotal) / daysWorked : 0,
+    coldAvg: coldDaysN ? workedColdTotal / coldDaysN : 0,
+    ambientAvg: ambDaysN ? workedAmbTotal / ambDaysN : 0,
     itemsAvgPerDay,
     total, coldTotal, ambientTotal,
     totalRemaining, remainingRatio,
@@ -297,7 +324,10 @@ export default function AnalyticsMonthly() {
     return () => { cancelled = true; };
   }, [month, refreshTick]);
 
-  // 직전 3개월 일평균: 30일 캐시 (수동 갱신 가능)
+  // 과거 월(확정)의 일평균 개별 저장용 TTL
+  const MONTH_AVG_TTL = 365 * 24 * 60 * 60 * 1000; // 1년 (과거월은 변동 없음)
+
+  // 직전 3개월 일평균: 각 월 평균을 개별 캐시에서 읽고, 없는 월만 fetch
   useEffect(() => {
     let cancelled = false;
     const key = `prev3avg:${month}`;
@@ -308,27 +338,45 @@ export default function AnalyticsMonthly() {
       setPrev3CachedAt(cached.ts);
       return () => { cancelled = true; };
     }
-    setPrev3Refreshing(true);
     const prevMs = prevMonths(month, 3);
+    // 1차: 월별 평균 캐시에서 읽기
+    const avgByMonth = new Map<string, number>();
+    const misses: string[] = [];
+    prevMs.forEach((pm) => {
+      const c = prev3Tick === 0 ? getCache<{ avg: number }>(`monthAvg:${pm}`, MONTH_AVG_TTL) : null;
+      if (c) avgByMonth.set(pm, c.data.avg);
+      else misses.push(pm);
+    });
+
+    const finish = () => {
+      const avgs = prevMs.map((pm) => avgByMonth.get(pm)).filter((v): v is number => v !== undefined && v > 0);
+      const avg = avgs.length ? avgs.reduce((s, a) => s + a, 0) / avgs.length : 0;
+      setPrev3Avg(avg);
+      setCache(key, { avg });
+      setPrev3CachedAt(Date.now());
+    };
+
+    if (misses.length === 0) { finish(); return () => { cancelled = true; }; }
+
+    setPrev3Refreshing(true);
     Promise.all(
-      prevMs.flatMap((pm) => [
+      misses.flatMap((pm) => [
         getDocs(query(collectionGroup(db, 'entries'), where('date', '>=', `${pm}-01`), where('date', '<=', `${pm}-31`))),
         getDocs(query(collectionGroup(db, 'ambient'), where('date', '>=', `${pm}-01`), where('date', '<=', `${pm}-31`))),
       ])
     )
       .then((snaps) => {
         if (cancelled) return;
-        const avgs: number[] = [];
-        for (let i = 0; i < prevMs.length; i++) {
+        misses.forEach((pm, i) => {
           const ents = snaps[i * 2].docs.map((d) => d.data() as MachineEntry);
           const ambs = snaps[i * 2 + 1].docs.map((d) => d.data() as AmbientEntry);
           const ms = computeMonthStats(ents, ambs);
-          if (ms.daysWorked > 0) avgs.push(ms.totalAvg);
-        }
-        const avg = avgs.length ? avgs.reduce((s, a) => s + a, 0) / avgs.length : 0;
-        setPrev3Avg(avg);
-        setCache(key, { avg });
-        setPrev3CachedAt(Date.now());
+          if (ms.daysWorked > 0) {
+            avgByMonth.set(pm, ms.totalAvg);
+            setCache(`monthAvg:${pm}`, { avg: ms.totalAvg }); // 개별 월 캐시에도 저장
+          }
+        });
+        finish();
       })
       .catch(() => {})
       .finally(() => { if (!cancelled) setPrev3Refreshing(false); });
@@ -377,12 +425,16 @@ export default function AnalyticsMonthly() {
     ambient.forEach((a) => { ambientByDay[a.date] = (ambientByDay[a.date] || 0) + (a.qty || 0); });
 
     const allDates = new Set<string>([...Object.keys(coldByDay), ...Object.keys(ambientByDay)]);
-    const daysWorked = allDates.size;
-    const coldDays = Object.keys(coldByDay).length;
-    const ambientDays = Object.keys(ambientByDay).length;
-    const coldAvg = coldDays ? coldTotal / coldDays : 0;
-    const ambientAvg = ambientDays ? ambientTotal / ambientDays : 0;
-    const avgPerDay = daysWorked ? total / daysWorked : 0;
+    // 작업일 수·일평균: "완료된 날"만 (진행률 99% 미만 진행중인 날 제외)
+    const workedDays = [...allDates].filter((d) => isDayComplete(d, rawColdByDay, totalQtyByDay, logisticsByDay, ambientByDay));
+    const daysWorked = workedDays.length;
+    const workedColdTotal = workedDays.reduce((s, d) => s + (coldByDay[d] || 0), 0);
+    const workedAmbTotal = workedDays.reduce((s, d) => s + (ambientByDay[d] || 0), 0);
+    const coldDays = workedDays.filter((d) => (coldByDay[d] || 0) > 0).length;
+    const ambientDays = workedDays.filter((d) => (ambientByDay[d] || 0) > 0).length;
+    const coldAvg = coldDays ? workedColdTotal / coldDays : 0;
+    const ambientAvg = ambientDays ? workedAmbTotal / ambientDays : 0;
+    const avgPerDay = daysWorked ? (workedColdTotal + workedAmbTotal) / daysWorked : 0;
 
     // 일별 평균 품목 수: 냉장 품목만 카운트 (실온 제외)
     const itemsByDay: Record<string, Set<string>> = {};
@@ -447,6 +499,13 @@ export default function AnalyticsMonthly() {
       byMachine, allDays, topCodes,
     };
   }, [entries, ambient, items, nameMap, month, logisticsByDay]);
+
+  // 과거 월(확정)의 일평균을 개별 저장 → 직전 3개월 계산 시 재사용 (패킷 절감)
+  useEffect(() => {
+    if (loading) return;
+    if (month >= thisMonthKey()) return; // 진행중인 현재월은 캐시 안 함
+    if (stats.daysWorked > 0) setCache(`monthAvg:${month}`, { avg: stats.avgPerDay });
+  }, [loading, month, stats.avgPerDay, stats.daysWorked]);
 
   const shiftMonth = (delta: number) => {
     const [y, m] = month.split('-').map(Number);
