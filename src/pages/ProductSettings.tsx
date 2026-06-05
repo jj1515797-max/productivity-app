@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { collection, deleteDoc, doc, getCountFromServer, onSnapshot, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
+import { collection, deleteDoc, doc, getCountFromServer, getDocs, onSnapshot, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import type { Material, ProductSetting } from '../types';
 import { canonicalShort, convertErpCode } from '../lib/codeUtil';
@@ -31,7 +31,7 @@ export default function ProductSettings() {
     getCountFromServer(collection(db, 'productSettings')).then((s) => setProductCount(s.data().count)).catch(() => {});
     getCountFromServer(collection(db, 'materials')).then((s) => setMaterialCount(s.data().count)).catch(() => {});
     getCountFromServer(collection(db, 'recipes')).then((s) => setRecipeCount(s.data().count)).catch(() => {});
-    getCountFromServer(collection(db, 'materialPrices')).then((s) => setPriceCount(s.data().count)).catch(() => {});
+    getCountFromServer(collection(db, 'materialPricesMonthly')).then((s) => setPriceCount(s.data().count)).catch(() => {});
   }, []);
 
   // 섹션이 펼쳐졌을 때만 구독 (읽기 부하 절감)
@@ -1122,8 +1122,10 @@ function RecipeImportModal({ onClose }: { onClose: () => void }) {
 }
 
 /* ============================================================
-   원재료 단가 DB
-   Firestore: materialPrices/{normalizedName} = { name, pricePerGram, unit, updatedAt }
+   원재료 단가 DB (월별 관리)
+   Firestore: materialPricesMonthly/{month__normalizedName}
+              = { month, name, pricePerGram, code, updatedAt }
+   폐기금액은 폐기 날짜의 月 단가로 계산. 그 月 단가 없으면 "단가 없음".
    ============================================================ */
 
 interface MaterialPriceDoc {
@@ -1137,27 +1139,51 @@ interface MaterialPriceDoc {
 function normalizeName(n: string): string {
   return (n || '').trim().toLowerCase().replace(/\s+/g, '');
 }
+function priceDocId(month: string, name: string): string {
+  return `${month}__${normalizeName(name)}`;
+}
+function thisMonthStr(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+function shiftMonthStr(m: string, delta: number): string {
+  const [y, mm] = m.split('-').map(Number);
+  const d = new Date(y, mm - 1 + delta, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
 
 function MaterialPriceDB({ onCountChange }: { onCountChange: (n: number) => void }) {
-  const [prices, setPrices] = useState<MaterialPriceDoc[]>([]);
+  const [month, setMonth] = useState(thisMonthStr());
+  const [allDocs, setAllDocs] = useState<(MaterialPriceDoc & { month: string })[]>([]);
   const [search, setSearch] = useState('');
   const [showImport, setShowImport] = useState(false);
   const [newName, setNewName] = useState('');
   const [newCode, setNewCode] = useState('');
   const [newPrice, setNewPrice] = useState<number>(0);
+  const [legacyCount, setLegacyCount] = useState(0);
+  const [migrating, setMigrating] = useState(false);
 
   useEffect(() => {
-    return onSnapshot(collection(db, 'materialPrices'), (snap) => {
-      const list: MaterialPriceDoc[] = [];
+    return onSnapshot(collection(db, 'materialPricesMonthly'), (snap) => {
+      const list: (MaterialPriceDoc & { month: string })[] = [];
       snap.forEach((d) => {
-        const data = d.data() as { name?: string; pricePerGram?: number; code?: string; updatedAt?: string };
-        list.push({ id: d.id, name: data.name || d.id, pricePerGram: Number(data.pricePerGram) || 0, code: data.code, updatedAt: data.updatedAt });
+        const data = d.data() as { month?: string; name?: string; pricePerGram?: number; code?: string; updatedAt?: string };
+        list.push({ id: d.id, month: data.month || '', name: data.name || '', pricePerGram: Number(data.pricePerGram) || 0, code: data.code, updatedAt: data.updatedAt });
       });
-      list.sort((a, b) => a.name.localeCompare(b.name));
-      setPrices(list);
-      onCountChange(list.length);
+      setAllDocs(list);
     });
-  }, [onCountChange]);
+  }, []);
+
+  // 레거시(flat) 단가 존재 여부 — 이전 버튼 표시용
+  useEffect(() => {
+    getCountFromServer(collection(db, 'materialPrices')).then((s) => setLegacyCount(s.data().count)).catch(() => {});
+  }, []);
+
+  const prices = useMemo(
+    () => allDocs.filter((d) => d.month === month).sort((a, b) => a.name.localeCompare(b.name)),
+    [allDocs, month]
+  );
+  useEffect(() => { onCountChange(prices.length); }, [prices.length, onCountChange]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -1166,48 +1192,93 @@ function MaterialPriceDB({ onCountChange }: { onCountChange: (n: number) => void
   }, [prices, search]);
 
   const updatePrice = async (id: string, v: number) => {
-    await setDoc(doc(db, 'materialPrices', id), { pricePerGram: v, updatedAt: new Date().toISOString() }, { merge: true });
+    await setDoc(doc(db, 'materialPricesMonthly', id), { pricePerGram: v, updatedAt: new Date().toISOString() }, { merge: true });
   };
   const updateCode = async (id: string, code: string) => {
-    await setDoc(doc(db, 'materialPrices', id), { code: code.trim(), updatedAt: new Date().toISOString() }, { merge: true });
+    await setDoc(doc(db, 'materialPricesMonthly', id), { code: code.trim(), updatedAt: new Date().toISOString() }, { merge: true });
   };
   const addOne = async () => {
     if (!newName.trim() || newPrice <= 0) return;
-    const id = normalizeName(newName);
-    await setDoc(doc(db, 'materialPrices', id), {
-      name: newName.trim(), pricePerGram: newPrice,
+    await setDoc(doc(db, 'materialPricesMonthly', priceDocId(month, newName)), {
+      month, name: newName.trim(), pricePerGram: newPrice,
       ...(newCode.trim() ? { code: newCode.trim() } : {}),
       updatedAt: new Date().toISOString(),
     });
     setNewName(''); setNewCode(''); setNewPrice(0);
   };
   const delPrice = async (id: string, name: string) => {
-    if (!confirm(`'${name}' 단가를 삭제할까요?`)) return;
-    await deleteDoc(doc(db, 'materialPrices', id));
+    if (!confirm(`[${month}] '${name}' 단가를 삭제할까요?`)) return;
+    await deleteDoc(doc(db, 'materialPricesMonthly', id));
   };
 
-  // 일괄 삭제 (전체 또는 필터된 목록)
+  // 일괄 삭제 (이 月 전체 또는 검색결과)
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const bulkDelete = async (target: MaterialPriceDoc[]) => {
     if (target.length === 0) return;
     const isFiltered = target.length !== prices.length;
-    const label = isFiltered ? `검색결과 ${target.length}개` : `전체 ${target.length}개`;
-    const input = prompt(`⚠️ ${label} 원재료 단가를 모두 삭제합니다.\n되돌릴 수 없습니다. 진행하려면 "삭제" 를 입력하세요.`);
+    const label = isFiltered ? `검색결과 ${target.length}개` : `${month} 전체 ${target.length}개`;
+    const input = prompt(`⚠️ ${label} 원재료 단가를 삭제합니다.\n되돌릴 수 없습니다. 진행하려면 "삭제" 를 입력하세요.`);
     if (input !== '삭제') return;
     setBulkDeleting(true);
     try {
       const CHUNK = 400;
       for (let i = 0; i < target.length; i += CHUNK) {
         const batch = writeBatch(db);
-        target.slice(i, i + CHUNK).forEach((p) => batch.delete(doc(db, 'materialPrices', p.id)));
+        target.slice(i, i + CHUNK).forEach((p) => batch.delete(doc(db, 'materialPricesMonthly', p.id)));
         await batch.commit();
       }
       alert(`${target.length}개 삭제됨`);
     } finally { setBulkDeleting(false); }
   };
 
+  // 레거시(flat) 단가 → 2026-05 로 1회 이전
+  const migrateLegacy = async () => {
+    const targetMonth = '2026-05';
+    if (!confirm(`기존 단가 ${legacyCount}개를 ${targetMonth} 단가로 가져올까요?`)) return;
+    setMigrating(true);
+    try {
+      const snap = await getDocs(collection(db, 'materialPrices'));
+      const items: { name: string; pricePerGram: number; code?: string }[] = [];
+      snap.forEach((d) => {
+        const data = d.data() as { name?: string; pricePerGram?: number; code?: string };
+        items.push({ name: data.name || d.id, pricePerGram: Number(data.pricePerGram) || 0, code: data.code });
+      });
+      const CHUNK = 400;
+      for (let i = 0; i < items.length; i += CHUNK) {
+        const batch = writeBatch(db);
+        items.slice(i, i + CHUNK).forEach((it) => {
+          batch.set(doc(db, 'materialPricesMonthly', priceDocId(targetMonth, it.name)), {
+            month: targetMonth, name: it.name, pricePerGram: it.pricePerGram,
+            ...(it.code ? { code: it.code } : {}),
+            updatedAt: new Date().toISOString(),
+          });
+        });
+        await batch.commit();
+      }
+      alert(`${items.length}개를 ${targetMonth} 단가로 이전했습니다.`);
+      setMonth(targetMonth);
+      setLegacyCount(0);
+    } finally { setMigrating(false); }
+  };
+
   return (
     <div className="space-y-3">
+      {/* 월 선택 */}
+      <div className="flex items-center gap-2 flex-wrap bg-amber-50 border border-amber-200 rounded p-2">
+        <span className="text-sm font-bold text-amber-800">📅 기준월</span>
+        <button onClick={() => setMonth(shiftMonthStr(month, -1))} className="w-7 h-7 rounded hover:bg-amber-100">◀</button>
+        <input type="month" value={month} onChange={(e) => e.target.value && setMonth(e.target.value)}
+          className="border rounded px-2 py-1 text-sm font-bold" />
+        <button onClick={() => setMonth(shiftMonthStr(month, 1))} className="w-7 h-7 rounded hover:bg-amber-100">▶</button>
+        <span className="text-xs text-amber-700">이 달 단가는 {month} 폐기금액 계산에 사용됩니다</span>
+        {legacyCount > 0 && (
+          <button onClick={migrateLegacy} disabled={migrating}
+            className="ml-auto px-3 py-1.5 text-xs rounded bg-purple-600 text-white font-semibold hover:bg-purple-700 disabled:bg-gray-300">
+            {migrating ? '이전 중...' : `📦 기존 단가 ${legacyCount}개 → 5월로 가져오기`}
+          </button>
+        )}
+      </div>
+
       <div className="flex items-center gap-2 flex-wrap">
         <input value={search} onChange={(e) => setSearch(e.target.value)}
           placeholder="🔍 원재료명·코드 검색..."
@@ -1223,13 +1294,13 @@ function MaterialPriceDB({ onCountChange }: { onCountChange: (n: number) => void
         {prices.length > 0 && (
           <button onClick={() => bulkDelete(prices)} disabled={bulkDeleting}
             className="px-3 py-2 bg-red-600 text-white rounded text-sm font-medium hover:bg-red-700 disabled:bg-gray-300">
-            {bulkDeleting ? '삭제중...' : `🗑️ 전체 삭제 (${prices.length})`}
+            {bulkDeleting ? '삭제중...' : `🗑️ ${month} 전체 삭제 (${prices.length})`}
           </button>
         )}
       </div>
       {/* 한 개 추가 */}
       <div className="flex items-center gap-2 flex-wrap bg-slate-50 border rounded p-2">
-        <span className="text-xs text-gray-600">+ 하나 추가:</span>
+        <span className="text-xs text-gray-600">+ {month} 추가:</span>
         <input value={newName} onChange={(e) => setNewName(e.target.value)} placeholder="원재료명"
           className="flex-1 min-w-[150px] border rounded px-2 py-1 text-sm" />
         <input value={newCode} onChange={(e) => setNewCode(e.target.value)} placeholder="원재료코드(선택)"
@@ -1240,7 +1311,7 @@ function MaterialPriceDB({ onCountChange }: { onCountChange: (n: number) => void
           className="px-3 py-1 bg-emerald-600 text-white rounded text-xs font-medium hover:bg-emerald-700 disabled:bg-gray-300">추가</button>
       </div>
       {prices.length === 0 ? (
-        <div className="p-12 text-center text-gray-400 text-sm border rounded-lg">등록된 단가가 없습니다 — 📋 일괄 입력 으로 추가하세요</div>
+        <div className="p-12 text-center text-gray-400 text-sm border rounded-lg">{month} 단가가 없습니다 — 📋 일괄 입력 으로 추가하세요 (입력 전까지 이 달 폐기는 "단가 없음")</div>
       ) : (
         <div className="border rounded-lg overflow-hidden">
           <div className="max-h-[600px] overflow-y-auto">
@@ -1284,12 +1355,12 @@ function MaterialPriceDB({ onCountChange }: { onCountChange: (n: number) => void
           </div>
         </div>
       )}
-      {showImport && <PriceImportModal onClose={() => setShowImport(false)} />}
+      {showImport && <PriceImportModal month={month} onClose={() => setShowImport(false)} />}
     </div>
   );
 }
 
-function PriceImportModal({ onClose }: { onClose: () => void }) {
+function PriceImportModal({ month, onClose }: { month: string; onClose: () => void }) {
   const [text, setText] = useState('');
   const [saving, setSaving] = useState(false);
   const parsed = useMemo(() => {
@@ -1337,16 +1408,15 @@ function PriceImportModal({ onClose }: { onClose: () => void }) {
       for (let i = 0; i < parsed.length; i += CHUNK) {
         const batch = writeBatch(db);
         parsed.slice(i, i + CHUNK).forEach((p) => {
-          const id = normalizeName(p.name);
-          batch.set(doc(db, 'materialPrices', id), {
-            name: p.name, pricePerGram: p.price,
+          batch.set(doc(db, 'materialPricesMonthly', priceDocId(month, p.name)), {
+            month, name: p.name, pricePerGram: p.price,
             ...(p.code ? { code: p.code } : {}),
             updatedAt: new Date().toISOString(),
           }, { merge: true });
         });
         await batch.commit();
       }
-      alert(`${parsed.length}개 단가 저장됨`);
+      alert(`${month} 단가 ${parsed.length}개 저장됨`);
       onClose();
     } finally { setSaving(false); }
   };
@@ -1355,12 +1425,12 @@ function PriceImportModal({ onClose }: { onClose: () => void }) {
     <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
       <div className="bg-white rounded-xl shadow-2xl w-full max-w-xl overflow-hidden flex flex-col max-h-[92vh]">
         <div className="px-5 py-4 border-b flex items-center justify-between bg-blue-50">
-          <h3 className="font-bold text-gray-800">📋 단가 일괄 입력</h3>
+          <h3 className="font-bold text-gray-800">📋 {month} 단가 일괄 입력</h3>
           <button onClick={onClose} className="w-7 h-7 rounded-full hover:bg-gray-200 text-gray-500">×</button>
         </div>
         <div className="flex-1 overflow-y-auto p-5 space-y-3">
           <div className="text-xs text-gray-600 bg-slate-50 p-3 rounded border">
-            한 줄에 한 원재료. 형식: <code className="bg-white px-1 rounded">원재료명 [탭] 단가 [탭] 원재료코드(선택)</code><br />
+            <b className="text-amber-700">{month}</b> 단가로 저장됩니다. 한 줄에 한 원재료. 형식: <code className="bg-white px-1 rounded">원재료명 [탭] 단가 [탭] 원재료코드(선택)</code><br />
             <b className="text-blue-700">원재료코드</b>를 넣으면 레시피와 코드로 매칭돼요 (이름이 조금 달라도 OK).
             헤더 줄(원재료명/단가/코드)을 같이 붙여도 자동 인식합니다.
           </div>

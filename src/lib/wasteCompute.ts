@@ -61,21 +61,30 @@ export function normalizeCode(code: string): string {
 /** priceMap 안에서 코드 키는 이 접두사로 구분 (이름 키와 충돌 방지) */
 export const CODE_KEY_PREFIX = '__c__';
 
-/** 한 폐기 entry 를 원재료별 행 목록으로 확장 */
+/**
+ * 월별 단가 키 생성. priceMap 은 `${month}|${innerKey}` 형태로 저장된다.
+ * innerKey 는 이름(normalizeMaterialName) 또는 코드(CODE_KEY_PREFIX+normalizeCode).
+ */
+export function monthPriceKey(month: string, innerKey: string): string {
+  return `${month}|${innerKey}`;
+}
+
+/** 한 폐기 entry 를 원재료별 행 목록으로 확장 (단가는 entry 날짜의 月 기준) */
 export function expandWasteEntry(
   entry: WasteEntry,
   recipe: Recipe | undefined,
   priceMap: Map<string, number>,
 ): WasteRow[] {
   if (!recipe) return [];
+  const month = (entry.date || '').slice(0, 7); // YYYY-MM
   const excluded = new Set((entry.excludedIngredients || []).map(normalizeMaterialName));
   return recipe.ingredients
     .filter((ing) => !excluded.has(normalizeMaterialName(ing.name)))
     .map((ing) => {
       const weight = (ing.gPerPiece || 0) * (entry.qty || 0);
-      // 코드 우선 매칭 → 없으면 이름 매칭 (하위호환)
-      const codeKey = ing.code ? CODE_KEY_PREFIX + normalizeCode(ing.code) : '';
-      const nameKey = normalizeMaterialName(ing.name);
+      // 코드 우선 매칭 → 없으면 이름 매칭 (둘 다 해당 月 단가)
+      const codeKey = ing.code ? monthPriceKey(month, CODE_KEY_PREFIX + normalizeCode(ing.code)) : '';
+      const nameKey = monthPriceKey(month, normalizeMaterialName(ing.name));
       const hasCode = !!codeKey && priceMap.has(codeKey);
       const hasPrice = hasCode || priceMap.has(nameKey);
       const price = hasCode ? (priceMap.get(codeKey) ?? 0) : (priceMap.get(nameKey) ?? 0);

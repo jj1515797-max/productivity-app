@@ -3,7 +3,7 @@ import { addDoc, collection, collectionGroup, deleteDoc, doc, getDocs, onSnapsho
 import ExcelJS from 'exceljs';
 import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
-import { CODE_KEY_PREFIX, expandAll, expandWasteEntry, normalizeCode, normalizeMaterialName } from '../lib/wasteCompute';
+import { CODE_KEY_PREFIX, expandAll, expandWasteEntry, monthPriceKey, normalizeCode, normalizeMaterialName } from '../lib/wasteCompute';
 import type { Recipe, WasteEntry } from '../lib/wasteCompute';
 
 /* ===== 캐시 (월별) ===== */
@@ -81,14 +81,17 @@ export default function Waste() {
   }, []);
 
   useEffect(() => {
-    return onSnapshot(collection(db, 'materialPrices'), (snap) => {
+    // 월별 단가: materialPricesMonthly 컬렉션 (문서에 month 필드)
+    return onSnapshot(collection(db, 'materialPricesMonthly'), (snap) => {
       const map = new Map<string, number>();
       snap.forEach((d) => {
-        const data = d.data() as { name?: string; pricePerGram?: number; code?: string };
+        const data = d.data() as { month?: string; name?: string; pricePerGram?: number; code?: string };
+        const month = data.month || '';
+        if (!month) return;
         const price = Number(data.pricePerGram) || 0;
-        // 이름 키 + 코드 키 둘 다 등록 (코드 우선 매칭)
-        if (data.name) map.set(normalizeMaterialName(data.name), price);
-        if (data.code) map.set(CODE_KEY_PREFIX + normalizeCode(data.code), price);
+        // 해당 月 안에서 이름 키 + 코드 키 둘 다 등록 (코드 우선 매칭)
+        if (data.name) map.set(monthPriceKey(month, normalizeMaterialName(data.name)), price);
+        if (data.code) map.set(monthPriceKey(month, CODE_KEY_PREFIX + normalizeCode(data.code)), price);
       });
       setPriceMap(map);
     });
