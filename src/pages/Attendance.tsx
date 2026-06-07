@@ -941,10 +941,10 @@ function AttendanceTableModal({
     alert('현재 필요 인원이 기본값으로 저장되었습니다.');
   };
 
-  // 일요일이면 출근자 표시, 평일이면 결근자(연차/반차/반반차/병가/경조사/결혼반차) 표시
+  // 주말(토/일)은 출근자 표시, 평일은 결근자(연차/반차/반반차/병가/경조사/결혼반차) 표시
   const [y, mo, d] = date.split('-').map(Number);
-  const dow = new Date(y, mo - 1, d).getDay(); // 0=일
-  const isSunday = dow === 0;
+  const dow = new Date(y, mo - 1, d).getDay(); // 0=일, 6=토
+  const isWeekend = dow === 0 || dow === 6;
 
   // 파트별 분류
   const rows = useMemo(() => {
@@ -986,7 +986,7 @@ function AttendanceTableModal({
         if (statuses.length === 0 || (statuses.length === 1 && statuses[0] === '출근')) { row.출근++; present.push(m.name); return; }
         if (statuses.includes('휴무')) {
           row.휴무++;
-          if (!isSunday) absent.push(`${m.name}(휴무)`);
+          if (!isWeekend) absent.push(`${m.name}(휴무)`);
           return;
         }
         let counted = false;
@@ -1007,7 +1007,7 @@ function AttendanceTableModal({
           absent.push(`${m.name}(${label})`);
         }
       });
-      row.names = isSunday ? present : absent;
+      row.names = isWeekend ? present : absent;
       // AR(일용직)은 수동 입력값으로 덮어쓰기
       if (part === 'AR(일용직)') {
         row.total = meta.arTotal ?? 0;
@@ -1015,7 +1015,7 @@ function AttendanceTableModal({
       }
       return row;
     });
-  }, [rows, records, isSunday, date, meta.arTotal, meta.arPresent]);
+  }, [rows, records, isWeekend, date, meta.arTotal, meta.arPresent]);
 
   // 생산동 인원 현황 (휴직 제외, 파트 합산)
   const totals = useMemo(() => {
@@ -1050,7 +1050,7 @@ function AttendanceTableModal({
         <div className="px-6 py-4 border-b flex items-center justify-between bg-gradient-to-r from-emerald-50 to-teal-50">
           <div>
             <h3 className="text-lg font-bold text-gray-800">📋 근태현황표</h3>
-            <div className="text-xs text-gray-500 mt-0.5">{dateLabel(date)} · {isSunday ? '일요일 — 출근자 표시' : '평일 — 결근자 표시'}</div>
+            <div className="text-xs text-gray-500 mt-0.5">{dateLabel(date)} · {isWeekend ? (dow === 6 ? '토요일' : '일요일') + ' — 출근자 표시' : '평일 — 결근자 표시'}</div>
           </div>
           <button onClick={onClose} className="w-8 h-8 rounded-full hover:bg-gray-200 text-gray-500 text-lg">×</button>
         </div>
@@ -1139,7 +1139,7 @@ function AttendanceTableModal({
                   <td className="border border-gray-500 px-2 py-1.5"></td>
                   <td className="border border-gray-500 px-2 py-1.5 text-center text-blue-700 font-semibold">{rows.leaveBucket.length || ''}</td>
                   <td className="border border-gray-500 px-2 py-1.5 text-center text-blue-700 font-bold">0</td>
-                  <td className="border border-gray-500 px-2 py-1.5 text-xs text-gray-700">{rows.leaveBucket.map((m) => m.name).join(', ')}</td>
+                  <td className="border border-gray-500 px-2 py-1.5 text-xs text-gray-700">{isWeekend ? '' : rows.leaveBucket.map((m) => m.name).join(', ')}</td>
                 </tr>
                 {/* 합계 행 */}
                 <tr className="bg-yellow-200 font-bold">
