@@ -377,7 +377,7 @@ export default function Dashboard() {
                       {hasSampleCol && <td className="px-4 py-3 text-right text-amber-600 font-medium">{it.sample || '-'}</td>}
                       <td className="px-4 py-3 text-right font-semibold text-gray-800">{it.totalQty}</td>
                       <td className="px-4 py-3 text-right text-gray-700 font-medium">{actual || '-'}</td>
-                      <td className={`px-4 py-3 text-right font-bold ${diff >= 10 ? 'bg-red-100' : ''} ${diff > 0 ? 'text-green-600' : diff < 0 ? 'text-red-500' : 'text-gray-400'}`}>
+                      <td className={`px-4 py-3 text-right font-bold ${diff >= 10 ? 'bg-red-300' : ''} ${diff > 0 ? 'text-green-600' : diff < 0 ? 'text-red-500' : 'text-gray-400'}`}>
                         {logQty !== undefined
                           ? (logQty > 0 ? `+${logQty}` : logQty === 0 ? '✓' : logQty)
                           : (actual === 0 ? '' : diff > 0 ? `+${diff}` : diff < 0 ? diff : '✓')}
