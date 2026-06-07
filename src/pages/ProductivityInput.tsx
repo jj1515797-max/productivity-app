@@ -69,6 +69,7 @@ export default function ProductivityInput() {
   // 자동 계산 데이터: 조직도 + 발주 items + 제품 DB
   const [members, setMembers] = useState<Member[]>([]);
   const [attendRecords, setAttendRecords] = useState<Record<string, AttendanceRecord>>({});
+  const [arPresent, setArPresent] = useState(0); // AR(일용직) 출근수
   const [items, setItems] = useState<Item[]>([]);
   const [productSettings, setProductSettings] = useState<Record<string, ProductSetting>>({});
 
@@ -76,6 +77,15 @@ export default function ProductivityInput() {
     setData({});
     return onSnapshot(doc(db, 'productivity', date), (snap) => {
       setData(snap.exists() ? (snap.data() as DayData) : {});
+    });
+  }, [date]);
+
+  // 그날 AR(일용직) 출근수 자동 가져오기 (출근인원 합산에 더함)
+  useEffect(() => {
+    setArPresent(0);
+    return onSnapshot(doc(db, 'attendanceMeta', date), (snap) => {
+      const d = snap.exists() ? (snap.data() as { arPresent?: number }) : {};
+      setArPresent(d.arPresent || 0);
     });
   }, [date]);
 
@@ -152,7 +162,7 @@ export default function ProductivityInput() {
   }, [items, settingsByNormalized]);
 
   const auto = {
-    attend: attendanceSummary.presentN,
+    attend: attendanceSummary.presentN + arPresent, // 정직원 출근 + AR(일용직) 출근
     leave: attendanceSummary.leaveDays,
     pot: productionByType.pot,
     bat: productionByType.bat,
@@ -318,7 +328,7 @@ export default function ProductivityInput() {
                 onSave={(v) => save('attend', v)}
                 saving={savingFields.has('attend')}
                 unit="명"
-                hint="총원 − 휴직 − 휴무 − 연차/반차 등"
+                hint={`정직원 출근${arPresent ? ` + AR(일용직) ${arPresent}` : ''}`}
               />
               <AutoNumberRow
                 label="연차"
