@@ -861,6 +861,19 @@ function RecipeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
       updatedAt: new Date().toISOString(),
     });
   };
+  const updateIngCode = async (recipe: RecipeDoc, seq: number, newCode: string) => {
+    const trimmed = newCode.trim();
+    const next = (recipe.ingredients || []).map((ing) => {
+      if (ing.seq !== seq) return ing;
+      const copy: RecipeIngredient = { ...ing };
+      if (trimmed) copy.code = trimmed; else delete copy.code;
+      return copy;
+    });
+    await updateDoc(doc(db, 'recipes', recipe.code), {
+      ingredients: next,
+      updatedAt: new Date().toISOString(),
+    });
+  };
 
   // 일괄 삭제 (전체 또는 필터된 목록)
   const [bulkDeleting, setBulkDeleting] = useState(false);
@@ -948,7 +961,19 @@ function RecipeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
                               <tr key={ing.seq} className="border-t border-gray-200">
                                 <td className="text-right pr-2 text-gray-500">{ing.seq}</td>
                                 <td>{ing.name}</td>
-                                <td className="font-mono text-gray-500">{ing.code || <span className="text-gray-300">-</span>}</td>
+                                <td className="py-0.5">
+                                  <input
+                                    key={`${r.code}-${ing.seq}-code-${ing.code || ''}`}
+                                    type="text"
+                                    defaultValue={ing.code || ''}
+                                    placeholder="-"
+                                    onBlur={(e) => {
+                                      const v = e.target.value;
+                                      if (v !== (ing.code || '')) updateIngCode(r, ing.seq, v);
+                                    }}
+                                    className="w-24 border rounded px-2 py-0.5 text-xs font-mono focus:ring-1 focus:ring-blue-400"
+                                  />
+                                </td>
                                 <td className="text-right pr-1 py-0.5">
                                   <input
                                     key={`${r.code}-${ing.seq}-${ing.gPerPiece}`}
@@ -1545,6 +1570,19 @@ function AmbientRecipeDB({ onCountChange }: { onCountChange: (n: number) => void
       updatedAt: new Date().toISOString(),
     });
   };
+  const updateIngCode = async (r: AmbientRecipeDoc, seq: number, newCode: string) => {
+    const trimmed = newCode.trim();
+    const next = r.ingredients.map((ing) => {
+      if (ing.seq !== seq) return ing;
+      const copy: AmbientRecipeDoc['ingredients'][number] = { ...ing };
+      if (trimmed) copy.code = trimmed; else delete copy.code;
+      return copy;
+    });
+    await updateDoc(doc(db, 'ambientRecipes', r.id), {
+      ingredients: next,
+      updatedAt: new Date().toISOString(),
+    });
+  };
   const delRecipe = async (r: AmbientRecipeDoc) => {
     if (!confirm(`'${r.name}' 실온 레시피를 삭제할까요?`)) return;
     await deleteDoc(doc(db, 'ambientRecipes', r.id));
@@ -1639,7 +1677,19 @@ function AmbientRecipeDB({ onCountChange }: { onCountChange: (n: number) => void
                                 <tr key={ing.seq} className="border-t border-gray-200">
                                   <td className="text-right pr-2 text-gray-500">{ing.seq}</td>
                                   <td>{ing.name}</td>
-                                  <td className="font-mono text-gray-500">{ing.code || <span className="text-gray-300">-</span>}</td>
+                                  <td className="py-0.5">
+                                    <input
+                                      key={`${r.id}-${ing.seq}-code-${ing.code || ''}`}
+                                      type="text"
+                                      defaultValue={ing.code || ''}
+                                      placeholder="-"
+                                      onBlur={(e) => {
+                                        const v = e.target.value;
+                                        if (v !== (ing.code || '')) updateIngCode(r, ing.seq, v);
+                                      }}
+                                      className="w-24 border rounded px-2 py-0.5 text-xs font-mono focus:ring-1 focus:ring-blue-400"
+                                    />
+                                  </td>
                                   <td className="text-right pr-1 py-0.5">
                                     <input type="number" step="0.001" min="0"
                                       key={`${r.id}-${ing.seq}-${ing.gPerBatch}`}

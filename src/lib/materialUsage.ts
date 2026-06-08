@@ -71,7 +71,9 @@ export function computeColdProductionByCode(
   return out;
 }
 
-/** 월별 사용량 계산: 냉장 + 실온 */
+/** 월별 사용량 계산: 냉장 + 실온
+ *  priceMonth 지정 시 그 달 단가로 평가 (Flexed Budget 분석용). 미지정이면 month 자체.
+ */
 export function computeMonthlyUsage(
   month: string,
   entries: MachineEntry[],
@@ -81,7 +83,9 @@ export function computeMonthlyUsage(
   recipeMap: Map<string, Recipe>,
   ambientRecipeMap: Map<string, AmbientRecipe>, // key = normalizeMaterialName(name)
   priceMap: Map<string, number>,
+  priceMonth?: string,
 ): UsageResult {
+  const pMonth = priceMonth ?? month;
   const usageGrams = new Map<string, { name: string; code?: string; grams: number }>();
   const addUsage = (ingName: string, ingCode: string | undefined, g: number) => {
     if (g <= 0) return;
@@ -132,8 +136,8 @@ export function computeMonthlyUsage(
   const missingPrices: string[] = [];
   const rows: UsageRow[] = [];
   usageGrams.forEach(({ name, code, grams }, key) => {
-    const codeKey = code ? monthPriceKey(month, CODE_KEY_PREFIX + normalizeCode(code)) : '';
-    const nameKey = monthPriceKey(month, normalizeMaterialName(name));
+    const codeKey = code ? monthPriceKey(pMonth, CODE_KEY_PREFIX + normalizeCode(code)) : '';
+    const nameKey = monthPriceKey(pMonth, normalizeMaterialName(name));
     const hasCode = !!codeKey && priceMap.has(codeKey);
     const hasPrice = hasCode || priceMap.has(nameKey);
     const pricePerGram = hasCode ? (priceMap.get(codeKey) ?? 0) : (priceMap.get(nameKey) ?? 0);
@@ -194,5 +198,68 @@ export function diffUsage(aResult: UsageResult, bResult: UsageResult): DiffRow[]
   });
   // B월 사용량 내림차순, 없으면 A월
   list.sort((a, b) => (b.bGrams || b.aGrams) - (a.bGrams || a.aGrams));
+  return list;
+}
+
+/** Flexed Budget 분석 row — 두 월 모두 B월 단가로 평가 + A월 결과를 B월 생산규모로 연동 */
+export interface FlexedRow {
+  key: string;
+  name: string;
+  code?: string;
+  aGrams: number;
+  aCost: number;       // A 생산량 × 레시피 × B단가
+  bGrams: number;
+  bCost: number;       // B 생산량 × 레시피 × B단가
+  flexedCost: number;  // aCost × (bScale / aScale)
+  diffCost: number;    // flexedCost − bCost  (+ 효율↑ / − 낭비)
+  diffPct: number;     // flexedCost 대비 %
+  bSharePct: number;   // B월 cost 비중 (전체 B 합 대비)
+  hasPrice: boolean;
+}
+export function computeFlexedDiff(
+  aRowsBPrice: UsageRow[],
+  bRows: UsageRow[],
+  aScale: number,
+  bScale: number,
+): FlexedRow[] {
+  const ratio = aScale > 0 ? bScale / aScale : 1;
+  const map = new Map<string, FlexedRow>();
+  aRowsBPrice.forEach((r) => {
+    map.set(r.key, {
+      key: r.key, name: r.name, code: r.code,
+      aGrams: r.grams, aCost: r.cost,
+      bGrams: 0, bCost: 0,
+      flexedCost: r.cost * ratio,
+      diffCost: 0, diffPct: 0, bSharePct: 0,
+      hasPrice: r.hasPrice,
+    });
+  });
+  bRows.forEach((r) => {
+    const prev = map.get(r.key);
+    if (prev) {
+      prev.bGrams = r.grams; prev.bCost = r.cost;
+      if (!prev.name && r.name) prev.name = r.name;
+      if (!prev.code && r.code) prev.code = r.code;
+      prev.hasPrice = prev.hasPrice || r.hasPrice;
+    } else {
+      map.set(r.key, {
+        key: r.key, name: r.name, code: r.code,
+        aGrams: 0, aCost: 0,
+        bGrams: r.grams, bCost: r.cost,
+        flexedCost: 0,
+        diffCost: 0, diffPct: 0, bSharePct: 0,
+        hasPrice: r.hasPrice,
+      });
+    }
+  });
+  const list = Array.from(map.values());
+  const bTotal = list.reduce((s, r) => s + r.bCost, 0);
+  list.forEach((r) => {
+    r.diffCost = r.flexedCost - r.bCost;
+    r.diffPct = r.flexedCost > 0 ? (r.diffCost / r.flexedCost) * 100 : (r.bCost > 0 ? -100 : 0);
+    r.bSharePct = bTotal > 0 ? (r.bCost / bTotal) * 100 : 0;
+  });
+  // B월 금액 내림차순
+  list.sort((a, b) => b.bCost - a.bCost);
   return list;
 }
