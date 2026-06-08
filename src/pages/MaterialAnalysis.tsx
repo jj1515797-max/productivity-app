@@ -104,6 +104,22 @@ export default function MaterialAnalysis() {
   const [bRaw, setBRaw] = useState<RawMonth | null>(null);
   const [search, setSearch] = useState<string>('');
   const [searchFlexed, setSearchFlexed] = useState<boolean>(false);
+  // 원재료명 로컬 별칭 (분석화면 한정, 코드/키 단위로 저장)
+  const NAME_OVERRIDE_KEY = PREFIX + 'nameOverrides';
+  const [nameOverrides, setNameOverrides] = useState<Record<string, string>>(() => {
+    try { return JSON.parse(localStorage.getItem(NAME_OVERRIDE_KEY) || '{}'); } catch { return {}; }
+  });
+  const saveNameOverride = (key: string, name: string, fallback: string) => {
+    setNameOverrides((prev) => {
+      const next = { ...prev };
+      const trimmed = name.trim();
+      if (!trimmed || trimmed === fallback) delete next[key];
+      else next[key] = trimmed;
+      try { localStorage.setItem(NAME_OVERRIDE_KEY, JSON.stringify(next)); } catch {}
+      return next;
+    });
+  };
+  const displayName = (key: string, original: string) => nameOverrides[key] || original;
   const [expandStages, setExpandStages] = useState<Record<string, boolean>>({});
   const [err, setErr] = useState<string | null>(null);
 
@@ -620,7 +636,15 @@ export default function MaterialAnalysis() {
                       return (
                       <Fragment2 key={row.key}>
                         <tr className="border-t">
-                          <td rowSpan={3} className="border px-2 py-1 font-semibold align-top">{row.name}</td>
+                          <td rowSpan={3} className="border px-2 py-1 align-top">
+                            <input
+                              key={`name-${row.key}-${nameOverrides[row.key] || ''}`}
+                              defaultValue={displayName(row.key, row.name)}
+                              onBlur={(e) => saveNameOverride(row.key, e.target.value, row.name)}
+                              className="w-full bg-transparent font-semibold focus:bg-yellow-50 focus:ring-1 focus:ring-yellow-300 rounded px-1 py-0.5"
+                              title={`원본: ${row.name} (코드 ${row.code || '-'})`}
+                            />
+                          </td>
                           <td rowSpan={3} className="border px-2 py-1 text-center font-mono text-gray-500 align-top">{row.code || '-'}</td>
                           <td className="border px-2 py-1 text-blue-700 font-semibold whitespace-nowrap">{monthA}{searchFlexed && <span className="text-[10px] text-indigo-500 ml-0.5">(연동)</span>}</td>
                           {STAGE_LETTERS.map((L) => (
@@ -706,7 +730,7 @@ export default function MaterialAnalysis() {
                         <td className="border px-2 py-1 text-center text-gray-500">{idx + 1}</td>
                         <td className="border px-2 py-1">
                           {noPrice && <span className="text-amber-600 mr-1" title="단가 미입력">⚠️</span>}
-                          {r.name}
+                          {displayName(r.key, r.name)}
                         </td>
                         <td className="border px-2 py-1 text-center font-mono text-gray-500">{r.code || '-'}</td>
                         <td className="border px-2 py-1 text-right text-gray-600">{Math.round(r.aCost).toLocaleString()}</td>
@@ -760,9 +784,18 @@ export default function MaterialAnalysis() {
                     return (
                       <tr key={r.key} className="border-t">
                         <td className="px-2 py-1">
-                          <span className="text-gray-400 mr-1">{i + 1}</span>
-                          {!r.hasPrice && <span className="text-amber-600 mr-0.5" title="단가 미입력">⚠️</span>}
-                          {r.name}
+                          <div className="flex items-center gap-1">
+                            <span className="text-gray-400">{i + 1}</span>
+                            {!r.hasPrice && <span className="text-amber-600" title="단가 미입력">⚠️</span>}
+                            <input
+                              key={`flex-name-${r.key}-${nameOverrides[r.key] || ''}`}
+                              defaultValue={displayName(r.key, r.name)}
+                              onBlur={(e) => saveNameOverride(r.key, e.target.value, r.name)}
+                              className="flex-1 min-w-0 bg-transparent focus:bg-yellow-50 focus:ring-1 focus:ring-yellow-300 rounded px-1 py-0.5"
+                              title={`원본: ${r.name}`}
+                            />
+                          </div>
+                          <div className="text-[10px] font-mono text-gray-400 pl-4">{r.code || '코드없음'}</div>
                         </td>
                         <td className="px-2 py-1 text-right text-indigo-700">{Math.round(r.flexedCost).toLocaleString()}</td>
                         <td className="px-2 py-1 text-right">{Math.round(r.bCost).toLocaleString()}</td>
@@ -802,7 +835,19 @@ export default function MaterialAnalysis() {
                     const gDiff = r.bGrams - r.aGrams;
                     return (
                       <tr key={r.key} className="border-t">
-                        <td className="px-2 py-1"><span className="text-gray-400 mr-1">{i + 1}</span>{r.name}</td>
+                        <td className="px-2 py-1">
+                          <div className="flex items-center gap-1">
+                            <span className="text-gray-400">{i + 1}</span>
+                            <input
+                              key={`real-name-${r.key}-${nameOverrides[r.key] || ''}`}
+                              defaultValue={displayName(r.key, r.name)}
+                              onBlur={(e) => saveNameOverride(r.key, e.target.value, r.name)}
+                              className="flex-1 min-w-0 bg-transparent focus:bg-yellow-50 focus:ring-1 focus:ring-yellow-300 rounded px-1 py-0.5"
+                              title={`원본: ${r.name}`}
+                            />
+                          </div>
+                          <div className="text-[10px] font-mono text-gray-400 pl-4">{r.code || '코드없음'}</div>
+                        </td>
                         <td className="px-2 py-1 text-right text-gray-600">{Math.round(r.aCost).toLocaleString()}</td>
                         <td className="px-2 py-1 text-right">{Math.round(r.bCost).toLocaleString()}</td>
                         <td className={`px-2 py-1 text-right font-bold ${cls}`}>{r.diffCost > 0 ? '+' : ''}{Math.round(r.diffCost).toLocaleString()}<div className="text-[10px] font-normal">{r.diffPct > 0 ? '+' : ''}{r.diffPct.toFixed(0)}%</div></td>
@@ -849,7 +894,7 @@ export default function MaterialAnalysis() {
                         <td className="border px-2 py-1 text-center text-gray-500">{idx + 1}</td>
                         <td className="border px-2 py-1">
                           {noPrice && <span className="text-amber-600 mr-1" title="단가 미입력">⚠️</span>}
-                          {r.name}
+                          {displayName(r.key, r.name)}
                         </td>
                         <td className="border px-2 py-1 text-center font-mono text-gray-500">{r.code || '-'}</td>
                         <td className="border px-2 py-1 text-right">{Math.round(r.aGrams).toLocaleString()}</td>
