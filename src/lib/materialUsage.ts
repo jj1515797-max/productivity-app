@@ -3,6 +3,7 @@ import type { AmbientEntry, Item, MachineEntry } from '../types';
 import type { AmbientRecipe, Recipe } from './wasteCompute';
 import { CODE_KEY_PREFIX, monthPriceKey, normalizeCode, normalizeMaterialName } from './wasteCompute';
 import { canonicalShort } from './codeUtil';
+import { getStage, STAGE_LETTERS } from './monthlyProduction';
 
 export interface UsageRow {
   /** 원재료 매칭 키 (코드 우선, 없으면 이름 정규화) */
@@ -262,4 +263,93 @@ export function computeFlexedDiff(
   // B월 금액 내림차순
   list.sort((a, b) => b.bCost - a.bCost);
   return list;
+}
+
+/** 원재료별 — 냉장 단계별(A/B/C/…/I) + 실온 사용량(g) + 단가
+ *  원재료분석 검색창에서 매칭된 원재료의 단계별 사용 분배에 사용.
+ *  냉장 분배는 coldByCode(원본 코드, qty) 와 recipeMap(canonicalShort 키)으로 코드별 레시피 적용 후
+ *  코드의 stage(getStage)로 묶어 합산.
+ */
+export interface IngredientStageRow {
+  key: string;
+  name: string;
+  code?: string;
+  /** 단계별 g (A/B/C/D/E/F/F500/G/H/I) */
+  byStage: Record<string, number>;
+  /** 실온 합 g */
+  ambientGrams: number;
+  /** 전체 g */
+  totalGrams: number;
+  pricePerGram: number;
+  cost: number;
+  hasPrice: boolean;
+}
+export function computeIngredientStageUsage(
+  month: string,
+  coldByCode: Map<string, number>,        // 원본 코드(원본 그대로) → 월합 qty
+  ambient: AmbientEntry[],
+  recipeMap: Map<string, Recipe>,
+  ambientRecipeMap: Map<string, AmbientRecipe>,
+  priceMap: Map<string, number>,
+  priceMonth?: string,
+): IngredientStageRow[] {
+  const pMonth = priceMonth ?? month;
+  const empty = (): Record<string, number> => {
+    const o: Record<string, number> = {};
+    STAGE_LETTERS.forEach((L) => { o[L] = 0; });
+    return o;
+  };
+  type Acc = { name: string; code?: string; byStage: Record<string, number>; ambientGrams: number };
+  const acc = new Map<string, Acc>();
+  const add = (name: string, code: string | undefined, stage: string | null, grams: number, isAmbient: boolean) => {
+    if (grams <= 0) return;
+    const key = code ? (CODE_KEY_PREFIX + normalizeCode(code)) : normalizeMaterialName(name);
+    let cur = acc.get(key);
+    if (!cur) { cur = { name, code, byStage: empty(), ambientGrams: 0 }; acc.set(key, cur); }
+    if (isAmbient) cur.ambientGrams += grams;
+    else if (stage && cur.byStage[stage] !== undefined) cur.byStage[stage] += grams;
+  };
+
+  // 냉장: recipeMap canonicalShort 재인덱싱
+  const normRecipeMap = new Map<string, Recipe>();
+  recipeMap.forEach((r) => {
+    const k = canonicalShort(r.code || '');
+    if (k && !normRecipeMap.has(k)) normRecipeMap.set(k, r);
+  });
+  coldByCode.forEach((qty, code) => {
+    if (qty <= 0) return;
+    const stage = getStage(code);
+    const r = normRecipeMap.get(canonicalShort(code));
+    if (!r) return;
+    r.ingredients.forEach((ing) => add(ing.name, ing.code, stage, (ing.gPerPiece || 0) * qty, false));
+  });
+
+  // 실온
+  ambient.forEach((a) => {
+    const pname = a.productName || '';
+    if (!pname) return;
+    const recipe = ambientRecipeMap.get(normalizeMaterialName(pname));
+    if (!recipe) return;
+    const bp = recipe.batchPieces || 1;
+    const batchCount = Math.max(1, Math.round((a.qty || 0) / bp));
+    recipe.ingredients.forEach((ing) => add(ing.name, ing.code, null, (ing.gPerBatch || 0) * batchCount, true));
+  });
+
+  const out: IngredientStageRow[] = [];
+  acc.forEach((v, key) => {
+    const stageSum = Object.values(v.byStage).reduce((s, x) => s + x, 0);
+    const totalGrams = stageSum + v.ambientGrams;
+    const codeKey = v.code ? monthPriceKey(pMonth, CODE_KEY_PREFIX + normalizeCode(v.code)) : '';
+    const nameKey = monthPriceKey(pMonth, normalizeMaterialName(v.name));
+    const hasCode = !!codeKey && priceMap.has(codeKey);
+    const hasPrice = hasCode || priceMap.has(nameKey);
+    const pricePerGram = hasCode ? (priceMap.get(codeKey) ?? 0) : (priceMap.get(nameKey) ?? 0);
+    out.push({
+      key, name: v.name, code: v.code,
+      byStage: v.byStage, ambientGrams: v.ambientGrams, totalGrams,
+      pricePerGram, cost: totalGrams * pricePerGram, hasPrice,
+    });
+  });
+  out.sort((a, b) => b.totalGrams - a.totalGrams);
+  return out;
 }

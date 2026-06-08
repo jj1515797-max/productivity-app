@@ -1,12 +1,14 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment as Fragment2, useEffect, useMemo, useState } from 'react';
 import { collection, collectionGroup, getDocs, onSnapshot, query, where } from 'firebase/firestore';
 import ExcelJS from 'exceljs';
 import { db } from '../firebase';
 import type { AmbientEntry, Item, MachineEntry } from '../types';
 import type { AmbientRecipe, Recipe } from '../lib/wasteCompute';
 import { CODE_KEY_PREFIX, monthPriceKey, normalizeCode, normalizeMaterialName } from '../lib/wasteCompute';
-import { computeColdProductionByCode, computeFlexedDiff, computeMonthlyUsage, diffUsage } from '../lib/materialUsage';
-import type { DiffRow, FlexedRow, UsageResult } from '../lib/materialUsage';
+import { computeFlexedDiff, computeIngredientStageUsage, computeMonthlyUsage, diffUsage } from '../lib/materialUsage';
+import type { DiffRow, FlexedRow, IngredientStageRow, UsageResult } from '../lib/materialUsage';
+import { computeMonthlyProduction, STAGE_COLOR, STAGE_LETTERS } from '../lib/monthlyProduction';
+import type { MonthlyProduction } from '../lib/monthlyProduction';
 
 /* ===== 캐시 ===== */
 const PREFIX = 'matAnalysis:';
@@ -96,6 +98,12 @@ export default function MaterialAnalysis() {
   const [aAmount, setAAmount] = useState<string>(''); // A월 생산금액 ₩ (선택)
   const [bAmount, setBAmount] = useState<string>('');
   const [scaleBy, setScaleBy] = useState<'qty' | 'amount'>('qty');
+  const [aProd, setAProd] = useState<MonthlyProduction | null>(null);
+  const [bProd, setBProd] = useState<MonthlyProduction | null>(null);
+  const [aRaw, setARaw] = useState<RawMonth | null>(null);
+  const [bRaw, setBRaw] = useState<RawMonth | null>(null);
+  const [search, setSearch] = useState<string>('');
+  const [expandStages, setExpandStages] = useState<Record<string, boolean>>({});
   const [err, setErr] = useState<string | null>(null);
 
   // 마스터 DB 구독
@@ -154,24 +162,23 @@ export default function MaterialAnalysis() {
         return r;
       };
       const [aRaw, bRaw] = await Promise.all([fetchOrCache(monthA), fetchOrCache(monthB)]);
-      // 각 월 자체 단가 결과 (보조 비교용 — 기존 표)
+      // 분석 1 — 월별 생산 분해 (단계·품목·실온)
+      const aProd_ = computeMonthlyProduction(aRaw.entries, aRaw.items, aRaw.ambient, aRaw.logistics);
+      const bProd_ = computeMonthlyProduction(bRaw.entries, bRaw.items, bRaw.ambient, bRaw.logistics);
+      setAProd(aProd_); setBProd(bProd_);
+
+      // 분석 2 — 각 월 자체 단가 결과 (기존 표)
       const aRes = computeMonthlyUsage(monthA, aRaw.entries, aRaw.items, aRaw.ambient, aRaw.logistics, recipeMap, ambientRecipeMap, priceMap);
       const bRes = computeMonthlyUsage(monthB, bRaw.entries, bRaw.items, bRaw.ambient, bRaw.logistics, recipeMap, ambientRecipeMap, priceMap);
-      // A월 데이터를 B월 단가로 재평가 (Flexed Budget — 단가 인상 노이즈 제거)
+      // A월 데이터를 B월 단가로 재평가 (Flexed Budget)
       const aResB = computeMonthlyUsage(monthA, aRaw.entries, aRaw.items, aRaw.ambient, aRaw.logistics, recipeMap, ambientRecipeMap, priceMap, monthB);
       setAResult(aRes); setBResult(bRes); setAResultBPrice(aResB);
       setDiff(diffUsage(aRes, bRes));
 
-      // 총생산량 EA 자동 채움 (냉장 + 실온)
-      const totalProd = (raw: RawMonth): number => {
-        const cold = computeColdProductionByCode(raw.entries, raw.items, raw.logistics);
-        let sum = 0;
-        cold.forEach((n) => { sum += n; });
-        raw.ambient.forEach((a) => { sum += a.qty || 0; });
-        return Math.round(sum);
-      };
-      setAQty(totalProd(aRaw));
-      setBQty(totalProd(bRaw));
+      // 총생산량 EA 자동 채움 (분석 1 결과 재사용 → 월별현황과 일치)
+      setAQty(aProd_.total);
+      setBQty(bProd_.total);
+      setARaw(aRaw); setBRaw(bRaw);
     } catch (e: any) {
       console.error('[MaterialAnalysis] failed:', e);
       setErr(e?.message || '분석 중 오류 발생');
@@ -193,10 +200,32 @@ export default function MaterialAnalysis() {
     if (!confirm('분석 결과와 캐시를 모두 삭제할까요?')) return;
     clearAllCache();
     setAResult(null); setBResult(null); setAResultBPrice(null);
+    setAProd(null); setBProd(null); setARaw(null); setBRaw(null);
     setDiff([]); setFlexed([]);
     setAQty(0); setBQty(0); setAAmount(''); setBAmount('');
-    setErr(null);
+    setSearch(''); setErr(null);
   };
+
+  // 검색: 원재료별 단계별 사용 (검색어 있을 때만 계산)
+  const stageUsage = useMemo(() => {
+    if (!search.trim() || !aRaw || !bRaw || !aProd || !bProd) return null;
+    const q = search.trim().toLowerCase();
+    const aRows = computeIngredientStageUsage(monthA, aProd.coldByCode, aRaw.ambient, recipeMap, ambientRecipeMap, priceMap);
+    const bRows = computeIngredientStageUsage(monthB, bProd.coldByCode, bRaw.ambient, recipeMap, ambientRecipeMap, priceMap);
+    const aFilt = aRows.filter((r) => r.name.toLowerCase().includes(q) || (r.code || '').toLowerCase().includes(q));
+    const bFilt = bRows.filter((r) => r.name.toLowerCase().includes(q) || (r.code || '').toLowerCase().includes(q));
+    // key 합집합
+    const keys = Array.from(new Set([...aFilt.map((r) => r.key), ...bFilt.map((r) => r.key)]));
+    const byKey = new Map<string, { a?: IngredientStageRow; b?: IngredientStageRow }>();
+    aFilt.forEach((r) => { byKey.set(r.key, { ...(byKey.get(r.key) || {}), a: r }); });
+    bFilt.forEach((r) => { byKey.set(r.key, { ...(byKey.get(r.key) || {}), b: r }); });
+    return keys.map((k) => {
+      const v = byKey.get(k)!;
+      const name = v.b?.name || v.a?.name || k;
+      const code = v.b?.code || v.a?.code;
+      return { key: k, name, code, a: v.a, b: v.b };
+    });
+  }, [search, aRaw, bRaw, aProd, bProd, monthA, monthB, recipeMap, ambientRecipeMap, priceMap]);
 
   // 각 월 자체 단가 합계 (기존 비교용)
   const aTotal = aResult?.rows.reduce((s, r) => s + r.cost, 0) || 0;
@@ -437,9 +466,165 @@ export default function MaterialAnalysis() {
         </div>
       )}
 
-      {/* KPI 카드 — Flexed Budget 기준 */}
+      {/* ============================================================
+          분석 1: 월별 생산 현황 (냉장 단계별 + 실온 제품별)
+          ============================================================ */}
+      {aProd && bProd && (
+        <div className="bg-white border-2 border-indigo-200 rounded-lg overflow-hidden">
+          <div className="px-4 py-3 bg-indigo-600 text-white font-bold text-sm flex items-center gap-2">
+            <span>🏭 분석 1 — 월별 생산 현황</span>
+            <span className="text-xs font-normal text-indigo-100">냉장 단계·품목별 + 실온 제품별 · 월별현황과 동일 합계</span>
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-0 divide-y lg:divide-y-0 lg:divide-x">
+            <ProductionPanel month={monthA} prod={aProd} accent="blue"
+              expandStages={expandStages} toggle={(k) => setExpandStages((p) => ({ ...p, [k]: !p[k] }))} />
+            <ProductionPanel month={monthB} prod={bProd} accent="rose"
+              expandStages={expandStages} toggle={(k) => setExpandStages((p) => ({ ...p, [k]: !p[k] }))} />
+          </div>
+          {/* 단계별 비교 (한눈에) */}
+          <div className="border-t bg-slate-50 p-4">
+            <div className="font-bold text-xs text-gray-700 mb-2">📊 단계별 한눈 비교</div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead className="text-gray-500">
+                  <tr>
+                    <th className="text-left px-2 py-1">단계</th>
+                    <th className="text-right px-2 py-1">{monthA} EA</th>
+                    <th className="text-right px-2 py-1">{monthA} 품목</th>
+                    <th className="text-right px-2 py-1">{monthB} EA</th>
+                    <th className="text-right px-2 py-1">{monthB} 품목</th>
+                    <th className="text-right px-2 py-1">증감 EA</th>
+                    <th className="text-right px-2 py-1">증감 %</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {STAGE_LETTERS.map((L) => {
+                    const a = aProd.stages.find((s) => s.letter === L)!;
+                    const b = bProd.stages.find((s) => s.letter === L)!;
+                    const diff = b.total - a.total;
+                    const pct = a.total > 0 ? (diff / a.total) * 100 : (b.total > 0 ? 100 : 0);
+                    const cls = diff > 0 ? 'text-emerald-700' : diff < 0 ? 'text-rose-700' : 'text-gray-400';
+                    return (
+                      <tr key={L} className="border-t">
+                        <td className="px-2 py-1 font-bold">
+                          <span className={`inline-block w-6 h-6 rounded-full text-white text-[10px] font-bold flex items-center justify-center ${STAGE_COLOR[L]}`}>{L}</span>
+                        </td>
+                        <td className="text-right px-2 py-1">{a.total.toLocaleString()}</td>
+                        <td className="text-right px-2 py-1 text-gray-500">{a.count}</td>
+                        <td className="text-right px-2 py-1">{b.total.toLocaleString()}</td>
+                        <td className="text-right px-2 py-1 text-gray-500">{b.count}</td>
+                        <td className={`text-right px-2 py-1 font-semibold ${cls}`}>{diff > 0 ? '+' : ''}{diff.toLocaleString()}</td>
+                        <td className={`text-right px-2 py-1 font-semibold ${cls}`}>{pct > 0 ? '+' : ''}{pct.toFixed(1)}%</td>
+                      </tr>
+                    );
+                  })}
+                  <tr className="border-t bg-amber-50 font-bold">
+                    <td className="px-2 py-1.5">합계(냉장+실온)</td>
+                    <td className="text-right px-2 py-1.5">{aProd.total.toLocaleString()}</td>
+                    <td className="text-right px-2 py-1.5 text-gray-500">—</td>
+                    <td className="text-right px-2 py-1.5">{bProd.total.toLocaleString()}</td>
+                    <td className="text-right px-2 py-1.5 text-gray-500">—</td>
+                    <td className={`text-right px-2 py-1.5 ${bProd.total - aProd.total > 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                      {(bProd.total - aProd.total) > 0 ? '+' : ''}{(bProd.total - aProd.total).toLocaleString()}
+                    </td>
+                    <td className="text-right px-2 py-1.5"></td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================
+          분석 2: 원재료비 분석
+          ============================================================ */}
       {aResult && bResult && (
-        <>
+        <div className="bg-white border-2 border-emerald-200 rounded-lg overflow-hidden">
+          <div className="px-4 py-3 bg-emerald-600 text-white font-bold text-sm flex items-center gap-2">
+            <span>🎯 분석 2 — 원재료비 분석</span>
+            <span className="text-xs font-normal text-emerald-100">연동 예산(Flexed Budget) + 각 월 단가 비교</span>
+          </div>
+
+          {/* 🔍 원재료 검색 */}
+          <div className="border-b bg-slate-50 px-4 py-3 flex items-center gap-2 flex-wrap">
+            <span className="text-sm font-bold text-gray-700">🔍 원재료 검색</span>
+            <input value={search} onChange={(e) => setSearch(e.target.value)}
+              placeholder="예: 한우, 양파, 닭가슴살..."
+              className="flex-1 min-w-[200px] max-w-md border rounded px-3 py-1.5 text-sm" />
+            {search && <button onClick={() => setSearch('')} className="text-xs px-2 py-1 rounded border hover:bg-white">✕ 지우기</button>}
+            {stageUsage && <span className="text-xs text-gray-500">{stageUsage.length}건 매칭</span>}
+          </div>
+
+          {/* 검색 결과 — 단계별 사용량 비교 */}
+          {stageUsage && stageUsage.length > 0 && (
+            <div className="px-4 py-3 border-b bg-indigo-50/40">
+              <div className="text-xs text-gray-600 mb-2">"<b>{search}</b>" 매칭 — 단계별 사용량(g) {monthA} vs {monthB}</div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs bg-white border">
+                  <thead className="bg-slate-100 text-gray-600">
+                    <tr>
+                      <th className="border px-2 py-1 text-left">원재료</th>
+                      <th className="border px-2 py-1">코드</th>
+                      <th className="border px-2 py-1">월</th>
+                      {STAGE_LETTERS.map((L) => (
+                        <th key={L} className="border px-2 py-1 text-right w-16">{L}</th>
+                      ))}
+                      <th className="border px-2 py-1 text-right w-16">실온</th>
+                      <th className="border px-2 py-1 text-right w-20 bg-amber-50">합계(g)</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {stageUsage.map((row) => (
+                      <Fragment2 key={row.key}>
+                        <tr className="border-t">
+                          <td rowSpan={3} className="border px-2 py-1 font-semibold align-top">{row.name}</td>
+                          <td rowSpan={3} className="border px-2 py-1 text-center font-mono text-gray-500 align-top">{row.code || '-'}</td>
+                          <td className="border px-2 py-1 text-blue-700 font-semibold">{monthA}</td>
+                          {STAGE_LETTERS.map((L) => (
+                            <td key={L} className="border px-2 py-1 text-right">{Math.round(row.a?.byStage[L] || 0).toLocaleString()}</td>
+                          ))}
+                          <td className="border px-2 py-1 text-right text-orange-700">{Math.round(row.a?.ambientGrams || 0).toLocaleString()}</td>
+                          <td className="border px-2 py-1 text-right font-bold bg-amber-50">{Math.round(row.a?.totalGrams || 0).toLocaleString()}</td>
+                        </tr>
+                        <tr className="border-t">
+                          <td className="border px-2 py-1 text-rose-700 font-semibold">{monthB}</td>
+                          {STAGE_LETTERS.map((L) => (
+                            <td key={L} className="border px-2 py-1 text-right">{Math.round(row.b?.byStage[L] || 0).toLocaleString()}</td>
+                          ))}
+                          <td className="border px-2 py-1 text-right text-orange-700">{Math.round(row.b?.ambientGrams || 0).toLocaleString()}</td>
+                          <td className="border px-2 py-1 text-right font-bold bg-amber-50">{Math.round(row.b?.totalGrams || 0).toLocaleString()}</td>
+                        </tr>
+                        <tr className="border-t bg-slate-50">
+                          <td className="border px-2 py-1 text-gray-600 font-semibold">증감</td>
+                          {STAGE_LETTERS.map((L) => {
+                            const d = (row.b?.byStage[L] || 0) - (row.a?.byStage[L] || 0);
+                            const cls = d > 0 ? 'text-rose-700' : d < 0 ? 'text-emerald-700' : 'text-gray-400';
+                            return <td key={L} className={`border px-2 py-1 text-right font-semibold ${cls}`}>{d > 0 ? '+' : ''}{Math.round(d).toLocaleString()}</td>;
+                          })}
+                          {(() => {
+                            const d = (row.b?.ambientGrams || 0) - (row.a?.ambientGrams || 0);
+                            const cls = d > 0 ? 'text-rose-700' : d < 0 ? 'text-emerald-700' : 'text-gray-400';
+                            return <td className={`border px-2 py-1 text-right font-semibold ${cls}`}>{d > 0 ? '+' : ''}{Math.round(d).toLocaleString()}</td>;
+                          })()}
+                          {(() => {
+                            const d = (row.b?.totalGrams || 0) - (row.a?.totalGrams || 0);
+                            const cls = d > 0 ? 'text-rose-700' : d < 0 ? 'text-emerald-700' : 'text-gray-400';
+                            return <td className={`border px-2 py-1 text-right font-bold bg-amber-50 ${cls}`}>{d > 0 ? '+' : ''}{Math.round(d).toLocaleString()}</td>;
+                          })()}
+                        </tr>
+                      </Fragment2>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+          {stageUsage && stageUsage.length === 0 && (
+            <div className="px-4 py-6 border-b text-center text-sm text-gray-400">"{search}" 검색 결과가 없습니다</div>
+          )}
+
+          <div className="p-4 space-y-5">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
             <KpiCard label={`${monthA} 원재료비 (B월단가)`} value={Math.round(flexAtotal).toLocaleString() + '원'} accent="slate" />
             <KpiCard label={`${monthB} 원재료비 (B월단가)`} value={Math.round(flexBtotal).toLocaleString() + '원'} accent="slate" />
@@ -578,7 +763,8 @@ export default function MaterialAnalysis() {
               )}
             </div>
           )}
-        </>
+          </div>
+        </div>
       )}
 
       {!aResult && !bResult && !running && (
@@ -586,6 +772,91 @@ export default function MaterialAnalysis() {
           비교할 두 월을 선택하고 우측 상단 <b className="text-blue-600">🚀 분석 시작</b> 버튼을 눌러주세요.
         </div>
       )}
+    </div>
+  );
+}
+
+function ProductionPanel({ month, prod, accent, expandStages, toggle }: {
+  month: string;
+  prod: MonthlyProduction;
+  accent: 'blue' | 'rose';
+  expandStages: Record<string, boolean>;
+  toggle: (k: string) => void;
+}) {
+  const accentCls = accent === 'blue' ? 'text-blue-700' : 'text-rose-700';
+  const accentBg = accent === 'blue' ? 'bg-blue-50' : 'bg-rose-50';
+  const prefix = `${month}-${accent}`;
+  return (
+    <div className="p-4 space-y-3">
+      <div className={`flex items-baseline gap-2 ${accentBg} -mx-4 -mt-4 px-4 py-2 border-b`}>
+        <span className={`font-bold text-sm ${accentCls}`}>{month}</span>
+        <span className="text-xs text-gray-500">총 {prod.total.toLocaleString()} EA · 냉장 {prod.coldTotal.toLocaleString()} + 실온 {prod.ambientTotal.toLocaleString()}</span>
+      </div>
+
+      {/* 단계별 막대 */}
+      <div className="space-y-1.5">
+        {prod.stages.map((s) => {
+          const k = `${prefix}-${s.letter}`;
+          const open = !!expandStages[k];
+          const pct = (s.total / prod.maxStage) * 100;
+          return (
+            <div key={s.letter}>
+              <button onClick={() => toggle(k)}
+                className="w-full flex items-center gap-2 hover:bg-slate-50 rounded px-1 py-0.5 text-left">
+                <span className={`w-8 h-6 rounded text-white text-xs font-bold flex items-center justify-center ${STAGE_COLOR[s.letter]}`}>{s.letter}</span>
+                <div className="flex-1 bg-gray-100 rounded h-5 overflow-hidden">
+                  <div className={`${STAGE_COLOR[s.letter]} h-full transition-all`} style={{ width: `${pct}%` }} />
+                </div>
+                <div className="w-32 text-right text-xs">
+                  <span className="font-bold">{s.total.toLocaleString()}</span>
+                  <span className="text-gray-500 ml-1">EA</span>
+                  <span className="text-gray-400 ml-1">({s.count})</span>
+                </div>
+                <span className="text-xs text-gray-400 w-3">{open ? '▾' : '▸'}</span>
+              </button>
+              {open && s.items.length > 0 && (
+                <div className="ml-10 mt-1 mb-2 border rounded bg-slate-50">
+                  <table className="w-full text-xs">
+                    <tbody>
+                      {s.items.map((it) => (
+                        <tr key={it.code} className="border-t border-gray-200">
+                          <td className="px-2 py-1 font-mono text-gray-500 w-24">{it.code}</td>
+                          <td className="px-2 py-1">{it.name}</td>
+                          <td className="px-2 py-1 text-right font-semibold w-20">{it.qty.toLocaleString()}</td>
+                          <td className="px-2 py-1 text-gray-400 text-xs w-8">EA</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+
+      {/* 실온 제품별 */}
+      <div className="mt-3">
+        <div className="font-bold text-xs text-orange-700 mb-1.5">🍱 실온 이유식 ({prod.ambient.length}종 · {prod.ambientTotal.toLocaleString()} EA)</div>
+        {prod.ambient.length === 0 ? (
+          <div className="text-xs text-gray-400 italic">생산 없음</div>
+        ) : (
+          <div className="border rounded bg-slate-50 max-h-64 overflow-y-auto">
+            <table className="w-full text-xs">
+              <tbody>
+                {prod.ambient.map((a) => (
+                  <tr key={a.productName} className="border-t border-gray-200">
+                    <td className="px-2 py-1">{a.productName}</td>
+                    <td className="px-2 py-1 text-right text-gray-500 w-16">{a.count}회</td>
+                    <td className="px-2 py-1 text-right font-semibold w-20">{a.qty.toLocaleString()}</td>
+                    <td className="px-2 py-1 text-gray-400 w-8">EA</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
     </div>
   );
 }
