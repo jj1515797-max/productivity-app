@@ -5,9 +5,10 @@ import { db } from '../firebase';
 import type { AmbientEntry, Item, MachineEntry } from '../types';
 import type { AmbientRecipe, Recipe } from '../lib/wasteCompute';
 import { CODE_KEY_PREFIX, monthPriceKey, normalizeCode, normalizeMaterialName } from '../lib/wasteCompute';
+import { canonicalShort } from '../lib/codeUtil';
 import { computeFlexedDiff, computeIngredientStageUsage, computeMonthlyUsage, diffUsage } from '../lib/materialUsage';
 import type { DiffRow, FlexedRow, IngredientStageRow, UsageResult } from '../lib/materialUsage';
-import { computeMonthlyProduction, STAGE_COLOR, STAGE_LETTERS } from '../lib/monthlyProduction';
+import { computeMonthlyProduction, filterProduction, STAGE_COLOR, STAGE_LETTERS } from '../lib/monthlyProduction';
 import type { MonthlyProduction } from '../lib/monthlyProduction';
 
 /* ===== 캐시 ===== */
@@ -104,6 +105,9 @@ export default function MaterialAnalysis() {
   const [bRaw, setBRaw] = useState<RawMonth | null>(null);
   const [search, setSearch] = useState<string>('');
   const [searchFlexed, setSearchFlexed] = useState<boolean>(false);
+  // 분석1 — 원재료로 제품 필터
+  const [prodSearch, setProdSearch] = useState<string>('');
+  const [excludedIng, setExcludedIng] = useState<string[]>([]);
   // 원재료명 로컬 별칭 (분석화면 한정, 코드/키 단위로 저장)
   const NAME_OVERRIDE_KEY = PREFIX + 'nameOverrides';
   const [nameOverrides, setNameOverrides] = useState<Record<string, string>>(() => {
@@ -281,6 +285,58 @@ export default function MaterialAnalysis() {
       return { key: k, name, code, a: v.a, b: v.b };
     });
   }, [search, aRaw, bRaw, aProd, bProd, monthA, monthB, recipeMap, ambientRecipeMap, priceMap]);
+
+  // ===== 분석1 원재료 필터 =====
+  const ingKeyOf = (name: string, code?: string) =>
+    code ? (CODE_KEY_PREFIX + normalizeCode(code)) : normalizeMaterialName(name);
+
+  // 검색어로 매칭되는 원재료 후보 (별칭 포함). dedup by key
+  const prodIngMatches = useMemo(() => {
+    const q = prodSearch.trim().toLowerCase();
+    if (!q) return [] as { key: string; name: string; code?: string }[];
+    const seen = new Map<string, { key: string; name: string; code?: string }>();
+    const scan = (ings: { name: string; code?: string }[]) => {
+      ings.forEach((ing) => {
+        const key = ingKeyOf(ing.name, ing.code);
+        const disp = nameOverrides[key] || ing.name;
+        if (ing.name.toLowerCase().includes(q) || (ing.code || '').toLowerCase().includes(q) || disp.toLowerCase().includes(q)) {
+          if (!seen.has(key)) seen.set(key, { key, name: disp, code: ing.code });
+        }
+      });
+    };
+    recipeMap.forEach((r) => scan(r.ingredients));
+    ambientRecipeMap.forEach((r) => scan(r.ingredients));
+    return Array.from(seen.values()).sort((a, b) => a.name.localeCompare(b.name));
+  }, [prodSearch, recipeMap, ambientRecipeMap, nameOverrides]);
+
+  // 포함(미제외) 원재료를 쓰는 제품 집합
+  const prodFilter = useMemo(() => {
+    const included = new Set(prodIngMatches.map((m) => m.key).filter((k) => !excludedIng.includes(k)));
+    if (included.size === 0) return null;
+    const coldCodes = new Set<string>();
+    const ambientNames = new Set<string>();
+    recipeMap.forEach((r) => {
+      if (r.ingredients.some((ing) => included.has(ingKeyOf(ing.name, ing.code)))) {
+        const k = canonicalShort(r.code || '');
+        if (k) coldCodes.add(k);
+      }
+    });
+    ambientRecipeMap.forEach((r, id) => {
+      if (r.ingredients.some((ing) => included.has(ingKeyOf(ing.name, ing.code)))) {
+        ambientNames.add(normalizeMaterialName(r.name || id));
+      }
+    });
+    return { coldCodes, ambientNames };
+  }, [prodIngMatches, excludedIng, recipeMap, ambientRecipeMap]);
+
+  const aProdView = useMemo(
+    () => (aProd && prodFilter ? filterProduction(aProd, prodFilter.coldCodes, prodFilter.ambientNames) : aProd),
+    [aProd, prodFilter],
+  );
+  const bProdView = useMemo(
+    () => (bProd && prodFilter ? filterProduction(bProd, prodFilter.coldCodes, prodFilter.ambientNames) : bProd),
+    [bProd, prodFilter],
+  );
 
   // 각 월 자체 단가 합계 (기존 비교용)
   const aTotal = aResult?.rows.reduce((s, r) => s + r.cost, 0) || 0;
@@ -539,16 +595,57 @@ export default function MaterialAnalysis() {
       {/* ============================================================
           분석 1: 월별 생산 현황 (냉장 단계별 + 실온 제품별)
           ============================================================ */}
-      {aProd && bProd && (
+      {aProd && bProd && aProdView && bProdView && (
         <div className="bg-white border-2 border-indigo-200 rounded-lg overflow-hidden">
           <div className="px-4 py-3 bg-indigo-600 text-white font-bold text-sm flex items-center gap-2">
             <span>🏭 분석 1 — 월별 생산 현황</span>
             <span className="text-xs font-normal text-indigo-100">냉장 단계·품목별 + 실온 제품별 · 월별현황과 동일 합계</span>
           </div>
+
+          {/* 🔍 원재료로 제품 필터 */}
+          <div className="border-b bg-indigo-50/60 px-4 py-3">
+            <div className="flex items-center gap-2 flex-wrap">
+              <span className="text-sm font-bold text-gray-700">🔍 원재료로 제품 찾기</span>
+              <input value={prodSearch} onChange={(e) => { setProdSearch(e.target.value); setExcludedIng([]); }}
+                placeholder="예: 연어, 한우, 전복... (이 원재료 쓰는 제품만 추림)"
+                className="flex-1 min-w-[220px] max-w-md border rounded px-3 py-1.5 text-sm" />
+              {prodSearch && <button onClick={() => { setProdSearch(''); setExcludedIng([]); }} className="text-xs px-2 py-1 rounded border bg-white hover:bg-gray-50">✕ 전체보기</button>}
+            </div>
+            {prodSearch.trim() && (
+              <div className="mt-2">
+                {prodIngMatches.length === 0 ? (
+                  <div className="text-xs text-gray-400">매칭되는 원재료가 없습니다</div>
+                ) : (
+                  <>
+                    <div className="text-[11px] text-gray-500 mb-1">매칭 원재료 {prodIngMatches.length}개 — 칩을 클릭하면 제외/포함 토글 (제외 시 그 원재료 쓰는 제품 빠짐)</div>
+                    <div className="flex flex-wrap gap-1.5">
+                      {prodIngMatches.map((m) => {
+                        const ex = excludedIng.includes(m.key);
+                        return (
+                          <button key={m.key}
+                            onClick={() => setExcludedIng((p) => ex ? p.filter((k) => k !== m.key) : [...p, m.key])}
+                            className={`text-xs px-2 py-1 rounded-full border transition ${ex ? 'bg-gray-100 text-gray-400 line-through border-gray-200' : 'bg-white text-indigo-700 border-indigo-300 hover:bg-indigo-50'}`}
+                            title={m.code || ''}>
+                            {ex ? '➕ ' : '✓ '}{m.name}{m.code ? <span className="text-[10px] text-gray-400 ml-1">{m.code}</span> : null}
+                          </button>
+                        );
+                      })}
+                    </div>
+                    {prodFilter && (
+                      <div className="text-[11px] text-indigo-600 mt-1.5">
+                        → 해당 제품: {monthA} 냉장 {aProdView.stages.reduce((s, x) => s + x.count, 0)}품목·{aProdView.coldTotal.toLocaleString()}EA + 실온 {aProdView.ambient.length}종 / {monthB} 냉장 {bProdView.stages.reduce((s, x) => s + x.count, 0)}품목·{bProdView.coldTotal.toLocaleString()}EA + 실온 {bProdView.ambient.length}종
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-0 divide-y lg:divide-y-0 lg:divide-x">
-            <ProductionPanel month={monthA} prod={aProd} accent="blue"
+            <ProductionPanel month={monthA} prod={aProdView} accent="blue"
               expandStages={expandStages} toggle={(k) => setExpandStages((p) => ({ ...p, [k]: !p[k] }))} />
-            <ProductionPanel month={monthB} prod={bProd} accent="rose"
+            <ProductionPanel month={monthB} prod={bProdView} accent="rose"
               expandStages={expandStages} toggle={(k) => setExpandStages((p) => ({ ...p, [k]: !p[k] }))} />
           </div>
           {/* 단계별 비교 (한눈에) */}
@@ -569,8 +666,8 @@ export default function MaterialAnalysis() {
                 </thead>
                 <tbody>
                   {STAGE_LETTERS.map((L) => {
-                    const a = aProd.stages.find((s) => s.letter === L)!;
-                    const b = bProd.stages.find((s) => s.letter === L)!;
+                    const a = aProdView.stages.find((s) => s.letter === L)!;
+                    const b = bProdView.stages.find((s) => s.letter === L)!;
                     const diff = b.total - a.total;
                     const pct = a.total > 0 ? (diff / a.total) * 100 : (b.total > 0 ? 100 : 0);
                     const cls = diff > 0 ? 'text-emerald-700' : diff < 0 ? 'text-rose-700' : 'text-gray-400';
@@ -590,12 +687,12 @@ export default function MaterialAnalysis() {
                   })}
                   <tr className="border-t bg-amber-50 font-bold">
                     <td className="px-2 py-1.5">합계(냉장+실온)</td>
-                    <td className="text-right px-2 py-1.5">{aProd.total.toLocaleString()}</td>
+                    <td className="text-right px-2 py-1.5">{aProdView.total.toLocaleString()}</td>
                     <td className="text-right px-2 py-1.5 text-gray-500">—</td>
-                    <td className="text-right px-2 py-1.5">{bProd.total.toLocaleString()}</td>
+                    <td className="text-right px-2 py-1.5">{bProdView.total.toLocaleString()}</td>
                     <td className="text-right px-2 py-1.5 text-gray-500">—</td>
-                    <td className={`text-right px-2 py-1.5 ${bProd.total - aProd.total > 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
-                      {(bProd.total - aProd.total) > 0 ? '+' : ''}{(bProd.total - aProd.total).toLocaleString()}
+                    <td className={`text-right px-2 py-1.5 ${bProdView.total - aProdView.total > 0 ? 'text-emerald-700' : 'text-rose-700'}`}>
+                      {(bProdView.total - aProdView.total) > 0 ? '+' : ''}{(bProdView.total - aProdView.total).toLocaleString()}
                     </td>
                     <td className="text-right px-2 py-1.5"></td>
                   </tr>

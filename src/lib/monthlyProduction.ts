@@ -5,6 +5,7 @@
  */
 import type { AmbientEntry, Item, MachineEntry } from '../types';
 import { canonicalShort } from './codeUtil';
+import { normalizeMaterialName } from './wasteCompute';
 
 export const STAGE_LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'F500', 'G', 'H', 'I'] as const;
 export const STAGE_COLOR: Record<string, string> = {
@@ -151,4 +152,26 @@ export function computeMonthlyProduction(
     maxStage,
     coldByCode: coldByCodeRounded,
   };
+}
+
+/** 특정 제품만 남겨 분해 결과를 재집계 (원재료 검색 필터용)
+ *  coldCodes: 허용 냉장 제품코드(canonicalShort) / ambientNames: 허용 실온 제품명(normalizeMaterialName)
+ */
+export function filterProduction(
+  prod: MonthlyProduction,
+  coldCodes: Set<string>,
+  ambientNames: Set<string>,
+): MonthlyProduction {
+  const stages: StageGroup[] = prod.stages.map((s) => {
+    const items = s.items.filter((it) => coldCodes.has(it.code));
+    const total = items.reduce((a, x) => a + x.qty, 0);
+    return { letter: s.letter, items, total, count: items.length };
+  });
+  const maxStage = Math.max(1, ...stages.map((s) => s.total));
+  const ambient = prod.ambient.filter((a) => ambientNames.has(normalizeMaterialName(a.productName)));
+  const coldByCode = new Map<string, number>();
+  prod.coldByCode.forEach((v, k) => { if (coldCodes.has(k)) coldByCode.set(k, v); });
+  const coldTotal = stages.reduce((a, s) => a + s.total, 0);
+  const ambientTotal = ambient.reduce((a, x) => a + x.qty, 0);
+  return { coldTotal, ambientTotal, total: coldTotal + ambientTotal, stages, ambient, maxStage, coldByCode };
 }
