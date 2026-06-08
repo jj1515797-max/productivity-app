@@ -1,5 +1,5 @@
 import { Fragment as Fragment2, useEffect, useMemo, useState } from 'react';
-import { collection, collectionGroup, getDocs, onSnapshot, query, where } from 'firebase/firestore';
+import { collection, collectionGroup, doc, getDoc, getDocs, onSnapshot, query, setDoc, where } from 'firebase/firestore';
 import ExcelJS from 'exceljs';
 import { db } from '../firebase';
 import type { AmbientEntry, Item, MachineEntry } from '../types';
@@ -164,6 +164,33 @@ export default function MaterialAnalysis() {
     });
   }, []);
 
+  // monthlyMeta/{month}.productionAmount — 월별 생산금액 (다른 사용자 공유)
+  useEffect(() => {
+    let cancel = false;
+    getDoc(doc(db, 'monthlyMeta', monthA)).then((snap) => {
+      if (cancel) return;
+      const v = snap.exists() ? (snap.data().productionAmount as number) : null;
+      setAAmount(v && v > 0 ? String(v) : '');
+    }).catch(() => {});
+    return () => { cancel = true; };
+  }, [monthA]);
+  useEffect(() => {
+    let cancel = false;
+    getDoc(doc(db, 'monthlyMeta', monthB)).then((snap) => {
+      if (cancel) return;
+      const v = snap.exists() ? (snap.data().productionAmount as number) : null;
+      setBAmount(v && v > 0 ? String(v) : '');
+    }).catch(() => {});
+    return () => { cancel = true; };
+  }, [monthB]);
+  const saveProductionAmount = (month: string, raw: string) => {
+    const v = Number(raw) || 0;
+    setDoc(doc(db, 'monthlyMeta', month), {
+      productionAmount: v,
+      updatedAt: new Date().toISOString(),
+    }, { merge: true }).catch((e) => console.error('[monthlyMeta save]', e));
+  };
+
   const runAnalysis = async (bustCache = false) => {
     if (monthA === monthB) { setErr('A·B 월이 같습니다. 다른 월을 선택해주세요.'); return; }
     setRunning(true); setErr(null);
@@ -229,7 +256,8 @@ export default function MaterialAnalysis() {
     setAResult(null); setBResult(null); setAResultBPrice(null);
     setAProd(null); setBProd(null); setARaw(null); setBRaw(null);
     setDiff([]); setFlexed([]);
-    setAQty(0); setBQty(0); setAAmount(''); setBAmount('');
+    setAQty(0); setBQty(0);
+    // 생산금액(aAmount/bAmount)은 Firestore 공유값이라 분석결과 삭제로 지우지 않음
     setSearch(''); setErr(null);
   };
 
@@ -483,12 +511,14 @@ export default function MaterialAnalysis() {
             </div>
             <div>
               <label className="text-xs text-gray-600">{monthA} 생산금액 (₩, 선택)</label>
-              <input type="number" value={aAmount} onChange={(e) => setAAmount(e.target.value)} placeholder="직접 입력"
+              <input type="number" value={aAmount} onChange={(e) => setAAmount(e.target.value)}
+                onBlur={(e) => saveProductionAmount(monthA, e.target.value)} placeholder="직접 입력"
                 className="mt-1 w-full border rounded px-2 py-1.5 text-sm text-right font-mono" />
             </div>
             <div>
               <label className="text-xs text-gray-600">{monthB} 생산금액 (₩, 선택)</label>
-              <input type="number" value={bAmount} onChange={(e) => setBAmount(e.target.value)} placeholder="직접 입력"
+              <input type="number" value={bAmount} onChange={(e) => setBAmount(e.target.value)}
+                onBlur={(e) => saveProductionAmount(monthB, e.target.value)} placeholder="직접 입력"
                 className="mt-1 w-full border rounded px-2 py-1.5 text-sm text-right font-mono" />
             </div>
           </div>
