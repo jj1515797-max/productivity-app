@@ -2,6 +2,7 @@
 import type { AmbientEntry, Item, MachineEntry } from '../types';
 import type { AmbientRecipe, Recipe } from './wasteCompute';
 import { CODE_KEY_PREFIX, monthPriceKey, normalizeCode, normalizeMaterialName } from './wasteCompute';
+import { canonicalShort } from './codeUtil';
 
 export interface UsageRow {
   /** 원재료 매칭 키 (코드 우선, 없으면 이름 정규화) */
@@ -35,21 +36,21 @@ export function computeColdProductionByCode(
 ): Map<string, number> {
   const qty = (e: MachineEntry) => (e.actualProduction || 0) + (e.additionalProduction || 0);
 
-  // 일별 items.totalQty by code
+  // 일별 items.totalQty by code (canonicalShort 키로 통일: A-001-01 / A-001 / A01 → A01)
   const itemsByDateCode: Record<string, Record<string, number>> = {};
   items.forEach((it) => {
     const d = it.date;
     if (!itemsByDateCode[d]) itemsByDateCode[d] = {};
-    const k = (it.code || '').toLowerCase();
+    const k = canonicalShort(it.code || '');
     if (!k) return;
     itemsByDateCode[d][k] = (itemsByDateCode[d][k] || 0) + (it.totalQty || 0);
   });
-  // 일별 entries by code
+  // 일별 entries by code (canonicalShort 키)
   const entriesByDateCode: Record<string, Record<string, number>> = {};
   entries.forEach((e) => {
     const d = e.date;
     if (!entriesByDateCode[d]) entriesByDateCode[d] = {};
-    const k = (e.code || '').toLowerCase();
+    const k = canonicalShort(e.code || '');
     if (!k) return;
     entriesByDateCode[d][k] = (entriesByDateCode[d][k] || 0) + qty(e);
   });
@@ -91,13 +92,17 @@ export function computeMonthlyUsage(
   };
 
   // ===== 냉장 =====
+  // recipeMap 도 canonicalShort 키로 재인덱싱 (저장은 A-001 이어도 lookup 은 A01 로 통일)
+  const normRecipeMap = new Map<string, Recipe>();
+  recipeMap.forEach((r) => {
+    const k = canonicalShort(r.code || '');
+    if (k && !normRecipeMap.has(k)) normRecipeMap.set(k, r);
+  });
   const coldByCode = computeColdProductionByCode(entries, items, logisticsByDay);
   const missingColdCodes: string[] = [];
   coldByCode.forEach((count, code) => {
     if (count <= 0) return;
-    const r = recipeMap.get(code) || recipeMap.get(code.toUpperCase()) || recipeMap.get(code.toLowerCase());
-    // recipeMap 키는 원본 code (저장 그대로) — 대소문자 시도
-    const recipe = r ?? Array.from(recipeMap.values()).find((rr) => rr.code.toLowerCase() === code);
+    const recipe = normRecipeMap.get(code); // code 는 이미 canonicalShort
     if (!recipe) { missingColdCodes.push(code); return; }
     recipe.ingredients.forEach((ing) => {
       addUsage(ing.name, ing.code, (ing.gPerPiece || 0) * count);
