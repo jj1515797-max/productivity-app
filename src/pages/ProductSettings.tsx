@@ -1676,7 +1676,7 @@ function AmbientRecipeImportModal({ onClose }: { onClose: () => void }) {
   const parse = (): { recipes: { name: string; ingredients: { seq: number; name: string; gPerBatch: number; code?: string }[] }[]; errors: string[] } => {
     const lines = text.trim().split('\n').map((l) => l.split('\t'));
     const errors: string[] = [];
-    if (lines.length < 2) return { recipes: [], errors: ['데이터가 없습니다'] };
+    if (lines.length < 1) return { recipes: [], errors: ['데이터가 없습니다'] };
 
     const norm = (s: string) => (s || '').replace(/\s+/g, '').replace(/\(.*?\)/g, '').trim();
     const NAME_CANDIDATES = ['제품명', '품목명', '품명'];
@@ -1695,19 +1695,32 @@ function AmbientRecipeImportModal({ onClose }: { onClose: () => void }) {
              findCol(cells, ING_CANDIDATES.map((s) => s.toLowerCase())) >= 0 &&
              findCol(cells, G_CANDIDATES.map((s) => s.toLowerCase())) >= 0;
     });
-    if (hIdx < 0) {
-      errors.push('헤더(제품명 / 원재료명 / 배합비(1세트)) 행을 찾을 수 없습니다');
+
+    let nameCol: number, seqCol: number, ingCol: number, gCol: number, codeCol: number, startRow: number;
+    if (hIdx >= 0) {
+      const header = lines[hIdx].map((c) => norm(c).toLowerCase());
+      nameCol = findCol(header, NAME_CANDIDATES.map((s) => s.toLowerCase()));
+      seqCol = findCol(header, SEQ_CANDIDATES.map((s) => s.toLowerCase()));
+      ingCol = findCol(header, ING_CANDIDATES.map((s) => s.toLowerCase()));
+      gCol = findCol(header, G_CANDIDATES.map((s) => s.toLowerCase()));
+      codeCol = findCol(header, CODE_CANDIDATES.map((s) => s.toLowerCase()));
+      startRow = hIdx + 1;
+    } else {
+      // 헤더 없음 → 위치 기반: 제품명 / 순서 / 원재료명 / 배합비 / 원재료코드(선택)
+      // 두 번째 칸이 정수면 순서 컬럼 있음으로 간주
+      const first = lines[0];
+      const hasSeq = first.length >= 4 && /^\d+$/.test((first[1] || '').trim());
+      if (hasSeq) { nameCol = 0; seqCol = 1; ingCol = 2; gCol = 3; codeCol = first.length >= 5 ? 4 : -1; }
+      else { nameCol = 0; seqCol = -1; ingCol = 1; gCol = 2; codeCol = first.length >= 4 ? 3 : -1; }
+      startRow = 0;
+    }
+    if (nameCol < 0 || ingCol < 0 || gCol < 0) {
+      errors.push('컬럼(제품명/원재료명/배합비) 인식 실패');
       return { recipes: [], errors };
     }
-    const header = lines[hIdx].map((c) => norm(c).toLowerCase());
-    const nameCol = findCol(header, NAME_CANDIDATES.map((s) => s.toLowerCase()));
-    const seqCol = findCol(header, SEQ_CANDIDATES.map((s) => s.toLowerCase()));
-    const ingCol = findCol(header, ING_CANDIDATES.map((s) => s.toLowerCase()));
-    const gCol = findCol(header, G_CANDIDATES.map((s) => s.toLowerCase()));
-    const codeCol = findCol(header, CODE_CANDIDATES.map((s) => s.toLowerCase()));
 
     const map = new Map<string, { name: string; ingredients: { seq: number; name: string; gPerBatch: number; code?: string }[] }>();
-    for (let i = hIdx + 1; i < lines.length; i++) {
+    for (let i = startRow; i < lines.length; i++) {
       const r = lines[i];
       const name = (r[nameCol] || '').trim();
       const ingName = (r[ingCol] || '').trim();
@@ -1762,9 +1775,9 @@ function AmbientRecipeImportModal({ onClose }: { onClose: () => void }) {
         </div>
         <div className="flex-1 overflow-y-auto p-5 space-y-3">
           <div className="text-xs text-gray-600 bg-slate-50 p-3 rounded border">
-            엑셀에서 <b>헤더 포함 표 전체</b>를 복사해 붙여넣으세요 (탭 구분).<br />
-            필수 컬럼: <b>제품명</b> / <b>원재료명</b> / <b>배합비(1세트)</b>. 선택: 순서, 원재료코드.<br />
-            같은 제품명의 여러 행이 한 레시피로 자동 묶입니다. <b>1회 배합 포장수</b>는 기본 1100개로 저장되며, 등록 후 표에서 인라인 수정하세요.
+            형식: <b>제품명 / 순서 / 원재료명 / 배합비(1세트)</b> (탭 구분). <b>헤더 줄은 없어도 됩니다</b> — 데이터만 붙여도 인식.<br />
+            선택: 원재료코드(맨 뒤 컬럼). 배합비는 g 단위(콤마 OK). 같은 제품명의 여러 행이 한 레시피로 자동 묶입니다.<br />
+            <b>1회 배합 포장수</b>는 기본 1100개로 저장되며, 등록 후 표에서 인라인 수정하세요.
           </div>
           <textarea value={text} onChange={(e) => setText(e.target.value)}
             placeholder={'제품명\t순서\t원재료명\t배합비(1세트)\n순수본_한우야채진밥\t1\t백미\t50000\n순수본_한우야채진밥\t2\t한우(슬라이스)\t5000'}
