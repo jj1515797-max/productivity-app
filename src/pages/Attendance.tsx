@@ -1229,9 +1229,14 @@ function AttendanceTableModal({
                     <td className="border border-gray-500 bg-white p-0 align-top">
                       <textarea
                         value={meta.note || ''}
-                        onChange={(e) => setNote(e.target.value)}
+                        ref={(el) => { if (el) { el.style.height = 'auto'; el.style.height = el.scrollHeight + 'px'; } }}
+                        onChange={(e) => {
+                          setNote(e.target.value);
+                          e.target.style.height = 'auto';
+                          e.target.style.height = e.target.scrollHeight + 'px';
+                        }}
                         placeholder={'* 이윤미 육아휴직(~8/31)\n- 5/6 입사: 박홍관, 황티띠엣\n- 5/14 퇴사 : 조현숙'}
-                        className="w-full p-3 text-sm resize-y min-h-[140px] focus:outline-none bg-white"
+                        className="w-full p-3 text-sm resize-none min-h-[140px] overflow-hidden focus:outline-none bg-white"
                       />
                     </td>
                   </tr>
