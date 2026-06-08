@@ -685,6 +685,26 @@ export default function MaterialAnalysis() {
                       </tr>
                     );
                   })}
+                  {(() => {
+                    const aT = aProdView.ambientTotal;
+                    const bT = bProdView.ambientTotal;
+                    const diff = bT - aT;
+                    const pct = aT > 0 ? (diff / aT) * 100 : (bT > 0 ? 100 : 0);
+                    const cls = diff > 0 ? 'text-emerald-700' : diff < 0 ? 'text-rose-700' : 'text-gray-400';
+                    return (
+                      <tr className="border-t">
+                        <td className="px-2 py-1 font-bold">
+                          <span className="inline-block w-6 h-6 rounded-full text-white text-[10px] font-bold flex items-center justify-center bg-orange-500">S</span>
+                        </td>
+                        <td className="text-right px-2 py-1">{aT.toLocaleString()}</td>
+                        <td className="text-right px-2 py-1 text-gray-500">{aProdView.ambient.length}</td>
+                        <td className="text-right px-2 py-1">{bT.toLocaleString()}</td>
+                        <td className="text-right px-2 py-1 text-gray-500">{bProdView.ambient.length}</td>
+                        <td className={`text-right px-2 py-1 font-semibold ${cls}`}>{diff > 0 ? '+' : ''}{diff.toLocaleString()}</td>
+                        <td className={`text-right px-2 py-1 font-semibold ${cls}`}>{pct > 0 ? '+' : ''}{pct.toFixed(1)}%</td>
+                      </tr>
+                    );
+                  })()}
                   <tr className="border-t bg-amber-50 font-bold">
                     <td className="px-2 py-1.5">합계(냉장+실온)</td>
                     <td className="text-right px-2 py-1.5">{aProdView.total.toLocaleString()}</td>
@@ -1095,10 +1115,13 @@ function ProductionPanel({ month, prod, accent, expandStages, toggle }: {
 
       {/* 단계별 막대 */}
       <div className="space-y-1.5">
+        {(() => {
+          const maxAll = Math.max(prod.maxStage, prod.ambientTotal, 1);
+          return <>
         {prod.stages.map((s) => {
           const k = `${prefix}-${s.letter}`;
           const open = !!expandStages[k];
-          const pct = (s.total / prod.maxStage) * 100;
+          const pct = (s.total / maxAll) * 100;
           return (
             <div key={s.letter}>
               <button onClick={() => toggle(k)}
@@ -1133,6 +1156,47 @@ function ProductionPanel({ month, prod, accent, expandStages, toggle }: {
             </div>
           );
         })}
+        {/* S = 실온이유식 막대 (I 아래) */}
+        {(() => {
+          const k = `${prefix}-S`;
+          const open = !!expandStages[k];
+          const pct = (prod.ambientTotal / maxAll) * 100;
+          return (
+            <div key="S">
+              <button onClick={() => toggle(k)}
+                className="w-full flex items-center gap-2 hover:bg-slate-50 rounded px-1 py-0.5 text-left">
+                <span className="w-8 h-6 rounded text-white text-xs font-bold flex items-center justify-center bg-orange-500">S</span>
+                <div className="flex-1 bg-gray-100 rounded h-5 overflow-hidden">
+                  <div className="bg-orange-500 h-full transition-all" style={{ width: `${pct}%` }} />
+                </div>
+                <div className="w-32 text-right text-xs">
+                  <span className="font-bold">{prod.ambientTotal.toLocaleString()}</span>
+                  <span className="text-gray-500 ml-1">EA</span>
+                  <span className="text-gray-400 ml-1">({prod.ambient.length})</span>
+                </div>
+                <span className="text-xs text-gray-400 w-3">{open ? '▾' : '▸'}</span>
+              </button>
+              {open && prod.ambient.length > 0 && (
+                <div className="ml-10 mt-1 mb-2 border rounded bg-slate-50">
+                  <table className="w-full text-xs">
+                    <tbody>
+                      {prod.ambient.map((a) => (
+                        <tr key={a.productName} className="border-t border-gray-200">
+                          <td className="px-2 py-1">{a.productName}</td>
+                          <td className="px-2 py-1 text-right text-gray-500 w-16">{a.count}회</td>
+                          <td className="px-2 py-1 text-right font-semibold w-20">{a.qty.toLocaleString()}</td>
+                          <td className="px-2 py-1 text-gray-400 w-8">EA</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          );
+        })()}
+        </>;
+        })()}
       </div>
 
       {/* 실온 제품별 */}
