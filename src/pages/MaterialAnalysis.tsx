@@ -244,6 +244,19 @@ export default function MaterialAnalysis() {
   const diffTotal = bTotal - aTotal;
   const diffPct = aTotal > 0 ? (diffTotal / aTotal) * 100 : 0;
 
+  // 변동 범인 TOP 10
+  // 연동: diffCost = flexedCost - bCost (양수=절감/효율↑, 음수=낭비). 절댓값 큰 순.
+  const topFlexed = useMemo(
+    () => [...flexed].sort((a, b) => Math.abs(b.diffCost) - Math.abs(a.diffCost)).slice(0, 10),
+    [flexed],
+  );
+  // 실제(각 월 자체단가): diffCost = bCost - aCost (양수=증가, 음수=감소). 절댓값 큰 순.
+  const topReal = useMemo(
+    () => [...diff].filter((r) => r.aHasPrice || r.bHasPrice)
+      .sort((a, b) => Math.abs(b.diffCost) - Math.abs(a.diffCost)).slice(0, 10),
+    [diff],
+  );
+
   // Flexed 합계
   const flexAtotal = flexed.reduce((s, r) => s + r.aCost, 0);
   const flexBtotal = flexed.reduce((s, r) => s + r.bCost, 0);
@@ -718,6 +731,91 @@ export default function MaterialAnalysis() {
                   </tr>
                 </tfoot>
               </table>
+            </div>
+          </div>
+
+          {/* 🔎 변동 범인 TOP 10 — 연동 vs 실제 */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {/* 연동 기준 */}
+            <div className="border-2 border-indigo-200 rounded-lg overflow-hidden">
+              <div className="px-3 py-2 bg-indigo-50 border-b font-bold text-xs text-indigo-800 flex items-center gap-1.5 flex-wrap">
+                <span>🎯 연동 기준 변동 TOP 10</span>
+                <span className="text-[11px] font-normal text-indigo-500">생산량 보정 · {monthB}단가 고정 → 순수 효율</span>
+              </div>
+              <table className="w-full text-xs">
+                <thead className="bg-slate-50 text-gray-500">
+                  <tr>
+                    <th className="px-2 py-1 text-left">원재료</th>
+                    <th className="px-2 py-1 text-right">연동금액</th>
+                    <th className="px-2 py-1 text-right">{monthB}금액</th>
+                    <th className="px-2 py-1 text-right">차액</th>
+                    <th className="px-2 py-1 text-right">사용량 g</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {topFlexed.map((r, i) => {
+                    const waste = r.diffCost < 0;  // 음수 = 낭비
+                    const cls = waste ? 'text-rose-700' : 'text-emerald-700';
+                    const gDiff = r.bGrams - r.aGrams * ratio;
+                    return (
+                      <tr key={r.key} className="border-t">
+                        <td className="px-2 py-1">
+                          <span className="text-gray-400 mr-1">{i + 1}</span>
+                          {!r.hasPrice && <span className="text-amber-600 mr-0.5" title="단가 미입력">⚠️</span>}
+                          {r.name}
+                        </td>
+                        <td className="px-2 py-1 text-right text-indigo-700">{Math.round(r.flexedCost).toLocaleString()}</td>
+                        <td className="px-2 py-1 text-right">{Math.round(r.bCost).toLocaleString()}</td>
+                        <td className={`px-2 py-1 text-right font-bold ${cls}`}>{r.diffCost > 0 ? '+' : ''}{Math.round(r.diffCost).toLocaleString()}<div className="text-[10px] font-normal">{r.diffPct > 0 ? '+' : ''}{r.diffPct.toFixed(0)}%</div></td>
+                        <td className="px-2 py-1 text-right text-gray-500 whitespace-nowrap">
+                          {Math.round(r.aGrams * ratio).toLocaleString()}→{Math.round(r.bGrams).toLocaleString()}
+                          <div className={`text-[10px] ${gDiff > 0 ? 'text-rose-600' : gDiff < 0 ? 'text-emerald-600' : 'text-gray-400'}`}>{gDiff > 0 ? '+' : ''}{Math.round(gDiff).toLocaleString()}</div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              <div className="px-3 py-1.5 bg-slate-50 border-t text-[11px] text-gray-500">🔴 빨강=낭비(효율↓) · 🟢 녹색=절감(효율↑)</div>
+            </div>
+
+            {/* 실제 기준 */}
+            <div className="border-2 border-slate-200 rounded-lg overflow-hidden">
+              <div className="px-3 py-2 bg-slate-100 border-b font-bold text-xs text-slate-700 flex items-center gap-1.5 flex-wrap">
+                <span>📊 실제 기준 변동 TOP 10</span>
+                <span className="text-[11px] font-normal text-gray-500">각 월 자체단가 · 단가인상+생산량 다 포함</span>
+              </div>
+              <table className="w-full text-xs">
+                <thead className="bg-slate-50 text-gray-500">
+                  <tr>
+                    <th className="px-2 py-1 text-left">원재료</th>
+                    <th className="px-2 py-1 text-right">{monthA}금액</th>
+                    <th className="px-2 py-1 text-right">{monthB}금액</th>
+                    <th className="px-2 py-1 text-right">차액</th>
+                    <th className="px-2 py-1 text-right">사용량 g</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {topReal.map((r, i) => {
+                    const up = r.diffCost > 0;  // 양수 = 증가(더 씀)
+                    const cls = up ? 'text-rose-700' : 'text-emerald-700';
+                    const gDiff = r.bGrams - r.aGrams;
+                    return (
+                      <tr key={r.key} className="border-t">
+                        <td className="px-2 py-1"><span className="text-gray-400 mr-1">{i + 1}</span>{r.name}</td>
+                        <td className="px-2 py-1 text-right text-gray-600">{Math.round(r.aCost).toLocaleString()}</td>
+                        <td className="px-2 py-1 text-right">{Math.round(r.bCost).toLocaleString()}</td>
+                        <td className={`px-2 py-1 text-right font-bold ${cls}`}>{r.diffCost > 0 ? '+' : ''}{Math.round(r.diffCost).toLocaleString()}<div className="text-[10px] font-normal">{r.diffPct > 0 ? '+' : ''}{r.diffPct.toFixed(0)}%</div></td>
+                        <td className="px-2 py-1 text-right text-gray-500 whitespace-nowrap">
+                          {Math.round(r.aGrams).toLocaleString()}→{Math.round(r.bGrams).toLocaleString()}
+                          <div className={`text-[10px] ${gDiff > 0 ? 'text-rose-600' : gDiff < 0 ? 'text-emerald-600' : 'text-gray-400'}`}>{gDiff > 0 ? '+' : ''}{Math.round(gDiff).toLocaleString()}</div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+              <div className="px-3 py-1.5 bg-slate-50 border-t text-[11px] text-gray-500">🔴 빨강=비용 증가 · 🟢 녹색=비용 감소 (실제 지갑 영향)</div>
             </div>
           </div>
 
