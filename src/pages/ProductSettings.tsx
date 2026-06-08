@@ -1775,22 +1775,31 @@ function AmbientRecipeImportModal({ onClose }: { onClose: () => void }) {
         </div>
         <div className="flex-1 overflow-y-auto p-5 space-y-3">
           <div className="text-xs text-gray-600 bg-slate-50 p-3 rounded border">
-            형식: <b>제품명 / 순서 / 원재료명 / 배합비(1세트)</b> (탭 구분). <b>헤더 줄은 없어도 됩니다</b> — 데이터만 붙여도 인식.<br />
-            선택: 원재료코드(맨 뒤 컬럼). 배합비는 g 단위(콤마 OK). 같은 제품명의 여러 행이 한 레시피로 자동 묶입니다.<br />
-            <b>1회 배합 포장수</b>는 기본 1100개로 저장되며, 등록 후 표에서 인라인 수정하세요.
+            형식: <b>제품명 / 순서 / 원재료명 / 배합비(1세트) / 원재료코드</b> (탭 구분). <b>헤더 줄은 없어도 됩니다</b> — 데이터만 붙여도 인식.<br />
+            <b className="text-blue-700">5번째 원재료코드</b>를 넣으면 단가 매칭 시 <b>코드 우선</b>(없으면 원재료명)으로 계산돼요. 배합비는 g 단위(콤마 OK).<br />
+            같은 제품명의 여러 행이 한 레시피로 자동 묶이고, <b>1회 배합 포장수</b>는 기본 1100개로 저장(등록 후 인라인 수정).
           </div>
           <textarea value={text} onChange={(e) => setText(e.target.value)}
-            placeholder={'제품명\t순서\t원재료명\t배합비(1세트)\n순수본_한우야채진밥\t1\t백미\t50000\n순수본_한우야채진밥\t2\t한우(슬라이스)\t5000'}
+            placeholder={'제품명\t순서\t원재료명\t배합비(1세트)\t원재료코드\n순수본_한우야채진밥\t1\t백미\t50000\t10110001\n순수본_한우야채진밥\t2\t한우(슬라이스)\t5000\t10620045'}
             className="w-full h-48 border rounded p-2 text-xs font-mono" />
           {text.trim() && (() => {
             const totalIng = preview.recipes.reduce((s, r) => s + r.ingredients.length, 0);
+            const codedIng = preview.recipes.reduce((s, r) => s + r.ingredients.filter((i) => i.code).length, 0);
             return (
               <div className="text-xs">
-                <div className="font-bold mb-1">미리보기 ({preview.recipes.length}개 제품 · 원재료 {totalIng}건)</div>
+                <div className="font-bold mb-1">
+                  미리보기 ({preview.recipes.length}개 제품 · 원재료 {totalIng}건)
+                  <span className={`ml-2 ${codedIng === totalIng && totalIng > 0 ? 'text-emerald-700' : 'text-amber-700'}`}>
+                    {codedIng === 0 ? '⚠️ 원재료코드 미인식 (이름으로 매칭됨)'
+                      : codedIng === totalIng ? `✓ 코드 ${codedIng}/${totalIng}`
+                      : `⚠️ 코드 ${codedIng}/${totalIng}`}
+                  </span>
+                </div>
                 {preview.errors.length > 0 && <div className="text-red-600 mb-1">{preview.errors.join(', ')}</div>}
                 {preview.recipes.slice(0, 6).map((r) => (
                   <div key={r.name} className="border-t py-1">
                     <span className="font-bold">{r.name}</span> — 원재료 {r.ingredients.length}종
+                    <span className="text-gray-400 ml-2">(코드 {r.ingredients.filter((i) => i.code).length}/{r.ingredients.length})</span>
                   </div>
                 ))}
                 {preview.recipes.length > 6 && <div className="text-gray-400">... 외 {preview.recipes.length - 6}개</div>}
