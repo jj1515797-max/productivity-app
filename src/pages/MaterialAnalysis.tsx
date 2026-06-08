@@ -5,8 +5,8 @@ import { db } from '../firebase';
 import type { AmbientEntry, Item, MachineEntry } from '../types';
 import type { AmbientRecipe, Recipe } from '../lib/wasteCompute';
 import { CODE_KEY_PREFIX, monthPriceKey, normalizeCode, normalizeMaterialName } from '../lib/wasteCompute';
-import { computeMonthlyUsage, diffUsage } from '../lib/materialUsage';
-import type { DiffRow, UsageResult } from '../lib/materialUsage';
+import { computeColdProductionByCode, computeFlexedDiff, computeMonthlyUsage, diffUsage } from '../lib/materialUsage';
+import type { DiffRow, FlexedRow, UsageResult } from '../lib/materialUsage';
 
 /* ===== 캐시 ===== */
 const PREFIX = 'matAnalysis:';
@@ -88,7 +88,14 @@ export default function MaterialAnalysis() {
   const [running, setRunning] = useState(false);
   const [aResult, setAResult] = useState<UsageResult | null>(null);
   const [bResult, setBResult] = useState<UsageResult | null>(null);
+  const [aResultBPrice, setAResultBPrice] = useState<UsageResult | null>(null);
   const [diff, setDiff] = useState<DiffRow[]>([]);
+  const [flexed, setFlexed] = useState<FlexedRow[]>([]);
+  const [aQty, setAQty] = useState<number>(0);   // A월 총생산량 EA (자동 채움, 사용자 수정 가능)
+  const [bQty, setBQty] = useState<number>(0);
+  const [aAmount, setAAmount] = useState<string>(''); // A월 생산금액 ₩ (선택)
+  const [bAmount, setBAmount] = useState<string>('');
+  const [scaleBy, setScaleBy] = useState<'qty' | 'amount'>('qty');
   const [err, setErr] = useState<string | null>(null);
 
   // 마스터 DB 구독
@@ -147,27 +154,62 @@ export default function MaterialAnalysis() {
         return r;
       };
       const [aRaw, bRaw] = await Promise.all([fetchOrCache(monthA), fetchOrCache(monthB)]);
+      // 각 월 자체 단가 결과 (보조 비교용 — 기존 표)
       const aRes = computeMonthlyUsage(monthA, aRaw.entries, aRaw.items, aRaw.ambient, aRaw.logistics, recipeMap, ambientRecipeMap, priceMap);
       const bRes = computeMonthlyUsage(monthB, bRaw.entries, bRaw.items, bRaw.ambient, bRaw.logistics, recipeMap, ambientRecipeMap, priceMap);
-      setAResult(aRes); setBResult(bRes);
+      // A월 데이터를 B월 단가로 재평가 (Flexed Budget — 단가 인상 노이즈 제거)
+      const aResB = computeMonthlyUsage(monthA, aRaw.entries, aRaw.items, aRaw.ambient, aRaw.logistics, recipeMap, ambientRecipeMap, priceMap, monthB);
+      setAResult(aRes); setBResult(bRes); setAResultBPrice(aResB);
       setDiff(diffUsage(aRes, bRes));
-      setCache(`result:${monthA}:${monthB}`, { aRes, bRes, ts: Date.now() });
+
+      // 총생산량 EA 자동 채움 (냉장 + 실온)
+      const totalProd = (raw: RawMonth): number => {
+        const cold = computeColdProductionByCode(raw.entries, raw.items, raw.logistics);
+        let sum = 0;
+        cold.forEach((n) => { sum += n; });
+        raw.ambient.forEach((a) => { sum += a.qty || 0; });
+        return Math.round(sum);
+      };
+      setAQty(totalProd(aRaw));
+      setBQty(totalProd(bRaw));
     } catch (e: any) {
       console.error('[MaterialAnalysis] failed:', e);
       setErr(e?.message || '분석 중 오류 발생');
     } finally { setRunning(false); }
   };
 
+  // Flexed Budget — 입력 변화에 반응
+  useEffect(() => {
+    if (!aResultBPrice || !bResult) { setFlexed([]); return; }
+    const aAmt = Number(aAmount) || 0;
+    const bAmt = Number(bAmount) || 0;
+    const useAmount = scaleBy === 'amount' && aAmt > 0 && bAmt > 0;
+    const aScale = useAmount ? aAmt : aQty;
+    const bScale = useAmount ? bAmt : bQty;
+    setFlexed(computeFlexedDiff(aResultBPrice.rows, bResult.rows, aScale, bScale));
+  }, [aResultBPrice, bResult, aQty, bQty, aAmount, bAmount, scaleBy]);
+
   const clearAll = () => {
     if (!confirm('분석 결과와 캐시를 모두 삭제할까요?')) return;
     clearAllCache();
-    setAResult(null); setBResult(null); setDiff([]); setErr(null);
+    setAResult(null); setBResult(null); setAResultBPrice(null);
+    setDiff([]); setFlexed([]);
+    setAQty(0); setBQty(0); setAAmount(''); setBAmount('');
+    setErr(null);
   };
 
+  // 각 월 자체 단가 합계 (기존 비교용)
   const aTotal = aResult?.rows.reduce((s, r) => s + r.cost, 0) || 0;
   const bTotal = bResult?.rows.reduce((s, r) => s + r.cost, 0) || 0;
   const diffTotal = bTotal - aTotal;
   const diffPct = aTotal > 0 ? (diffTotal / aTotal) * 100 : 0;
+
+  // Flexed 합계
+  const flexAtotal = flexed.reduce((s, r) => s + r.aCost, 0);
+  const flexBtotal = flexed.reduce((s, r) => s + r.bCost, 0);
+  const flexFlexedTotal = flexed.reduce((s, r) => s + r.flexedCost, 0);
+  const flexDiffTotal = flexFlexedTotal - flexBtotal;
+  const flexDiffPct = flexFlexedTotal > 0 ? (flexDiffTotal / flexFlexedTotal) * 100 : 0;
 
   const downloadXlsx = async () => {
     if (!aResult || !bResult) return;
@@ -177,7 +219,59 @@ export default function MaterialAnalysis() {
     const fill = (argb: string) => ({ type: 'pattern' as const, pattern: 'solid' as const, fgColor: { argb } });
     const baseFont = { size: 11, name: '맑은 고딕' };
 
-    const ws = wb.addWorksheet('원재료분석');
+    // ===== 시트 1: 연동 분석 (Flexed Budget) =====
+    const wf = wb.addWorksheet('연동 분석');
+    wf.columns = [
+      { width: 6 }, { width: 24 }, { width: 12 },
+      { width: 14 }, { width: 14 }, { width: 14 }, { width: 14 }, { width: 10 },
+    ];
+    wf.mergeCells('A1:H1');
+    const ft = wf.getCell('A1');
+    ft.value = `연동 분석 (${monthB} 단가 기준) — ${monthA} vs ${monthB} | 연동대비 ${Math.round(flexDiffTotal).toLocaleString()}원 (${flexDiffPct >= 0 ? '+' : ''}${flexDiffPct.toFixed(1)}%)`;
+    ft.font = { size: 14, bold: true, name: '맑은 고딕' };
+    ft.alignment = { horizontal: 'center', vertical: 'middle' };
+    ['순위', '원재료', '코드', `${monthA} 금액`, '연동 금액', `${monthB} 금액`, '연동대비차액', '차이율(%)']
+      .forEach((h, i) => {
+        const c = wf.getCell(3, i + 1);
+        c.value = h; c.font = { ...baseFont, bold: true };
+        c.alignment = { horizontal: 'center', vertical: 'middle' };
+        c.fill = fill('FFE0E7FF'); c.border = border;
+      });
+    flexed.forEach((row, idx) => {
+      const r = 4 + idx;
+      wf.getCell(r, 1).value = idx + 1;
+      wf.getCell(r, 2).value = row.name;
+      wf.getCell(r, 3).value = row.code || '';
+      wf.getCell(r, 4).value = Math.round(row.aCost);
+      wf.getCell(r, 5).value = Math.round(row.flexedCost);
+      wf.getCell(r, 6).value = Math.round(row.bCost);
+      wf.getCell(r, 7).value = Math.round(row.diffCost);
+      wf.getCell(r, 8).value = Number(row.diffPct.toFixed(1));
+      for (let c = 1; c <= 8; c++) {
+        const cell = wf.getCell(r, c);
+        cell.font = baseFont; cell.border = border;
+        cell.alignment = { horizontal: c <= 3 ? (c === 2 ? 'left' : 'center') : 'right', vertical: 'middle' };
+        if (c >= 4 && c <= 7) cell.numFmt = '#,##0';
+        if (c === 8) cell.numFmt = '+#,##0.0;-#,##0.0;0';
+      }
+    });
+    const fTotRow = 4 + flexed.length;
+    wf.getCell(fTotRow, 1).value = '합계';
+    wf.mergeCells(fTotRow, 1, fTotRow, 3);
+    wf.getCell(fTotRow, 4).value = Math.round(flexAtotal);
+    wf.getCell(fTotRow, 5).value = Math.round(flexFlexedTotal);
+    wf.getCell(fTotRow, 6).value = Math.round(flexBtotal);
+    wf.getCell(fTotRow, 7).value = Math.round(flexDiffTotal);
+    wf.getCell(fTotRow, 8).value = Number(flexDiffPct.toFixed(1));
+    for (let c = 1; c <= 8; c++) {
+      const cell = wf.getCell(fTotRow, c);
+      cell.font = { ...baseFont, bold: true }; cell.border = border; cell.fill = fill('FFFEF9C3');
+      cell.alignment = { horizontal: c <= 3 ? 'center' : 'right', vertical: 'middle' };
+      if (c >= 4 && c <= 7) cell.numFmt = '#,##0';
+      if (c === 8) cell.numFmt = '+#,##0.0;-#,##0.0;0';
+    }
+
+    const ws = wb.addWorksheet('원재료별 비교(각월단가)');
     ws.columns = [
       { width: 6 }, { width: 24 }, { width: 12 },
       { width: 14 }, { width: 14 }, { width: 14 }, { width: 14 },
@@ -300,21 +394,123 @@ export default function MaterialAnalysis() {
         </div>
       )}
 
-      {/* KPI 카드 */}
+      {/* 입력 패널 — 총생산량(자동, 수정가능) + 생산금액(선택) */}
+      {aResult && bResult && (
+        <div className="bg-white border rounded-lg p-4">
+          <div className="flex items-center gap-2 mb-3">
+            <span className="font-bold text-gray-800 text-sm">📌 생산 규모 입력</span>
+            <span className="text-xs text-gray-500">총생산량은 자동 계산됨 — 필요 시 직접 수정하세요</span>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            <div>
+              <label className="text-xs font-semibold text-blue-700">{monthA} 총생산량 (EA)</label>
+              <input type="number" value={aQty} onChange={(e) => setAQty(Number(e.target.value) || 0)}
+                className="mt-1 w-full border rounded px-2 py-1.5 text-sm text-right font-mono" />
+            </div>
+            <div>
+              <label className="text-xs font-semibold text-rose-700">{monthB} 총생산량 (EA)</label>
+              <input type="number" value={bQty} onChange={(e) => setBQty(Number(e.target.value) || 0)}
+                className="mt-1 w-full border rounded px-2 py-1.5 text-sm text-right font-mono" />
+            </div>
+            <div>
+              <label className="text-xs text-gray-600">{monthA} 생산금액 (₩, 선택)</label>
+              <input type="number" value={aAmount} onChange={(e) => setAAmount(e.target.value)} placeholder="직접 입력"
+                className="mt-1 w-full border rounded px-2 py-1.5 text-sm text-right font-mono" />
+            </div>
+            <div>
+              <label className="text-xs text-gray-600">{monthB} 생산금액 (₩, 선택)</label>
+              <input type="number" value={bAmount} onChange={(e) => setBAmount(e.target.value)} placeholder="직접 입력"
+                className="mt-1 w-full border rounded px-2 py-1.5 text-sm text-right font-mono" />
+            </div>
+          </div>
+          {Number(aAmount) > 0 && Number(bAmount) > 0 && (
+            <div className="mt-3 flex items-center gap-3 text-xs">
+              <span className="text-gray-600 font-semibold">연동 기준:</span>
+              <label className="flex items-center gap-1 cursor-pointer">
+                <input type="radio" checked={scaleBy === 'qty'} onChange={() => setScaleBy('qty')} /> 총생산량(EA)
+              </label>
+              <label className="flex items-center gap-1 cursor-pointer">
+                <input type="radio" checked={scaleBy === 'amount'} onChange={() => setScaleBy('amount')} /> 생산금액(₩)
+              </label>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* KPI 카드 — Flexed Budget 기준 */}
       {aResult && bResult && (
         <>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <KpiCard label={`${monthA} 원재료비`} value={Math.round(aTotal).toLocaleString() + '원'} accent="slate" />
-            <KpiCard label={`${monthB} 원재료비`} value={Math.round(bTotal).toLocaleString() + '원'} accent="slate" />
-            <KpiCard label="차액 (B−A)" value={(diffTotal >= 0 ? '+' : '') + Math.round(diffTotal).toLocaleString() + '원'} accent={diffTotal > 0 ? 'rose' : 'emerald'} />
-            <KpiCard label="차이율" value={(diffPct >= 0 ? '+' : '') + diffPct.toFixed(1) + '%'} accent={diffPct > 0 ? 'rose' : 'emerald'} />
+            <KpiCard label={`${monthA} 원재료비 (B월단가)`} value={Math.round(flexAtotal).toLocaleString() + '원'} accent="slate" />
+            <KpiCard label={`${monthB} 원재료비 (B월단가)`} value={Math.round(flexBtotal).toLocaleString() + '원'} accent="slate" />
+            <KpiCard label="연동대비 총차액" value={(flexDiffTotal >= 0 ? '+' : '') + Math.round(flexDiffTotal).toLocaleString() + '원'} accent={flexDiffTotal >= 0 ? 'emerald' : 'rose'} />
+            <KpiCard label="효율 변동률" value={(flexDiffPct >= 0 ? '+' : '') + flexDiffPct.toFixed(1) + '%'} accent={flexDiffPct >= 0 ? 'emerald' : 'rose'} />
           </div>
 
-          {/* 비교 표 */}
+          {/* 🎯 Flexed Budget 연동 분석 */}
+          <div className="bg-white border rounded-lg overflow-hidden">
+            <div className="px-4 py-2.5 border-b bg-indigo-50 font-bold text-gray-800 text-sm flex items-center gap-2 flex-wrap">
+              <span>🎯 전월 대비 연동 예산 차이 분석</span>
+              <span className="text-xs text-indigo-600 font-normal">두 월 모두 {monthB} 단가 · {scaleBy === 'amount' ? '생산금액' : '총생산량'} 기준 연동</span>
+              <span className="text-xs text-gray-400 font-normal ml-auto">＋효율↑ / －낭비</span>
+            </div>
+            <div className="overflow-x-auto max-h-[700px] overflow-y-auto">
+              <table className="w-full text-xs">
+                <thead className="bg-indigo-50 text-gray-600 sticky top-0 z-10">
+                  <tr>
+                    <th className="border px-2 py-1.5 w-10">순위</th>
+                    <th className="border px-2 py-1.5 text-left">원재료</th>
+                    <th className="border px-2 py-1.5 w-24">코드</th>
+                    <th className="border px-2 py-1.5 text-right w-28">{monthA} 금액</th>
+                    <th className="border px-2 py-1.5 text-right w-28">연동 금액</th>
+                    <th className="border px-2 py-1.5 text-right w-28">{monthB} 금액</th>
+                    <th className="border px-2 py-1.5 text-right w-28">연동 대비 차액</th>
+                    <th className="border px-2 py-1.5 text-right w-20">차이율</th>
+                    <th className="border px-2 py-1.5 text-right w-16">B비중</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {flexed.map((r, idx) => {
+                    const noPrice = !r.hasPrice;
+                    const diffClass = r.diffCost > 0 ? 'text-emerald-700 bg-emerald-50' : r.diffCost < 0 ? 'text-rose-700 bg-rose-50' : 'text-gray-400';
+                    return (
+                      <tr key={r.key} className="border-t">
+                        <td className="border px-2 py-1 text-center text-gray-500">{idx + 1}</td>
+                        <td className="border px-2 py-1">
+                          {noPrice && <span className="text-amber-600 mr-1" title="단가 미입력">⚠️</span>}
+                          {r.name}
+                        </td>
+                        <td className="border px-2 py-1 text-center font-mono text-gray-500">{r.code || '-'}</td>
+                        <td className="border px-2 py-1 text-right text-gray-600">{Math.round(r.aCost).toLocaleString()}</td>
+                        <td className="border px-2 py-1 text-right font-semibold text-indigo-700">{Math.round(r.flexedCost).toLocaleString()}</td>
+                        <td className="border px-2 py-1 text-right">{Math.round(r.bCost).toLocaleString()}</td>
+                        <td className={`border px-2 py-1 text-right font-bold ${diffClass}`}>{r.diffCost > 0 ? '+' : ''}{Math.round(r.diffCost).toLocaleString()}</td>
+                        <td className={`border px-2 py-1 text-right font-semibold ${diffClass}`}>{r.diffPct > 0 ? '+' : ''}{r.diffPct.toFixed(1)}%</td>
+                        <td className="border px-2 py-1 text-right text-gray-500">{r.bSharePct.toFixed(1)}%</td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+                <tfoot>
+                  <tr className="bg-amber-50 font-bold sticky bottom-0">
+                    <td className="border px-2 py-1.5 text-center" colSpan={3}>합계</td>
+                    <td className="border px-2 py-1.5 text-right">{Math.round(flexAtotal).toLocaleString()}</td>
+                    <td className="border px-2 py-1.5 text-right text-indigo-700">{Math.round(flexFlexedTotal).toLocaleString()}</td>
+                    <td className="border px-2 py-1.5 text-right">{Math.round(flexBtotal).toLocaleString()}</td>
+                    <td className={`border px-2 py-1.5 text-right ${flexDiffTotal >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{flexDiffTotal > 0 ? '+' : ''}{Math.round(flexDiffTotal).toLocaleString()}</td>
+                    <td className={`border px-2 py-1.5 text-right ${flexDiffPct >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{flexDiffPct > 0 ? '+' : ''}{flexDiffPct.toFixed(1)}%</td>
+                    <td className="border"></td>
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          </div>
+
+          {/* 비교 표 (각 월 자체 단가) */}
           <div className="bg-white border rounded-lg overflow-hidden">
             <div className="px-4 py-2.5 border-b bg-slate-50 font-bold text-gray-800 text-sm flex items-center gap-2">
-              <span>📊 원재료별 비교</span>
-              <span className="text-xs text-gray-500 font-normal">{diff.length}종 · B월 사용량 내림차순</span>
+              <span>📊 원재료별 비교 (각 월 자체 단가)</span>
+              <span className="text-xs text-gray-500 font-normal">{diff.length}종 · B월 사용량 내림차순 · 단가인상 포함</span>
             </div>
             <div className="overflow-x-auto max-h-[700px] overflow-y-auto">
               <table className="w-full text-xs">
