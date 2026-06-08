@@ -4,6 +4,7 @@
  *    - 없는 날: entries(actual+additional) 그대로
  */
 import type { AmbientEntry, Item, MachineEntry } from '../types';
+import { canonicalShort } from './codeUtil';
 
 export const STAGE_LETTERS = ['A', 'B', 'C', 'D', 'E', 'F', 'F500', 'G', 'H', 'I'] as const;
 export const STAGE_COLOR: Record<string, string> = {
@@ -59,16 +60,19 @@ export function computeMonthlyProduction(
   ambient: AmbientEntry[],
   logisticsByDay: Record<string, number>,
 ): MonthlyProduction {
+  // 코드는 canonicalShort 로 통일 (대문자/소문자/하이픈/ERP풀코드 → A01 형태)
+  // 4월처럼 잔여수정일은 items코드(I07), 비수정일은 entries코드(i07)로 들어와도 같은 키로 묶임
   const codeQty = new Map<string, number>();
-  const codeName = new Map<string, string>();
+  const codeName = new Map<string, string>();  // 표시명: items 의 진짜 제품명만 기록
 
   // 일별 인덱싱
-  const itemsByDay: Record<string, { code: string; totalQty: number; name: string }[]> = {};
+  const itemsByDay: Record<string, { code: string; totalQty: number }[]> = {};
   items.forEach((it) => {
     if (!it.code) return;
+    const k = canonicalShort(it.code);
     if (!itemsByDay[it.date]) itemsByDay[it.date] = [];
-    itemsByDay[it.date].push({ code: it.code, totalQty: it.totalQty || 0, name: it.name || it.code });
-    if (it.name) codeName.set(it.code, it.name);
+    itemsByDay[it.date].push({ code: k, totalQty: it.totalQty || 0 });
+    if (it.name && it.name !== it.code) codeName.set(k, it.name);
   });
   const entriesByDay: Record<string, { code: string; qty: number }[]> = {};
   entries.forEach((e) => {
@@ -76,7 +80,7 @@ export function computeMonthlyProduction(
     const q = (e.actualProduction || 0) + (e.additionalProduction || 0);
     if (q <= 0) return;
     if (!entriesByDay[e.date]) entriesByDay[e.date] = [];
-    entriesByDay[e.date].push({ code: e.code, qty: q });
+    entriesByDay[e.date].push({ code: canonicalShort(e.code), qty: q });
   });
 
   const allDays = new Set<string>([
