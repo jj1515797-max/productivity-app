@@ -103,6 +103,7 @@ export default function MaterialAnalysis() {
   const [aRaw, setARaw] = useState<RawMonth | null>(null);
   const [bRaw, setBRaw] = useState<RawMonth | null>(null);
   const [search, setSearch] = useState<string>('');
+  const [searchFlexed, setSearchFlexed] = useState<boolean>(false);
   const [expandStages, setExpandStages] = useState<Record<string, boolean>>({});
   const [err, setErr] = useState<string | null>(null);
 
@@ -184,6 +185,16 @@ export default function MaterialAnalysis() {
       setErr(e?.message || '분석 중 오류 발생');
     } finally { setRunning(false); }
   };
+
+  // 연동 비율 (A월 → B월 규모) — EA 기본, 생산금액 둘 다 입력 시 ₩ 토글 가능
+  const ratio = useMemo(() => {
+    const aAmt = Number(aAmount) || 0;
+    const bAmt = Number(bAmount) || 0;
+    const useAmount = scaleBy === 'amount' && aAmt > 0 && bAmt > 0;
+    const aScale = useAmount ? aAmt : aQty;
+    const bScale = useAmount ? bAmt : bQty;
+    return aScale > 0 ? bScale / aScale : 1;
+  }, [aQty, bQty, aAmount, bAmount, scaleBy]);
 
   // Flexed Budget — 입력 변화에 반응
   useEffect(() => {
@@ -553,13 +564,26 @@ export default function MaterialAnalysis() {
               placeholder="예: 한우, 양파, 닭가슴살..."
               className="flex-1 min-w-[200px] max-w-md border rounded px-3 py-1.5 text-sm" />
             {search && <button onClick={() => setSearch('')} className="text-xs px-2 py-1 rounded border hover:bg-white">✕ 지우기</button>}
+            {/* 실제 / 연동 토글 */}
+            <div className="flex rounded border overflow-hidden text-xs">
+              <button onClick={() => setSearchFlexed(false)}
+                className={`px-2.5 py-1 ${!searchFlexed ? 'bg-blue-600 text-white font-semibold' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>실제 사용량</button>
+              <button onClick={() => setSearchFlexed(true)}
+                className={`px-2.5 py-1 border-l ${searchFlexed ? 'bg-indigo-600 text-white font-semibold' : 'bg-white text-gray-600 hover:bg-gray-50'}`}
+                title={`${monthA}를 ${monthB} 생산규모로 환산 (×${ratio.toFixed(3)})`}>연동(생산량 보정)</button>
+            </div>
             {stageUsage && <span className="text-xs text-gray-500">{stageUsage.length}건 매칭</span>}
           </div>
 
           {/* 검색 결과 — 단계별 사용량 비교 */}
           {stageUsage && stageUsage.length > 0 && (
             <div className="px-4 py-3 border-b bg-indigo-50/40">
-              <div className="text-xs text-gray-600 mb-2">"<b>{search}</b>" 매칭 — 단계별 사용량(g) {monthA} vs {monthB}</div>
+              <div className="text-xs text-gray-600 mb-2">
+                "<b>{search}</b>" 매칭 — 단계별 사용량(g) {monthA} vs {monthB}
+                {searchFlexed
+                  ? <span className="ml-1 text-indigo-700 font-semibold">· 연동 모드: {monthA} 사용량을 {monthB} 생산규모로 환산(×{ratio.toFixed(3)}) → 순수 효율차</span>
+                  : <span className="ml-1 text-gray-400">· 실제 사용량 그대로</span>}
+              </div>
               <div className="overflow-x-auto">
                 <table className="w-full text-xs bg-white border">
                   <thead className="bg-slate-100 text-gray-600">
@@ -575,17 +599,22 @@ export default function MaterialAnalysis() {
                     </tr>
                   </thead>
                   <tbody>
-                    {stageUsage.map((row) => (
+                    {stageUsage.map((row) => {
+                      const k = searchFlexed ? ratio : 1;   // A월 환산 계수
+                      const aS = (L: string) => (row.a?.byStage[L] || 0) * k;
+                      const aAmb = (row.a?.ambientGrams || 0) * k;
+                      const aTot = (row.a?.totalGrams || 0) * k;
+                      return (
                       <Fragment2 key={row.key}>
                         <tr className="border-t">
                           <td rowSpan={3} className="border px-2 py-1 font-semibold align-top">{row.name}</td>
                           <td rowSpan={3} className="border px-2 py-1 text-center font-mono text-gray-500 align-top">{row.code || '-'}</td>
-                          <td className="border px-2 py-1 text-blue-700 font-semibold">{monthA}</td>
+                          <td className="border px-2 py-1 text-blue-700 font-semibold whitespace-nowrap">{monthA}{searchFlexed && <span className="text-[10px] text-indigo-500 ml-0.5">(연동)</span>}</td>
                           {STAGE_LETTERS.map((L) => (
-                            <td key={L} className="border px-2 py-1 text-right">{Math.round(row.a?.byStage[L] || 0).toLocaleString()}</td>
+                            <td key={L} className="border px-2 py-1 text-right">{Math.round(aS(L)).toLocaleString()}</td>
                           ))}
-                          <td className="border px-2 py-1 text-right text-orange-700">{Math.round(row.a?.ambientGrams || 0).toLocaleString()}</td>
-                          <td className="border px-2 py-1 text-right font-bold bg-amber-50">{Math.round(row.a?.totalGrams || 0).toLocaleString()}</td>
+                          <td className="border px-2 py-1 text-right text-orange-700">{Math.round(aAmb).toLocaleString()}</td>
+                          <td className="border px-2 py-1 text-right font-bold bg-amber-50">{Math.round(aTot).toLocaleString()}</td>
                         </tr>
                         <tr className="border-t">
                           <td className="border px-2 py-1 text-rose-700 font-semibold">{monthB}</td>
@@ -598,23 +627,24 @@ export default function MaterialAnalysis() {
                         <tr className="border-t bg-slate-50">
                           <td className="border px-2 py-1 text-gray-600 font-semibold">증감</td>
                           {STAGE_LETTERS.map((L) => {
-                            const d = (row.b?.byStage[L] || 0) - (row.a?.byStage[L] || 0);
+                            const d = (row.b?.byStage[L] || 0) - aS(L);
                             const cls = d > 0 ? 'text-rose-700' : d < 0 ? 'text-emerald-700' : 'text-gray-400';
                             return <td key={L} className={`border px-2 py-1 text-right font-semibold ${cls}`}>{d > 0 ? '+' : ''}{Math.round(d).toLocaleString()}</td>;
                           })}
                           {(() => {
-                            const d = (row.b?.ambientGrams || 0) - (row.a?.ambientGrams || 0);
+                            const d = (row.b?.ambientGrams || 0) - aAmb;
                             const cls = d > 0 ? 'text-rose-700' : d < 0 ? 'text-emerald-700' : 'text-gray-400';
                             return <td className={`border px-2 py-1 text-right font-semibold ${cls}`}>{d > 0 ? '+' : ''}{Math.round(d).toLocaleString()}</td>;
                           })()}
                           {(() => {
-                            const d = (row.b?.totalGrams || 0) - (row.a?.totalGrams || 0);
+                            const d = (row.b?.totalGrams || 0) - aTot;
                             const cls = d > 0 ? 'text-rose-700' : d < 0 ? 'text-emerald-700' : 'text-gray-400';
                             return <td className={`border px-2 py-1 text-right font-bold bg-amber-50 ${cls}`}>{d > 0 ? '+' : ''}{Math.round(d).toLocaleString()}</td>;
                           })()}
                         </tr>
                       </Fragment2>
-                    ))}
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
