@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { collection, deleteDoc, doc, getCountFromServer, getDocs, onSnapshot, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import type { Material, ProductSetting } from '../types';
@@ -17,6 +17,7 @@ export default function ProductSettings() {
   const [showProductDB, setShowProductDB] = useState(false);
   const [showMaterialDB, setShowMaterialDB] = useState(false);
   const [showRecipeDB, setShowRecipeDB] = useState(false);
+  const [showAmbientRecipeDB, setShowAmbientRecipeDB] = useState(false);
   const [showPriceDB, setShowPriceDB] = useState(false);
   const [showBulk, setShowBulk] = useState(false);
   const [showWeightBulk, setShowWeightBulk] = useState(false);
@@ -25,12 +26,14 @@ export default function ProductSettings() {
   const [productCount, setProductCount] = useState<number | null>(null);
   const [materialCount, setMaterialCount] = useState<number | null>(null);
   const [recipeCount, setRecipeCount] = useState<number | null>(null);
+  const [ambientRecipeCount, setAmbientRecipeCount] = useState<number | null>(null);
   const [priceCount, setPriceCount] = useState<number | null>(null);
 
   useEffect(() => {
     getCountFromServer(collection(db, 'productSettings')).then((s) => setProductCount(s.data().count)).catch(() => {});
     getCountFromServer(collection(db, 'materials')).then((s) => setMaterialCount(s.data().count)).catch(() => {});
     getCountFromServer(collection(db, 'recipes')).then((s) => setRecipeCount(s.data().count)).catch(() => {});
+    getCountFromServer(collection(db, 'ambientRecipes')).then((s) => setAmbientRecipeCount(s.data().count)).catch(() => {});
     getCountFromServer(collection(db, 'materialPricesMonthly')).then((s) => setPriceCount(s.data().count)).catch(() => {});
   }, []);
 
@@ -235,6 +238,17 @@ export default function ProductSettings() {
         onToggle={() => setShowRecipeDB(!showRecipeDB)}
       >
         {showRecipeDB && <RecipeDB onCountChange={setRecipeCount} />}
+      </Section>
+
+      {/* 실온이유식 레시피 DB 섹션 (1회 배합 기준) */}
+      <Section
+        icon="🍼"
+        title="실온이유식 레시피 DB"
+        badge={ambientRecipeCount !== null ? `${ambientRecipeCount}개` : '...'}
+        open={showAmbientRecipeDB}
+        onToggle={() => setShowAmbientRecipeDB(!showAmbientRecipeDB)}
+      >
+        {showAmbientRecipeDB && <AmbientRecipeDB onCountChange={setAmbientRecipeCount} />}
       </Section>
 
       {/* 원재료 단가 섹션 (폐기금액 계산용) */}
@@ -1456,6 +1470,326 @@ function PriceImportModal({ month, onClose }: { month: string; onClose: () => vo
           <button onClick={save} disabled={saving || parsed.length === 0}
             className="ml-auto px-5 py-2 bg-blue-600 text-white rounded font-medium hover:bg-blue-700 disabled:bg-gray-300">
             {saving ? '저장중...' : `${parsed.length}개 저장`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   실온이유식 레시피 DB (1회 배합 기준)
+   Firestore: ambientRecipes/{normalizedName}
+              = { name, batchPieces, ingredients: [{seq, name, gPerBatch, code?}], updatedAt }
+   ============================================================ */
+
+interface AmbientRecipeDoc {
+  id: string;
+  name: string;
+  batchPieces: number;
+  ingredients: { seq: number; name: string; gPerBatch: number; code?: string }[];
+  updatedAt?: string;
+}
+
+function ambientDocId(name: string): string {
+  return normalizeName(name);
+}
+
+function AmbientRecipeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
+  const [recipes, setRecipes] = useState<AmbientRecipeDoc[]>([]);
+  const [search, setSearch] = useState('');
+  const [showImport, setShowImport] = useState(false);
+  const [expanded, setExpanded] = useState<string | null>(null);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
+
+  useEffect(() => {
+    return onSnapshot(collection(db, 'ambientRecipes'), (snap) => {
+      const list: AmbientRecipeDoc[] = [];
+      snap.forEach((d) => {
+        const data = d.data() as Omit<AmbientRecipeDoc, 'id'>;
+        list.push({
+          id: d.id,
+          name: data.name || d.id,
+          batchPieces: Number(data.batchPieces) || 1100,
+          ingredients: data.ingredients || [],
+          updatedAt: data.updatedAt,
+        });
+      });
+      list.sort((a, b) => a.name.localeCompare(b.name));
+      setRecipes(list);
+      onCountChange(list.length);
+    });
+  }, [onCountChange]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return recipes;
+    return recipes.filter((r) =>
+      r.name.toLowerCase().includes(q) ||
+      r.ingredients.some((i) => i.name.toLowerCase().includes(q))
+    );
+  }, [recipes, search]);
+
+  const updateBatchPieces = async (r: AmbientRecipeDoc, v: number) => {
+    if (v <= 0) return;
+    await updateDoc(doc(db, 'ambientRecipes', r.id), {
+      batchPieces: v,
+      updatedAt: new Date().toISOString(),
+    });
+  };
+  const updateGram = async (r: AmbientRecipeDoc, seq: number, v: number) => {
+    if (v < 0) return;
+    const next = r.ingredients.map((ing) => ing.seq === seq ? { ...ing, gPerBatch: v } : ing);
+    await updateDoc(doc(db, 'ambientRecipes', r.id), {
+      ingredients: next,
+      updatedAt: new Date().toISOString(),
+    });
+  };
+  const delRecipe = async (r: AmbientRecipeDoc) => {
+    if (!confirm(`'${r.name}' 실온 레시피를 삭제할까요?`)) return;
+    await deleteDoc(doc(db, 'ambientRecipes', r.id));
+  };
+  const bulkDelete = async (target: AmbientRecipeDoc[]) => {
+    if (target.length === 0) return;
+    const isFiltered = target.length !== recipes.length;
+    const label = isFiltered ? `검색결과 ${target.length}개` : `전체 ${target.length}개`;
+    const input = prompt(`⚠️ ${label} 실온 레시피를 삭제합니다.\n진행하려면 "삭제" 를 입력하세요.`);
+    if (input !== '삭제') return;
+    setBulkDeleting(true);
+    try {
+      const CHUNK = 400;
+      for (let i = 0; i < target.length; i += CHUNK) {
+        const batch = writeBatch(db);
+        target.slice(i, i + CHUNK).forEach((r) => batch.delete(doc(db, 'ambientRecipes', r.id)));
+        await batch.commit();
+      }
+      alert(`${target.length}개 삭제됨`);
+    } finally { setBulkDeleting(false); }
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="flex items-center gap-2 flex-wrap">
+        <input value={search} onChange={(e) => setSearch(e.target.value)}
+          placeholder="🔍 제품명·원재료 검색..."
+          className="flex-1 min-w-[240px] border rounded-md px-3 py-2 text-sm" />
+        <span className="text-xs text-gray-500">{filtered.length}/{recipes.length}개</span>
+        <button onClick={() => setShowImport(true)} className="px-3 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700">📋 일괄 입력</button>
+        {search.trim() && filtered.length > 0 && filtered.length !== recipes.length && (
+          <button onClick={() => bulkDelete(filtered)} disabled={bulkDeleting}
+            className="px-3 py-2 bg-orange-600 text-white rounded text-sm font-medium hover:bg-orange-700 disabled:bg-gray-300">
+            🗑️ 검색결과 삭제 ({filtered.length})
+          </button>
+        )}
+        {recipes.length > 0 && (
+          <button onClick={() => bulkDelete(recipes)} disabled={bulkDeleting}
+            className="px-3 py-2 bg-red-600 text-white rounded text-sm font-medium hover:bg-red-700 disabled:bg-gray-300">
+            {bulkDeleting ? '삭제중...' : `🗑️ 전체 삭제 (${recipes.length})`}
+          </button>
+        )}
+      </div>
+      {recipes.length === 0 ? (
+        <div className="p-12 text-center text-gray-400 text-sm border rounded-lg">등록된 실온 레시피가 없습니다 — 📋 일괄 입력으로 추가하세요</div>
+      ) : (
+        <div className="border rounded-lg overflow-hidden">
+          <div className="max-h-[600px] overflow-y-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-xs text-gray-600 sticky top-0 z-10">
+                <tr>
+                  <th className="px-3 py-2 text-left">제품명</th>
+                  <th className="px-3 py-2 text-right w-36">1회 배합 포장수</th>
+                  <th className="px-3 py-2 text-right w-20">원재료수</th>
+                  <th className="px-3 py-2 w-24"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((r) => (
+                  <Fragment key={r.id}>
+                    <tr className="border-t hover:bg-slate-50">
+                      <td className="px-3 py-1.5">{r.name}</td>
+                      <td className="px-3 py-1 text-right">
+                        <input type="number" key={`${r.id}-${r.batchPieces}`} defaultValue={r.batchPieces}
+                          onBlur={(e) => {
+                            const v = Number(e.target.value) || 0;
+                            if (v > 0 && v !== r.batchPieces) updateBatchPieces(r, v);
+                          }}
+                          className="w-24 border rounded px-2 py-1 text-right text-sm" step="1" min="1" />
+                      </td>
+                      <td className="px-3 py-1.5 text-right">{r.ingredients.length}</td>
+                      <td className="px-3 py-1.5 text-right">
+                        <button onClick={() => setExpanded(expanded === r.id ? null : r.id)}
+                          className="text-xs text-blue-600 hover:underline">{expanded === r.id ? '닫기' : '보기'}</button>
+                        <button onClick={() => delRecipe(r)} className="text-xs text-red-500 hover:underline ml-2">삭제</button>
+                      </td>
+                    </tr>
+                    {expanded === r.id && (
+                      <tr className="border-t bg-slate-50">
+                        <td colSpan={4} className="p-3">
+                          <table className="w-full text-xs">
+                            <thead className="text-gray-500">
+                              <tr>
+                                <th className="text-right pr-2 w-12">순번</th>
+                                <th className="text-left">원재료</th>
+                                <th className="text-left w-28">원재료코드</th>
+                                <th className="text-right pr-2 w-36">배합비(1세트, g)</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {r.ingredients.map((ing) => (
+                                <tr key={ing.seq} className="border-t border-gray-200">
+                                  <td className="text-right pr-2 text-gray-500">{ing.seq}</td>
+                                  <td>{ing.name}</td>
+                                  <td className="font-mono text-gray-500">{ing.code || <span className="text-gray-300">-</span>}</td>
+                                  <td className="text-right pr-1 py-0.5">
+                                    <input type="number" step="0.001" min="0"
+                                      key={`${r.id}-${ing.seq}-${ing.gPerBatch}`}
+                                      defaultValue={ing.gPerBatch ?? 0}
+                                      onBlur={(e) => {
+                                        const v = parseFloat(e.target.value);
+                                        if (!isNaN(v) && v >= 0 && v !== ing.gPerBatch) updateGram(r, ing.seq, v);
+                                      }}
+                                      className="w-28 border rounded px-2 py-0.5 text-right text-xs font-mono focus:ring-1 focus:ring-blue-400" />
+                                  </td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+      {showImport && <AmbientRecipeImportModal onClose={() => setShowImport(false)} />}
+    </div>
+  );
+}
+
+function AmbientRecipeImportModal({ onClose }: { onClose: () => void }) {
+  const [text, setText] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const parse = (): { recipes: { name: string; ingredients: { seq: number; name: string; gPerBatch: number; code?: string }[] }[]; errors: string[] } => {
+    const lines = text.trim().split('\n').map((l) => l.split('\t'));
+    const errors: string[] = [];
+    if (lines.length < 2) return { recipes: [], errors: ['데이터가 없습니다'] };
+
+    const norm = (s: string) => (s || '').replace(/\s+/g, '').replace(/\(.*?\)/g, '').trim();
+    const NAME_CANDIDATES = ['제품명', '품목명', '품명'];
+    const SEQ_CANDIDATES = ['순서', '순번', 'seq'];
+    const ING_CANDIDATES = ['원재료명', '원재료', '재료명'];
+    const G_CANDIDATES = ['배합비1세트', '배합비', '배합비g', '1세트', '1회배합', '1회배합g', '배합량'];
+    const CODE_CANDIDATES = ['원재료코드', '원재료erp코드', 'erp코드', '자재코드', '품목코드', '재료코드', '코드'];
+
+    const findCol = (cells: string[], cands: string[]) => {
+      for (const c of cands) { const i = cells.findIndex((x) => x.toLowerCase() === c); if (i >= 0) return i; }
+      return -1;
+    };
+    const hIdx = lines.findIndex((r) => {
+      const cells = r.map((c) => norm(c).toLowerCase());
+      return findCol(cells, NAME_CANDIDATES.map((s) => s.toLowerCase())) >= 0 &&
+             findCol(cells, ING_CANDIDATES.map((s) => s.toLowerCase())) >= 0 &&
+             findCol(cells, G_CANDIDATES.map((s) => s.toLowerCase())) >= 0;
+    });
+    if (hIdx < 0) {
+      errors.push('헤더(제품명 / 원재료명 / 배합비(1세트)) 행을 찾을 수 없습니다');
+      return { recipes: [], errors };
+    }
+    const header = lines[hIdx].map((c) => norm(c).toLowerCase());
+    const nameCol = findCol(header, NAME_CANDIDATES.map((s) => s.toLowerCase()));
+    const seqCol = findCol(header, SEQ_CANDIDATES.map((s) => s.toLowerCase()));
+    const ingCol = findCol(header, ING_CANDIDATES.map((s) => s.toLowerCase()));
+    const gCol = findCol(header, G_CANDIDATES.map((s) => s.toLowerCase()));
+    const codeCol = findCol(header, CODE_CANDIDATES.map((s) => s.toLowerCase()));
+
+    const map = new Map<string, { name: string; ingredients: { seq: number; name: string; gPerBatch: number; code?: string }[] }>();
+    for (let i = hIdx + 1; i < lines.length; i++) {
+      const r = lines[i];
+      const name = (r[nameCol] || '').trim();
+      const ingName = (r[ingCol] || '').trim();
+      const gStr = (r[gCol] || '').trim().replace(/,/g, '');
+      if (!name || !ingName) continue;
+      const g = parseFloat(gStr);
+      if (isNaN(g) || g < 0) continue;
+      const seq = seqCol >= 0 ? (parseInt((r[seqCol] || '').trim(), 10) || 0) : 0;
+      const matCode = codeCol >= 0 ? (r[codeCol] || '').trim() : '';
+      let rec = map.get(name);
+      if (!rec) { rec = { name, ingredients: [] }; map.set(name, rec); }
+      const ing: { seq: number; name: string; gPerBatch: number; code?: string } = {
+        seq: seq || rec.ingredients.length + 1, name: ingName, gPerBatch: g,
+      };
+      if (matCode) ing.code = matCode;
+      rec.ingredients.push(ing);
+    }
+    Array.from(map.values()).forEach((r) => r.ingredients.sort((a, b) => a.seq - b.seq));
+    return { recipes: Array.from(map.values()), errors };
+  };
+
+  const preview = useMemo(() => (text.trim() ? parse() : { recipes: [], errors: [] }), [text]);
+
+  const save = async () => {
+    if (preview.recipes.length === 0) return;
+    setSaving(true);
+    try {
+      const CHUNK = 400;
+      for (let i = 0; i < preview.recipes.length; i += CHUNK) {
+        const batch = writeBatch(db);
+        preview.recipes.slice(i, i + CHUNK).forEach((r) => {
+          batch.set(doc(db, 'ambientRecipes', ambientDocId(r.name)), {
+            name: r.name,
+            batchPieces: 1100, // 기본값. 등록 후 인라인 수정
+            ingredients: r.ingredients,
+            updatedAt: new Date().toISOString(),
+          }, { merge: true });
+        });
+        await batch.commit();
+      }
+      alert(`${preview.recipes.length}개 실온 레시피 저장됨`);
+      onClose();
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[92vh] overflow-hidden flex flex-col">
+        <div className="px-5 py-4 border-b flex items-center justify-between bg-blue-50">
+          <h3 className="font-bold text-gray-800">📋 실온이유식 레시피 일괄 입력</h3>
+          <button onClick={onClose} className="w-7 h-7 rounded-full hover:bg-gray-200 text-gray-500">×</button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-5 space-y-3">
+          <div className="text-xs text-gray-600 bg-slate-50 p-3 rounded border">
+            엑셀에서 <b>헤더 포함 표 전체</b>를 복사해 붙여넣으세요 (탭 구분).<br />
+            필수 컬럼: <b>제품명</b> / <b>원재료명</b> / <b>배합비(1세트)</b>. 선택: 순서, 원재료코드.<br />
+            같은 제품명의 여러 행이 한 레시피로 자동 묶입니다. <b>1회 배합 포장수</b>는 기본 1100개로 저장되며, 등록 후 표에서 인라인 수정하세요.
+          </div>
+          <textarea value={text} onChange={(e) => setText(e.target.value)}
+            placeholder={'제품명\t순서\t원재료명\t배합비(1세트)\n순수본_한우야채진밥\t1\t백미\t50000\n순수본_한우야채진밥\t2\t한우(슬라이스)\t5000'}
+            className="w-full h-48 border rounded p-2 text-xs font-mono" />
+          {text.trim() && (() => {
+            const totalIng = preview.recipes.reduce((s, r) => s + r.ingredients.length, 0);
+            return (
+              <div className="text-xs">
+                <div className="font-bold mb-1">미리보기 ({preview.recipes.length}개 제품 · 원재료 {totalIng}건)</div>
+                {preview.errors.length > 0 && <div className="text-red-600 mb-1">{preview.errors.join(', ')}</div>}
+                {preview.recipes.slice(0, 6).map((r) => (
+                  <div key={r.name} className="border-t py-1">
+                    <span className="font-bold">{r.name}</span> — 원재료 {r.ingredients.length}종
+                  </div>
+                ))}
+                {preview.recipes.length > 6 && <div className="text-gray-400">... 외 {preview.recipes.length - 6}개</div>}
+              </div>
+            );
+          })()}
+        </div>
+        <div className="px-5 py-3 border-t bg-slate-50 flex items-center gap-2">
+          <button onClick={onClose} className="px-3 py-2 border rounded text-sm font-medium hover:bg-gray-100">취소</button>
+          <button onClick={save} disabled={saving || preview.recipes.length === 0}
+            className="ml-auto px-5 py-2 bg-blue-600 text-white rounded font-medium hover:bg-blue-700 disabled:bg-gray-300">
+            {saving ? '저장중...' : `${preview.recipes.length}개 저장`}
           </button>
         </div>
       </div>

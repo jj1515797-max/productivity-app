@@ -12,6 +12,7 @@ import ProductivityInput from './pages/ProductivityInput';
 import Productivity from './pages/Productivity';
 import Under10 from './pages/Under10';
 import Waste from './pages/Waste';
+import MaterialAnalysis from './pages/MaterialAnalysis';
 import ProductSettings from './pages/ProductSettings';
 import Inventory from './pages/Inventory';
 import Remix from './pages/Remix';
@@ -32,7 +33,7 @@ export default function App() {
 
 function MainContainer() {
   const path = useLocation().pathname;
-  const wide = path.startsWith('/analytics/monthly') || path.startsWith('/analytics/remix') || path.startsWith('/analytics/productivity') || path.startsWith('/attendance') || path.startsWith('/inventory');
+  const wide = path.startsWith('/analytics/monthly') || path.startsWith('/analytics/remix') || path.startsWith('/analytics/productivity') || path.startsWith('/analytics/material') || path.startsWith('/attendance') || path.startsWith('/inventory');
   return (
     <main className={`flex-1 ${wide ? 'max-w-screen-2xl' : 'max-w-screen-xl'} w-full mx-auto px-4 py-5`}>
       <Routes>
@@ -51,6 +52,7 @@ function MainContainer() {
           <Route path="/analytics/under10" element={<Under10 />} />
           <Route path="/analytics/waste" element={<Waste />} />
           <Route path="/analytics/report" element={<Report />} />
+          <Route path="/analytics/material" element={<MaterialAnalysis />} />
           <Route path="/analytics/settings" element={<ProductSettings />} />
         </Route>
         <Route path="/attendance" element={<Attendance />} />
@@ -90,6 +92,7 @@ const SUB_TABS: Record<Section, { label: string; to: string; exact?: boolean }[]
     { label: '10ea미만', to: '/analytics/under10' },
     { label: '폐기', to: '/analytics/waste' },
     { label: '금속CCP', to: '/analytics/report' },
+    { label: '원재료분석', to: '/analytics/material' },
     { label: '설정', to: '/analytics/settings' },
   ],
   attendance: [

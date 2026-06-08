@@ -21,6 +21,24 @@ export interface MaterialPrice {
   pricePerGram: number;
 }
 
+/** 실온이유식 레시피 (1회 배합 기준) */
+export interface AmbientRecipeIngredient {
+  seq: number;
+  name: string;
+  /** 1회 배합당 g */
+  gPerBatch: number;
+  /** 원재료 ERP코드 (단가 매칭 우선키, 선택) */
+  code?: string;
+}
+
+export interface AmbientRecipe {
+  /** 풀네임 (prefix 포함, 예: "순수본_한우야채진밥") */
+  name: string;
+  /** 1회 배합으로 나오는 평균 포장 수 (기본 1100) */
+  batchPieces: number;
+  ingredients: AmbientRecipeIngredient[];
+}
+
 export interface WasteEntry {
   id?: string;
   date: string;
