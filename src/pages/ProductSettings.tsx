@@ -19,6 +19,8 @@ export default function ProductSettings() {
   const [showRecipeDB, setShowRecipeDB] = useState(false);
   const [showAmbientRecipeDB, setShowAmbientRecipeDB] = useState(false);
   const [showPriceDB, setShowPriceDB] = useState(false);
+  const [showInventoryPriceDB, setShowInventoryPriceDB] = useState(false);
+  const [inventoryPriceCount, setInventoryPriceCount] = useState<number | null>(null);
   const [showBulk, setShowBulk] = useState(false);
   const [showWeightBulk, setShowWeightBulk] = useState(false);
   const [materials, setMaterials] = useState<Material[]>([]);
@@ -35,6 +37,7 @@ export default function ProductSettings() {
     getCountFromServer(collection(db, 'recipes')).then((s) => setRecipeCount(s.data().count)).catch(() => {});
     getCountFromServer(collection(db, 'ambientRecipes')).then((s) => setAmbientRecipeCount(s.data().count)).catch(() => {});
     getCountFromServer(collection(db, 'materialPricesMonthly')).then((s) => setPriceCount(s.data().count)).catch(() => {});
+    getCountFromServer(collection(db, 'materialPricesInventory')).then((s) => setInventoryPriceCount(s.data().count)).catch(() => {});
   }, []);
 
   // 섹션이 펼쳐졌을 때만 구독 (읽기 부하 절감)
@@ -251,15 +254,26 @@ export default function ProductSettings() {
         {showAmbientRecipeDB && <AmbientRecipeDB onCountChange={setAmbientRecipeCount} />}
       </Section>
 
-      {/* 원재료 단가 섹션 (폐기금액 계산용) */}
+      {/* 원재료 단가 섹션 — 매입단가 (폐기금액 산출용) */}
       <Section
         icon="💰"
-        title="원재료 단가 (폐기금액 계산용)"
+        title="원재료단가 (매입단가)(폐기금액 산출용)"
         badge={priceCount !== null ? `${priceCount}개` : '...'}
         open={showPriceDB}
         onToggle={() => setShowPriceDB(!showPriceDB)}
       >
-        {showPriceDB && <MaterialPriceDB onCountChange={setPriceCount} />}
+        {showPriceDB && <MaterialPriceDB onCountChange={setPriceCount} collectionName="materialPricesMonthly" />}
+      </Section>
+
+      {/* 원재료 단가 섹션 — 기초단가 (재고평가현황 / 원재료분석2 용) */}
+      <Section
+        icon="💾"
+        title="원재료단가 (재고평가현황 기초단가)"
+        badge={inventoryPriceCount !== null ? `${inventoryPriceCount}개` : '...'}
+        open={showInventoryPriceDB}
+        onToggle={() => setShowInventoryPriceDB(!showInventoryPriceDB)}
+      >
+        {showInventoryPriceDB && <MaterialPriceDB onCountChange={setInventoryPriceCount} collectionName="materialPricesInventory" />}
       </Section>
 
       {/* 일괄 입력 모달 */}
@@ -1191,7 +1205,8 @@ function shiftMonthStr(m: string, delta: number): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
-function MaterialPriceDB({ onCountChange }: { onCountChange: (n: number) => void }) {
+function MaterialPriceDB({ onCountChange, collectionName = 'materialPricesMonthly' }: { onCountChange: (n: number) => void; collectionName?: string }) {
+  const COL = collectionName;
   const [month, setMonth] = useState(thisMonthStr());
   const [allDocs, setAllDocs] = useState<(MaterialPriceDoc & { month: string })[]>([]);
   const [search, setSearch] = useState('');
@@ -1203,7 +1218,7 @@ function MaterialPriceDB({ onCountChange }: { onCountChange: (n: number) => void
   const [migrating, setMigrating] = useState(false);
 
   useEffect(() => {
-    return onSnapshot(collection(db, 'materialPricesMonthly'), (snap) => {
+    return onSnapshot(collection(db, COL), (snap) => {
       const list: (MaterialPriceDoc & { month: string })[] = [];
       snap.forEach((d) => {
         const data = d.data() as { month?: string; name?: string; pricePerGram?: number; code?: string; updatedAt?: string };
@@ -1211,12 +1226,13 @@ function MaterialPriceDB({ onCountChange }: { onCountChange: (n: number) => void
       });
       setAllDocs(list);
     });
-  }, []);
+  }, [COL]);
 
-  // 레거시(flat) 단가 존재 여부 — 이전 버튼 표시용
+  // 레거시(flat) 단가 존재 여부 — 매입단가 컬렉션에서만 의미 있음
   useEffect(() => {
+    if (COL !== 'materialPricesMonthly') return;
     getCountFromServer(collection(db, 'materialPrices')).then((s) => setLegacyCount(s.data().count)).catch(() => {});
-  }, []);
+  }, [COL]);
 
   const prices = useMemo(
     () => allDocs.filter((d) => d.month === month).sort((a, b) => a.name.localeCompare(b.name)),
@@ -1231,14 +1247,14 @@ function MaterialPriceDB({ onCountChange }: { onCountChange: (n: number) => void
   }, [prices, search]);
 
   const updatePrice = async (id: string, v: number) => {
-    await setDoc(doc(db, 'materialPricesMonthly', id), { pricePerGram: v, updatedAt: new Date().toISOString() }, { merge: true });
+    await setDoc(doc(db, COL, id), { pricePerGram: v, updatedAt: new Date().toISOString() }, { merge: true });
   };
   const updateCode = async (id: string, code: string) => {
-    await setDoc(doc(db, 'materialPricesMonthly', id), { code: code.trim(), updatedAt: new Date().toISOString() }, { merge: true });
+    await setDoc(doc(db, COL, id), { code: code.trim(), updatedAt: new Date().toISOString() }, { merge: true });
   };
   const addOne = async () => {
     if (!newName.trim() || newPrice <= 0) return;
-    await setDoc(doc(db, 'materialPricesMonthly', priceDocId(month, newName)), {
+    await setDoc(doc(db, COL, priceDocId(month, newName)), {
       month, name: newName.trim(), pricePerGram: newPrice,
       ...(newCode.trim() ? { code: newCode.trim() } : {}),
       updatedAt: new Date().toISOString(),
@@ -1247,7 +1263,7 @@ function MaterialPriceDB({ onCountChange }: { onCountChange: (n: number) => void
   };
   const delPrice = async (id: string, name: string) => {
     if (!confirm(`[${month}] '${name}' 단가를 삭제할까요?`)) return;
-    await deleteDoc(doc(db, 'materialPricesMonthly', id));
+    await deleteDoc(doc(db, COL, id));
   };
 
   // 일괄 삭제 (이 月 전체 또는 검색결과)
@@ -1263,7 +1279,7 @@ function MaterialPriceDB({ onCountChange }: { onCountChange: (n: number) => void
       const CHUNK = 400;
       for (let i = 0; i < target.length; i += CHUNK) {
         const batch = writeBatch(db);
-        target.slice(i, i + CHUNK).forEach((p) => batch.delete(doc(db, 'materialPricesMonthly', p.id)));
+        target.slice(i, i + CHUNK).forEach((p) => batch.delete(doc(db, COL, p.id)));
         await batch.commit();
       }
       alert(`${target.length}개 삭제됨`);
@@ -1394,12 +1410,12 @@ function MaterialPriceDB({ onCountChange }: { onCountChange: (n: number) => void
           </div>
         </div>
       )}
-      {showImport && <PriceImportModal month={month} onClose={() => setShowImport(false)} />}
+      {showImport && <PriceImportModal month={month} collectionName={COL} onClose={() => setShowImport(false)} />}
     </div>
   );
 }
 
-function PriceImportModal({ month, onClose }: { month: string; onClose: () => void }) {
+function PriceImportModal({ month, onClose, collectionName = 'materialPricesMonthly' }: { month: string; onClose: () => void; collectionName?: string }) {
   const [text, setText] = useState('');
   const [saving, setSaving] = useState(false);
   const parsed = useMemo(() => {
@@ -1447,7 +1463,7 @@ function PriceImportModal({ month, onClose }: { month: string; onClose: () => vo
       for (let i = 0; i < parsed.length; i += CHUNK) {
         const batch = writeBatch(db);
         parsed.slice(i, i + CHUNK).forEach((p) => {
-          batch.set(doc(db, 'materialPricesMonthly', priceDocId(month, p.name)), {
+          batch.set(doc(db, collectionName, priceDocId(month, p.name)), {
             month, name: p.name, pricePerGram: p.price,
             ...(p.code ? { code: p.code } : {}),
             updatedAt: new Date().toISOString(),
