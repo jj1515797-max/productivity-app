@@ -403,6 +403,14 @@ export default function MaterialAnalysis2() {
         </div>
       )}
 
+      {/* 데이터 이상 감지 — 출고 합계가 이론 대비 비정상적으로 작으면 깨진 입력일 가능성 */}
+      {kpi && kpi.totalActualG > 0 && kpi.totalActualG < kpi.totalTheoG * 0.1 && (
+        <div className="bg-rose-50 border-2 border-rose-300 rounded-lg p-3 text-sm text-rose-800">
+          🚨 <b>출고 입력이 비정상적으로 작습니다</b> — 실제 출고 합계 {Math.round(kpi.totalActualG).toLocaleString()}g 가 이론 사용량 {Math.round(kpi.totalTheoG).toLocaleString()}g 의 10% 미만입니다.
+          이전에 천단위 콤마가 깨진 상태로 저장된 데이터일 수 있어요. <b>🗑️ 입력 초기화</b> 후 일괄입력을 다시 하거나 표에서 직접 수정하세요.
+        </div>
+      )}
+
       {/* KPI */}
       {kpi && (
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
@@ -436,7 +444,7 @@ export default function MaterialAnalysis2() {
                   <th className="border px-2 py-1.5 text-right w-28">이론사용량(g)</th>
                   <th className="border px-2 py-1.5 text-right w-32">실제 출고(g)</th>
                   <th className="border px-2 py-1.5 text-right w-20">수율%</th>
-                  <th className="border px-2 py-1.5 text-right w-28">기초단가(₩/g)</th>
+                  <th className="border px-2 py-1.5 text-right w-28" title="출고금액 입력 시 = 출고금액÷출고량, 미입력 시 = 기초단가">단가(₩/g)</th>
                   <th className="border px-2 py-1.5 text-right w-32">실제 출고금액(₩)</th>
                   <th className="border px-2 py-1.5 text-right w-28">실측원가(₩)</th>
                 </tr>
