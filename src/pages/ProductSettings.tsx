@@ -3,6 +3,7 @@ import { collection, deleteDoc, doc, getCountFromServer, getDocs, onSnapshot, se
 import { db } from '../firebase';
 import type { Material, ProductSetting } from '../types';
 import { canonicalShort, convertErpCode } from '../lib/codeUtil';
+import { CODE_KEY_PREFIX, normalizeCode, normalizeMaterialName } from '../lib/wasteCompute';
 
 type ProdType = '냄비' | '바트';
 
@@ -1412,17 +1413,17 @@ function MaterialPriceDB({ onCountChange, collectionName = 'materialPricesMonthl
           </div>
         </div>
       )}
-      {showImport && <PriceImportModal month={month} collectionName={COL} onClose={() => setShowImport(false)} />}
+      {showImport && <PriceImportModal month={month} collectionName={COL} withOutflow={COL === 'materialPricesInventory'} onClose={() => setShowImport(false)} />}
     </div>
   );
 }
 
-function PriceImportModal({ month, onClose, collectionName = 'materialPricesMonthly' }: { month: string; onClose: () => void; collectionName?: string }) {
+function PriceImportModal({ month, onClose, collectionName = 'materialPricesMonthly', withOutflow = false }: { month: string; onClose: () => void; collectionName?: string; withOutflow?: boolean }) {
   const [text, setText] = useState('');
   const [saving, setSaving] = useState(false);
   const parsed = useMemo(() => {
     const rows = text.trim().split('\n').map((l) => l.split(/[\t,]/).map((s) => s.trim()));
-    const list: { name: string; price: number; code: string }[] = [];
+    const list: { name: string; price: number; code: string; outflowG?: number; outflowAmt?: number }[] = [];
     if (rows.length === 0) return list;
 
     // 헤더 감지: 원재료/품목명 + 단가/가격 컬럼이 있는 행
@@ -1430,7 +1431,9 @@ function PriceImportModal({ month, onClose, collectionName = 'materialPricesMont
     const NAME_H = ['원재료', '원재료명', '품목명', '품명', 'name'];
     const PRICE_H = ['단가', '가격', 'price', 'g단가'];
     const CODE_H = ['원재료코드', 'erp코드', '원재료erp코드', '자재코드', '품목코드', '코드', 'code'];
-    let nameCol = 0, priceCol = 1, codeCol = -1, startRow = 0;
+    const OUTG_H = ['출고수량', '출고량', '실출고', '실사용량', '실제출고', '실제출고량', '실제출고수량', 'outflow', 'outflowg'];
+    const OUTAMT_H = ['출고금액', '실사용금액', '실제출고금액', '출고가액', 'amount', 'outflowamt'];
+    let nameCol = 0, priceCol = 1, codeCol = -1, outGCol = -1, outAmtCol = -1, startRow = 0;
     const hRow = rows.findIndex((r) => {
       const c = r.map(norm);
       return c.some((x) => NAME_H.includes(x)) && c.some((x) => PRICE_H.includes(x));
@@ -1440,10 +1443,18 @@ function PriceImportModal({ month, onClose, collectionName = 'materialPricesMont
       nameCol = h.findIndex((x) => NAME_H.includes(x));
       priceCol = h.findIndex((x) => PRICE_H.includes(x));
       codeCol = h.findIndex((x) => CODE_H.includes(x));
+      outGCol = h.findIndex((x) => OUTG_H.includes(x));
+      outAmtCol = h.findIndex((x) => OUTAMT_H.includes(x));
       startRow = hRow + 1;
     } else {
-      // 헤더 없음 → 위치 기반: 원재료명 [tab] 단가 [tab] 코드(선택)
-      nameCol = 0; priceCol = 1; codeCol = rows[0]?.length >= 3 ? 2 : -1;
+      // 헤더 없음 → 위치 기반: 원재료명 [tab] 단가 [tab] 코드 [tab] 출고수량 [tab] 출고금액
+      nameCol = 0; priceCol = 1;
+      const cols = rows[0]?.length || 0;
+      codeCol = cols >= 3 ? 2 : -1;
+      if (withOutflow) {
+        outGCol = cols >= 4 ? 3 : -1;
+        outAmtCol = cols >= 5 ? 4 : -1;
+      }
     }
 
     for (let i = startRow; i < rows.length; i++) {
@@ -1452,15 +1463,26 @@ function PriceImportModal({ month, onClose, collectionName = 'materialPricesMont
       const price = parseFloat((r[priceCol] || '').replace(/[^\d.]/g, ''));
       const code = codeCol >= 0 ? (r[codeCol] || '').trim() : '';
       if (!name || isNaN(price) || price < 0) continue;
-      list.push({ name, price, code });
+      const item: typeof list[number] = { name, price, code };
+      if (withOutflow) {
+        const og = outGCol >= 0 ? parseFloat((r[outGCol] || '').replace(/[^\d.]/g, '')) : NaN;
+        const oa = outAmtCol >= 0 ? parseFloat((r[outAmtCol] || '').replace(/[^\d.]/g, '')) : NaN;
+        if (!isNaN(og) && og > 0) item.outflowG = og;
+        if (!isNaN(oa) && oa > 0) item.outflowAmt = oa;
+      }
+      list.push(item);
     }
     return list;
-  }, [text]);
+  }, [text, withOutflow]);
+
+  // 미리보기/저장에 쓸 통계
+  const outflowCount = parsed.filter((p) => p.outflowG !== undefined).length;
 
   const save = async () => {
     if (parsed.length === 0) return;
     setSaving(true);
     try {
+      // 1) 단가 일괄 저장
       const CHUNK = 400;
       for (let i = 0; i < parsed.length; i += CHUNK) {
         const batch = writeBatch(db);
@@ -1473,13 +1495,33 @@ function PriceImportModal({ month, onClose, collectionName = 'materialPricesMont
         });
         await batch.commit();
       }
-      alert(`${month} 단가 ${parsed.length}개 저장됨`);
+
+      // 2) 출고 입력이 같이 있으면 materialOutflow/{month} 에 병합 저장
+      //    키 규칙은 MaterialAnalysis2 와 동일: 코드 우선(CODE_KEY_PREFIX + normalizeCode), 없으면 normalizeMaterialName
+      if (withOutflow && outflowCount > 0) {
+        const outflowGrams: Record<string, number> = {};
+        const outflowAmounts: Record<string, number> = {};
+        parsed.forEach((p) => {
+          if (p.outflowG === undefined && p.outflowAmt === undefined) return;
+          const key = p.code ? (CODE_KEY_PREFIX + normalizeCode(p.code)) : normalizeMaterialName(p.name);
+          if (p.outflowG !== undefined) outflowGrams[key] = p.outflowG;
+          if (p.outflowAmt !== undefined) outflowAmounts[key] = p.outflowAmt;
+        });
+        await setDoc(doc(db, 'materialOutflow', month), {
+          outflowGrams, outflowAmounts, updatedAt: new Date().toISOString(),
+        }, { merge: true });
+      }
+
+      const msg = withOutflow && outflowCount > 0
+        ? `${month} 단가 ${parsed.length}개 + 출고 ${outflowCount}건 저장됨`
+        : `${month} 단가 ${parsed.length}개 저장됨`;
+      alert(msg);
       onClose();
     } catch (e: any) {
       console.error('[PriceImport save]', e);
       const msg = String(e?.message || e);
       if (msg.includes('permission') || msg.includes('PERMISSION_DENIED') || msg.includes('Missing or insufficient')) {
-        alert(`저장 실패 — Firestore 보안 규칙에서 컬렉션 '${collectionName}' 쓰기가 막혀 있습니다.\n\nFirebase Console > Firestore > 규칙 에서 아래 줄을 추가하세요:\n\nmatch /${collectionName}/{doc} {\n  allow read, write: if request.auth != null;\n}`);
+        alert(`저장 실패 — Firestore 보안 규칙에서 컬렉션 쓰기가 막혀 있습니다.\n\nFirebase Console > Firestore > 규칙 에서 아래 줄을 추가하세요:\n\nmatch /${collectionName}/{doc} {\n  allow read, write: if request.auth != null;\n}${withOutflow ? `\n\nmatch /materialOutflow/{doc} {\n  allow read, write: if request.auth != null;\n}` : ''}`);
       } else {
         alert(`저장 실패: ${msg}`);
       }
@@ -1488,28 +1530,38 @@ function PriceImportModal({ month, onClose, collectionName = 'materialPricesMont
 
   return (
     <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
-      <div className="bg-white rounded-xl shadow-2xl w-full max-w-xl overflow-hidden flex flex-col max-h-[92vh]">
+      <div className={`bg-white rounded-xl shadow-2xl w-full ${withOutflow ? 'max-w-3xl' : 'max-w-xl'} overflow-hidden flex flex-col max-h-[92vh]`}>
         <div className="px-5 py-4 border-b flex items-center justify-between bg-blue-50">
-          <h3 className="font-bold text-gray-800">📋 {month} 단가 일괄 입력</h3>
+          <h3 className="font-bold text-gray-800">📋 {month} {withOutflow ? '기초단가·출고 일괄 입력' : '단가 일괄 입력'}</h3>
           <button onClick={onClose} className="w-7 h-7 rounded-full hover:bg-gray-200 text-gray-500">×</button>
         </div>
         <div className="flex-1 overflow-y-auto p-5 space-y-3">
           <div className="text-xs text-gray-600 bg-slate-50 p-3 rounded border">
-            <b className="text-amber-700">{month}</b> 단가로 저장됩니다. 한 줄에 한 원재료. 형식: <code className="bg-white px-1 rounded">원재료명 [탭] 단가 [탭] 원재료코드(선택)</code><br />
+            <b className="text-amber-700">{month}</b> {withOutflow ? '기초단가 + 출고' : '단가'}로 저장됩니다. 한 줄에 한 원재료.<br />
+            형식: <code className="bg-white px-1 rounded">원재료명 [탭] 단가 [탭] 원재료코드 {withOutflow ? '[탭] 출고수량(g) [탭] 출고금액(₩)' : '(선택)'}</code><br />
             <b className="text-blue-700">원재료코드</b>를 넣으면 레시피와 코드로 매칭돼요 (이름이 조금 달라도 OK).
-            헤더 줄(원재료명/단가/코드)을 같이 붙여도 자동 인식합니다.
+            헤더 줄(원재료명/단가/코드{withOutflow ? '/출고수량/출고금액' : ''})을 같이 붙여도 자동 인식합니다.
+            {withOutflow && <><br/><b className="text-indigo-700">출고수량·출고금액은 선택</b> — 비워두면 분석2 페이지에서 직접 입력하셔도 돼요. 두 값 다 있으면 단위원가는 출고금액/출고수량으로 계산됩니다.</>}
           </div>
           <textarea value={text} onChange={(e) => setText(e.target.value)}
-            placeholder={'캐슈넛(인도산)\t23.18\tM0123\n닭가슴살(무항생제)\t5.00\tM0456\n무\t4.00'}
+            placeholder={withOutflow
+              ? '캐슈넛(인도산)\t23.18\tM0123\t1200\t27816\n닭가슴살(무항생제)\t5.00\tM0456\t8500\t42500\n무\t4.00'
+              : '캐슈넛(인도산)\t23.18\tM0123\n닭가슴살(무항생제)\t5.00\tM0456\n무\t4.00'}
             className="w-full h-48 border rounded p-2 text-xs font-mono" />
           {text.trim() && (
             <div className="text-xs">
-              <div className="font-bold mb-1">미리보기 ({parsed.length}개)</div>
+              <div className="font-bold mb-1">
+                미리보기 ({parsed.length}개{withOutflow && outflowCount > 0 ? ` · 출고 ${outflowCount}건` : ''})
+              </div>
               {parsed.slice(0, 8).map((p, i) => (
                 <div key={i} className="border-t py-1 flex justify-between gap-2">
-                  <span className="flex-1">{p.name}</span>
-                  <span className="font-mono text-gray-400">{p.code || '-'}</span>
+                  <span className="flex-1 truncate">{p.name}</span>
+                  <span className="font-mono text-gray-400 w-20 text-right">{p.code || '-'}</span>
                   <span className="font-mono w-20 text-right">{p.price} ₩/g</span>
+                  {withOutflow && <>
+                    <span className={`font-mono w-20 text-right ${p.outflowG ? 'text-indigo-600' : 'text-gray-300'}`}>{p.outflowG ? p.outflowG.toLocaleString() + 'g' : '-'}</span>
+                    <span className={`font-mono w-24 text-right ${p.outflowAmt ? 'text-indigo-600' : 'text-gray-300'}`}>{p.outflowAmt ? p.outflowAmt.toLocaleString() + '원' : '-'}</span>
+                  </>}
                 </div>
               ))}
               {parsed.length > 8 && <div className="text-gray-400">... 외 {parsed.length - 8}개</div>}
