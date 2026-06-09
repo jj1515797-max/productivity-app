@@ -1473,6 +1473,14 @@ function PriceImportModal({ month, onClose, collectionName = 'materialPricesMont
       }
       alert(`${month} 단가 ${parsed.length}개 저장됨`);
       onClose();
+    } catch (e: any) {
+      console.error('[PriceImport save]', e);
+      const msg = String(e?.message || e);
+      if (msg.includes('permission') || msg.includes('PERMISSION_DENIED') || msg.includes('Missing or insufficient')) {
+        alert(`저장 실패 — Firestore 보안 규칙에서 컬렉션 '${collectionName}' 쓰기가 막혀 있습니다.\n\nFirebase Console > Firestore > 규칙 에서 아래 줄을 추가하세요:\n\nmatch /${collectionName}/{doc} {\n  allow read, write: if request.auth != null;\n}`);
+      } else {
+        alert(`저장 실패: ${msg}`);
+      }
     } finally { setSaving(false); }
   };
 
