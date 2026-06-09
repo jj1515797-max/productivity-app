@@ -1193,7 +1193,9 @@ function normalizeName(n: string): string {
   return (n || '').trim().toLowerCase().replace(/\s+/g, '');
 }
 function priceDocId(month: string, name: string): string {
-  return `${month}__${normalizeName(name)}`;
+  // Firestore doc ID 제약: '/' 금지, '.', '__' 도 시스템 예약. 슬래시·점·#·?·[·] 등을 _ 로 치환
+  const safe = normalizeName(name).replace(/[\/\.#\?\[\]\*]/g, '_');
+  return `${month}__${safe}`;
 }
 function thisMonthStr(): string {
   const d = new Date();
