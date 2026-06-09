@@ -849,7 +849,7 @@ export default function MaterialAnalysis() {
           {/* 🎯 Flexed Budget 연동 분석 */}
           <div className="bg-white border rounded-lg overflow-hidden">
             <div className="px-4 py-2.5 border-b bg-indigo-50 font-bold text-gray-800 text-sm flex items-center gap-2 flex-wrap">
-              <span>🎯 전월 대비 연동 예산 차이 분석</span>
+              <span>🎯 {monthA} vs {monthB} 연동 예산 차이 분석</span>
               <span className="text-xs text-indigo-600 font-normal">두 월 모두 {monthB} 단가 · {scaleBy === 'amount' ? '생산금액' : '총생산량'} 기준 연동</span>
               <span className="text-xs text-gray-400 font-normal ml-auto">＋효율↑ / －낭비</span>
             </div>
@@ -865,6 +865,8 @@ export default function MaterialAnalysis() {
                     <th className="border px-2 py-1.5 text-right w-28">{monthB} 금액</th>
                     <th className="border px-2 py-1.5 text-right w-28">연동 대비 차액</th>
                     <th className="border px-2 py-1.5 text-right w-20">차이율</th>
+                    <th className="border px-2 py-1.5 text-right w-28">{monthA}→{monthB}<br/><span className="font-normal text-[10px] text-gray-400">전월대비(실제)</span></th>
+                    <th className="border px-2 py-1.5 text-right w-24">원가율<br/><span className="font-normal text-[10px] text-gray-400">생산금액대비</span></th>
                     <th className="border px-2 py-1.5 text-right w-16">B비중</th>
                   </tr>
                 </thead>
@@ -872,6 +874,12 @@ export default function MaterialAnalysis() {
                   {flexed.map((r, idx) => {
                     const noPrice = !r.hasPrice;
                     const diffClass = r.diffCost > 0 ? 'text-emerald-700 bg-emerald-50' : r.diffCost < 0 ? 'text-rose-700 bg-rose-50' : 'text-gray-400';
+                    const realDiff = r.bCost - r.aCost;                 // 전월대비 실제 증감 (연동 X)
+                    const realPct = r.aCost > 0 ? (realDiff / r.aCost) * 100 : (r.bCost > 0 ? 100 : 0);
+                    const realCls = realDiff > 0 ? 'text-rose-700' : realDiff < 0 ? 'text-emerald-700' : 'text-gray-400';
+                    const aAmt = Number(aAmount) || 0, bAmt = Number(bAmount) || 0;  // 생산금액
+                    const aRate = aAmt > 0 ? (r.aCost / aAmt) * 100 : null;
+                    const bRate = bAmt > 0 ? (r.bCost / bAmt) * 100 : null;
                     return (
                       <tr key={r.key} className="border-t">
                         <td className="border px-2 py-1 text-center text-gray-500">{idx + 1}</td>
@@ -885,6 +893,16 @@ export default function MaterialAnalysis() {
                         <td className="border px-2 py-1 text-right">{Math.round(r.bCost).toLocaleString()}</td>
                         <td className={`border px-2 py-1 text-right font-bold ${diffClass}`}>{r.diffCost > 0 ? '+' : ''}{Math.round(r.diffCost).toLocaleString()}</td>
                         <td className={`border px-2 py-1 text-right font-semibold ${diffClass}`}>{r.diffPct > 0 ? '+' : ''}{r.diffPct.toFixed(1)}%</td>
+                        <td className={`border px-2 py-1 text-right ${realCls}`}>
+                          <div className="font-semibold">{realDiff > 0 ? '+' : ''}{Math.round(realDiff).toLocaleString()}</div>
+                          <div className="text-[10px]">{realPct > 0 ? '+' : ''}{realPct.toFixed(1)}%</div>
+                        </td>
+                        <td className="border px-2 py-1 text-right text-gray-600 whitespace-nowrap">
+                          {aRate === null ? '-' : `${aRate.toFixed(1)}%`}<span className="text-gray-300 mx-0.5">→</span>{bRate === null ? '-' : `${bRate.toFixed(1)}%`}
+                          {aRate !== null && bRate !== null && (
+                            <div className={`text-[10px] ${bRate - aRate > 0 ? 'text-rose-600' : bRate - aRate < 0 ? 'text-emerald-600' : 'text-gray-400'}`}>{bRate - aRate > 0 ? '+' : ''}{(bRate - aRate).toFixed(1)}%p</div>
+                          )}
+                        </td>
                         <td className="border px-2 py-1 text-right text-gray-500">{r.bSharePct.toFixed(1)}%</td>
                       </tr>
                     );
@@ -898,6 +916,22 @@ export default function MaterialAnalysis() {
                     <td className="border px-2 py-1.5 text-right">{Math.round(flexBtotal).toLocaleString()}</td>
                     <td className={`border px-2 py-1.5 text-right ${flexDiffTotal >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{flexDiffTotal > 0 ? '+' : ''}{Math.round(flexDiffTotal).toLocaleString()}</td>
                     <td className={`border px-2 py-1.5 text-right ${flexDiffPct >= 0 ? 'text-emerald-700' : 'text-rose-700'}`}>{flexDiffPct > 0 ? '+' : ''}{flexDiffPct.toFixed(1)}%</td>
+                    {(() => {
+                      const realDiffTot = flexBtotal - flexAtotal;
+                      const realPctTot = flexAtotal > 0 ? (realDiffTot / flexAtotal) * 100 : 0;
+                      const aAmt = Number(aAmount) || 0, bAmt = Number(bAmount) || 0;
+                      const aRate = aAmt > 0 ? (flexAtotal / aAmt) * 100 : null;
+                      const bRate = bAmt > 0 ? (flexBtotal / bAmt) * 100 : null;
+                      return <>
+                        <td className={`border px-2 py-1.5 text-right ${realDiffTot > 0 ? 'text-rose-700' : 'text-emerald-700'}`}>
+                          <div>{realDiffTot > 0 ? '+' : ''}{Math.round(realDiffTot).toLocaleString()}</div>
+                          <div className="text-[10px] font-normal">{realPctTot > 0 ? '+' : ''}{realPctTot.toFixed(1)}%</div>
+                        </td>
+                        <td className="border px-2 py-1.5 text-right text-gray-600 whitespace-nowrap">
+                          {aRate === null ? '-' : `${aRate.toFixed(1)}%`}<span className="text-gray-300 mx-0.5">→</span>{bRate === null ? '-' : `${bRate.toFixed(1)}%`}
+                        </td>
+                      </>;
+                    })()}
                     <td className="border"></td>
                   </tr>
                 </tfoot>
