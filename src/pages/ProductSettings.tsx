@@ -1422,7 +1422,9 @@ function PriceImportModal({ month, onClose, collectionName = 'materialPricesMont
   const [text, setText] = useState('');
   const [saving, setSaving] = useState(false);
   const parsed = useMemo(() => {
-    const rows = text.trim().split('\n').map((l) => l.split(/[\t,]/).map((s) => s.trim()));
+    // 탭이 있으면 탭으로만 분리(숫자 천단위 콤마 보존), 없으면 콤마로 분리
+    const splitLine = (l: string) => (l.includes('\t') ? l.split('\t') : l.split(',')).map((s) => s.trim());
+    const rows = text.trim().split('\n').map(splitLine);
     const list: { name: string; price: number; code: string; outflowG?: number; outflowAmt?: number }[] = [];
     if (rows.length === 0) return list;
 

@@ -97,6 +97,7 @@ export default function MaterialAnalysis2() {
   const [recipeMap, setRecipeMap] = useState<Map<string, Recipe>>(new Map());
   const [ambientRecipeMap, setAmbientRecipeMap] = useState<Map<string, AmbientRecipe>>(new Map());
   const [basePriceMap, setBasePriceMap] = useState<Map<string, number>>(new Map());  // 기초단가 (materialPricesInventory)
+  const [baseNameMap, setBaseNameMap] = useState<Map<string, string>>(new Map());    // 키 → 단가표상 이름
 
   // 이름 별칭 — 분석1과 동일 키 (localStorage matAnalysis:nameOverrides)
   const [nameOverrides, setNameOverrides] = useState<Record<string, string>>(() => {
@@ -137,28 +138,42 @@ export default function MaterialAnalysis2() {
   useEffect(() => {
     return onSnapshot(collection(db, 'materialPricesInventory'), (snap) => {
       const m = new Map<string, number>();
+      const nm = new Map<string, string>();
       snap.forEach((d) => {
         const data = d.data() as { month?: string; name?: string; pricePerGram?: number; code?: string };
         const mo = data.month || '';
         if (!mo) return;
         const price = Number(data.pricePerGram) || 0;
-        if (data.name) m.set(monthPriceKey(mo, normalizeMaterialName(data.name)), price);
-        if (data.code) m.set(monthPriceKey(mo, CODE_KEY_PREFIX + normalizeCode(data.code)), price);
+        if (data.name) { const k = monthPriceKey(mo, normalizeMaterialName(data.name)); m.set(k, price); nm.set(k, data.name); }
+        if (data.code) { const k = monthPriceKey(mo, CODE_KEY_PREFIX + normalizeCode(data.code)); m.set(k, price); if (data.name) nm.set(k, data.name); }
       });
       setBasePriceMap(m);
+      setBaseNameMap(nm);
     });
   }, []);
 
   // 월별 기초단가 → 이번달 단가 슬라이스 (key without month prefix → 통일 키)
+  // monthPriceKey 는 `${month}|${innerKey}` 형식 (구분자 '|')
   const monthBasePrice = useMemo(() => {
     const out = new Map<string, number>();
+    const prefix = `${month}|`;
     basePriceMap.forEach((v, k) => {
-      const prefix = `${month}__`;
       if (!k.startsWith(prefix)) return;
       out.set(k.slice(prefix.length), v);
     });
     return out;
   }, [basePriceMap, month]);
+  // 키 → 단가표상 이름 (분배불가/표시 보강용)
+  const monthBaseName = useMemo(() => {
+    const out = new Map<string, string>();
+    const prefix = `${month}|`;
+    baseNameMap.forEach((v, k) => {
+      if (!k.startsWith(prefix)) return;
+      out.set(k.slice(prefix.length), v);
+    });
+    return out;
+  }, [baseNameMap, month]);
+  const orphanLabel = (key: string) => monthBaseName.get(key) || key.replace(CODE_KEY_PREFIX, '코드 ');
 
   // 사용자 입력 출고량 Firestore 로드 (월별)
   useEffect(() => {
@@ -476,7 +491,8 @@ export default function MaterialAnalysis2() {
             <table className="w-full text-xs">
               <thead className="bg-rose-100 text-gray-700">
                 <tr>
-                  <th className="border px-2 py-1.5 text-left">키</th>
+                  <th className="border px-2 py-1.5 text-left">원재료</th>
+                  <th className="border px-2 py-1.5 text-left w-40">키</th>
                   <th className="border px-2 py-1.5 text-right w-28">출고(g)</th>
                   <th className="border px-2 py-1.5 text-right w-28">금액(₩)</th>
                 </tr>
@@ -484,7 +500,8 @@ export default function MaterialAnalysis2() {
               <tbody>
                 {result.orphans.map((o) => (
                   <tr key={o.key} className="border-t">
-                    <td className="border px-2 py-1 font-mono">{o.key}</td>
+                    <td className="border px-2 py-1 font-semibold">{orphanLabel(o.key)}</td>
+                    <td className="border px-2 py-1 font-mono text-gray-400 text-[11px]">{o.key}</td>
                     <td className="border px-2 py-1 text-right">{Math.round(o.actualG).toLocaleString()}</td>
                     <td className="border px-2 py-1 text-right">{Math.round(o.totalCost).toLocaleString()}</td>
                   </tr>
