@@ -1325,7 +1325,7 @@ function MaterialPriceDB({ onCountChange, collectionName = 'materialPricesMonthl
         <input type="month" value={month} onChange={(e) => e.target.value && setMonth(e.target.value)}
           className="border rounded px-2 py-1 text-sm font-bold" />
         <button onClick={() => setMonth(shiftMonthStr(month, 1))} className="w-7 h-7 rounded hover:bg-amber-100">▶</button>
-        <span className="text-xs text-amber-700">이 달 단가는 {month} 폐기금액 계산에 사용됩니다</span>
+        <span className="text-xs text-amber-700">{COL === 'materialPricesMonthly' ? `이 달 단가는 ${month} 폐기금액 계산에 사용됩니다` : `이 달 단가는 ${month} 원재료분석2의 기초단가로 사용됩니다`}</span>
         {legacyCount > 0 && (
           <button onClick={migrateLegacy} disabled={migrating}
             className="ml-auto px-3 py-1.5 text-xs rounded bg-purple-600 text-white font-semibold hover:bg-purple-700 disabled:bg-gray-300">
