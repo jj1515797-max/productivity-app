@@ -83,8 +83,8 @@ export default function MaterialAnalysis2() {
   const tm = thisMonth();
   const [month, setMonth] = useState(shiftMonth(tm, -1));
   const [running, setRunning] = useState(false);
-  const [, setRaw] = useState<RawMonth | null>(null);
-  const [, setProd] = useState<MonthlyProduction | null>(null);
+  const [raw, setRaw] = useState<RawMonth | null>(null);
+  const [prod, setProd] = useState<MonthlyProduction | null>(null);
   const [byIng, setByIng] = useState<Map<string, IngTheoretical> | null>(null);
   const [result, setResult] = useState<AllocationResult | null>(null);
   const [outflowG, setOutflowG] = useState<Record<string, number>>({});
@@ -235,6 +235,17 @@ export default function MaterialAnalysis2() {
     setOutflowG({}); setOutflowAmt({});
     saveOutflow({ outflowGrams: {}, outflowAmounts: {} });
   };
+
+  // 레시피/실온레시피 DB가 (분석 시작 후에도) 변경되면 byIng 자동 재계산
+  useEffect(() => {
+    if (!raw || !prod) return;
+    const nameByCode = new Map<string, string>();
+    raw.items.forEach((it) => {
+      const k = canonicalShort(it.code || '');
+      if (k && it.name) nameByCode.set(k, it.name);
+    });
+    setByIng(computeTheoreticalByProduct(prod.coldByCode, raw.ambient, recipeMap, ambientRecipeMap, nameByCode));
+  }, [recipeMap, ambientRecipeMap, raw, prod]);
 
   // 결과 재계산 (byIng + outflow + price 변화 시)
   useEffect(() => {

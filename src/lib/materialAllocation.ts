@@ -161,7 +161,9 @@ export function allocateActualOutflow(
     byIngByName.set(n, arr);
   });
 
-  // 0-2) outflow 키 정규화: BOM 에 없는 코드키 + 이름이 유일 매칭되면 BOM 키로 흡수
+  // 0-2) outflow 키 정규화: BOM 에 없는 코드키 → 이름으로 BOM 흡수
+  //   - 단일 매칭: 그 BOM 키에 그대로 흡수
+  //   - 다중 매칭: 각 BOM 후보의 이론 g 비율로 자동 분배 (같은 이름·다른 코드가 BOM에 섞여있는 과도기 대응)
   const effG: Record<string, number> = { ...outflowGrams };
   const effAmt: Record<string, number> = { ...outflowAmounts };
   const remapMeta = new Map<string, string>();  // BOM key → 원래 입력 키 (UI 안내)
@@ -170,13 +172,26 @@ export function allocateActualOutflow(
     const inputName = outflowNames?.get(k);
     if (!inputName) return;
     const candidates = byIngByName.get(normalizeMaterialName(inputName)) || [];
-    if (candidates.length !== 1) return;
-    const target = candidates[0];
-    effG[target] = (effG[target] || 0) + Number(g);
-    if (outflowAmounts[k]) effAmt[target] = (effAmt[target] || 0) + Number(outflowAmounts[k]);
+    if (candidates.length === 0) return;
+    const amt = Number(outflowAmounts[k] || 0);
+    if (candidates.length === 1) {
+      const target = candidates[0];
+      effG[target] = (effG[target] || 0) + Number(g);
+      if (amt) effAmt[target] = (effAmt[target] || 0) + amt;
+      remapMeta.set(target, k);
+    } else {
+      const totalTheo = candidates.reduce((s, c) => s + (byIng.get(c)?.theoreticalGrams || 0), 0);
+      if (totalTheo <= 0) return;  // 후보 모두 이론 0 → 분배 못함 → orphan
+      candidates.forEach((c) => {
+        const w = (byIng.get(c)?.theoreticalGrams || 0) / totalTheo;
+        if (w <= 0) return;
+        effG[c] = (effG[c] || 0) + Number(g) * w;
+        if (amt) effAmt[c] = (effAmt[c] || 0) + amt * w;
+        remapMeta.set(c, k);
+      });
+    }
     delete effG[k];
     delete effAmt[k];
-    remapMeta.set(target, k);
   });
 
   // 1) 모든 이론 원재료 순회
