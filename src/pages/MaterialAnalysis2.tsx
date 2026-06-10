@@ -10,6 +10,7 @@ import { computeMonthlyProduction } from '../lib/monthlyProduction';
 import type { MonthlyProduction } from '../lib/monthlyProduction';
 import { allocateActualOutflow, computeTheoreticalByProduct } from '../lib/materialAllocation';
 import type { AllocationResult, IngTheoretical } from '../lib/materialAllocation';
+import { expandAmbientRecipeMap, expandRecipeMap } from '../lib/bomExpansion';
 
 /* ===== 캐시 ===== */
 const PREFIX = 'matAnalysis2:';
@@ -96,6 +97,11 @@ export default function MaterialAnalysis2() {
   // 분석1과 동일하게 마스터 DB 구독
   const [recipeMap, setRecipeMap] = useState<Map<string, Recipe>>(new Map());
   const [ambientRecipeMap, setAmbientRecipeMap] = useState<Map<string, AmbientRecipe>>(new Map());
+  const [subRecipeMap, setSubRecipeMap] = useState<Map<string, Recipe>>(new Map());
+  const [expandSub, setExpandSub] = useState<boolean>(() => {
+    try { return JSON.parse(localStorage.getItem('matAnalysis:expandSub') || 'true'); } catch { return true; }
+  });
+  useEffect(() => { try { localStorage.setItem('matAnalysis:expandSub', JSON.stringify(expandSub)); } catch {} }, [expandSub]);
   const [basePriceMap, setBasePriceMap] = useState<Map<string, number>>(new Map());  // 기초단가 (materialPricesInventory)
   const [baseNameMap, setBaseNameMap] = useState<Map<string, string>>(new Map());    // 키 → 단가표상 이름
 
@@ -123,6 +129,17 @@ export default function MaterialAnalysis2() {
         m.set(d.id.toLowerCase(), { ...data, code: d.id });
       });
       setRecipeMap(m);
+    });
+  }, []);
+  useEffect(() => {
+    return onSnapshot(collection(db, 'subRecipes'), (snap) => {
+      const m = new Map<string, Recipe>();
+      snap.forEach((d) => {
+        const data = d.data() as Recipe;
+        m.set(d.id, { ...data, code: d.id });
+        m.set(d.id.toLowerCase(), { ...data, code: d.id });
+      });
+      setSubRecipeMap(m);
     });
   }, []);
   useEffect(() => {
@@ -214,7 +231,7 @@ export default function MaterialAnalysis2() {
         const k = canonicalShort(it.code || '');
         if (k && it.name) nameByCode.set(k, it.name);
       });
-      const ing = computeTheoreticalByProduct(p.coldByCode, r.ambient, recipeMap, ambientRecipeMap, nameByCode);
+      const ing = computeTheoreticalByProduct(p.coldByCode, r.ambient, effRecipeMap, effAmbientRecipeMap, nameByCode);
       setByIng(ing);
     } catch (e: any) {
       console.error('[MaterialAnalysis2]', e);
@@ -236,7 +253,11 @@ export default function MaterialAnalysis2() {
     saveOutflow({ outflowGrams: {}, outflowAmounts: {} });
   };
 
-  // 레시피/실온레시피 DB가 (분석 시작 후에도) 변경되면 byIng 자동 재계산
+  // 반제품 펼침 옵션에 따라 effective recipe map 산출
+  const effRecipeMap = useMemo(() => (expandSub ? expandRecipeMap(recipeMap, subRecipeMap) : recipeMap), [recipeMap, subRecipeMap, expandSub]);
+  const effAmbientRecipeMap = useMemo(() => (expandSub ? expandAmbientRecipeMap(ambientRecipeMap, subRecipeMap) : ambientRecipeMap), [ambientRecipeMap, subRecipeMap, expandSub]);
+
+  // 레시피/실온레시피/반제품 DB가 (분석 시작 후에도) 변경되면 byIng 자동 재계산
   useEffect(() => {
     if (!raw || !prod) return;
     const nameByCode = new Map<string, string>();
@@ -244,8 +265,8 @@ export default function MaterialAnalysis2() {
       const k = canonicalShort(it.code || '');
       if (k && it.name) nameByCode.set(k, it.name);
     });
-    setByIng(computeTheoreticalByProduct(prod.coldByCode, raw.ambient, recipeMap, ambientRecipeMap, nameByCode));
-  }, [recipeMap, ambientRecipeMap, raw, prod]);
+    setByIng(computeTheoreticalByProduct(prod.coldByCode, raw.ambient, effRecipeMap, effAmbientRecipeMap, nameByCode));
+  }, [effRecipeMap, effAmbientRecipeMap, raw, prod]);
 
   // 결과 재계산 (byIng + outflow + price 변화 시)
   useEffect(() => {
@@ -267,6 +288,36 @@ export default function MaterialAnalysis2() {
     setOutflowAmt(next);
     saveOutflow({ outflowAmounts: next });
   };
+
+  // 원재료별 총 실제 출고량 — 분배% 계산용 + 검증
+  const totalActualByIngKey = useMemo(() => {
+    const m = new Map<string, number>();
+    result?.perIng.forEach((r) => m.set(r.key, r.actualG));
+    return m;
+  }, [result]);
+
+  // 검증: 각 원재료의 Σ 제품 분배g 이 실제 출고g 과 일치하는지 (실수 누적 오차 허용)
+  const verifyRows = useMemo(() => {
+    if (!result) return [] as { name: string; code?: string; actualG: number; sumG: number; diff: number; pct: number }[];
+    const sumByIng = new Map<string, number>();
+    result.perProduct.forEach((p) => p.breakdown.forEach((b) => sumByIng.set(b.ingKey, (sumByIng.get(b.ingKey) || 0) + b.actualG)));
+    return result.perIng
+      .filter((r) => r.actualG > 0)
+      .map((r) => {
+        const sumG = sumByIng.get(r.key) || 0;
+        const diff = sumG - r.actualG;
+        const pct = r.actualG > 0 ? (Math.abs(diff) / r.actualG) * 100 : 0;
+        return { name: r.name, code: r.code, actualG: r.actualG, sumG, diff, pct };
+      });
+  }, [result]);
+  const verifySummary = useMemo(() => {
+    if (verifyRows.length === 0) return null;
+    const maxPct = Math.max(...verifyRows.map((r) => r.pct), 0);
+    const totalActual = verifyRows.reduce((s, r) => s + r.actualG, 0);
+    const totalSum = verifyRows.reduce((s, r) => s + r.sumG, 0);
+    const offenders = verifyRows.filter((r) => r.pct > 0.5).sort((a, b) => b.pct - a.pct).slice(0, 5);
+    return { maxPct, totalActual, totalSum, offenders };
+  }, [verifyRows]);
 
   const filteredPerIng = useMemo(() => {
     if (!result) return [];
@@ -397,6 +448,13 @@ export default function MaterialAnalysis2() {
         <span className="text-xs text-gray-500">기준월</span>
         <input type="month" value={month} onChange={(e) => e.target.value && setMonth(e.target.value)}
           className="border rounded px-2 py-1 text-sm font-bold" />
+        {subRecipeMap.size > 0 && (
+          <label className="flex items-center gap-1.5 text-xs px-2 py-1 rounded border bg-emerald-50 cursor-pointer hover:bg-emerald-100" title="반제품(순수본베이스/디포리육수 등)을 원물 단위로 자동 분해해 계산">
+            <input type="checkbox" checked={expandSub} onChange={(e) => setExpandSub(e.target.checked)} />
+            <span className="font-semibold text-emerald-700">🧪 반제품 펼침</span>
+            <span className="text-emerald-500">({expandSub ? '원물 단위' : '반제품 단위'})</span>
+          </label>
+        )}
         <div className="ml-auto flex items-center gap-1.5">
           <button onClick={() => runAnalysis(true)} disabled={running} title="캐시 무시" className="px-2.5 py-1 text-xs rounded border hover:bg-gray-50 disabled:opacity-50">🔄</button>
           <button onClick={downloadXlsx} disabled={!result} className="px-3 py-1.5 text-xs rounded bg-emerald-600 text-white font-semibold hover:bg-emerald-700 disabled:bg-gray-300">📥 엑셀</button>
@@ -548,6 +606,24 @@ export default function MaterialAnalysis2() {
         </div>
       )}
 
+      {/* 분배 검증 — 각 원재료의 Σ제품 분배g = 실측 출고g 인지 */}
+      {verifySummary && (
+        <div className={`border-2 rounded-lg p-3 text-sm ${verifySummary.maxPct < 0.001 ? 'bg-emerald-50 border-emerald-200' : verifySummary.maxPct < 0.5 ? 'bg-blue-50 border-blue-200' : 'bg-amber-50 border-amber-300'}`}>
+          <div className="font-bold text-gray-800 mb-1">🔬 분배 검증</div>
+          <div className="text-xs text-gray-700">
+            전체 {verifyRows.length}개 원재료의 <b>Σ(제품별 분배 g)</b> = {Math.round(verifySummary.totalSum).toLocaleString()}g, <b>입력 실측 출고</b> 합계 = {Math.round(verifySummary.totalActual).toLocaleString()}g
+            <span className="ml-2 font-mono">(최대 오차 {verifySummary.maxPct.toFixed(4)}%)</span>
+          </div>
+          {verifySummary.maxPct < 0.001
+            ? <div className="text-xs text-emerald-700 mt-1">✓ 모든 원재료의 분배 합이 실측 출고와 정확히 일치합니다 (분배 무손실)</div>
+            : verifySummary.maxPct < 0.5
+              ? <div className="text-xs text-blue-700 mt-1">✓ 부동소수점 누적 오차 범위 내 (실질적으로 일치)</div>
+              : <div className="text-xs text-amber-700 mt-1">
+                  ⚠️ 분배 오차 큰 원재료: {verifySummary.offenders.map((o) => `${o.name}(${o.pct.toFixed(1)}%)`).join(', ')}
+                </div>}
+        </div>
+      )}
+
       {/* 제품별 원재료 원가 */}
       {result && (
         <div className="bg-white border-2 border-emerald-200 rounded-lg overflow-hidden">
@@ -593,19 +669,25 @@ export default function MaterialAnalysis2() {
                                 <tr>
                                   <th className="text-left px-2">원재료</th>
                                   <th className="text-right px-2 w-28">분배 g</th>
+                                  <th className="text-right px-2 w-16">분배 %</th>
                                   <th className="text-right px-2 w-28">원가(₩)</th>
                                   <th className="text-right px-2 w-20">EA당(₩)</th>
                                 </tr>
                               </thead>
                               <tbody>
-                                {p.breakdown.map((b) => (
+                                {p.breakdown.map((b) => {
+                                  const total = totalActualByIngKey.get(b.ingKey) || 0;
+                                  const pct = total > 0 ? (b.actualG / total) * 100 : 0;
+                                  return (
                                   <tr key={b.ingKey} className="border-t border-gray-200">
                                     <td className="px-2 py-0.5">{displayName(b.ingKey, b.name)}</td>
                                     <td className="px-2 py-0.5 text-right">{Math.round(b.actualG).toLocaleString()}</td>
+                                    <td className="px-2 py-0.5 text-right text-gray-500">{pct.toFixed(2)}%</td>
                                     <td className="px-2 py-0.5 text-right">{Math.round(b.cost).toLocaleString()}</td>
                                     <td className="px-2 py-0.5 text-right">{p.productionQty > 0 ? Math.round(b.cost / p.productionQty).toLocaleString() : '-'}</td>
                                   </tr>
-                                ))}
+                                  );
+                                })}
                               </tbody>
                             </table>
                           </td>

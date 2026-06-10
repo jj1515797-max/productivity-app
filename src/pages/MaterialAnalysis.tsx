@@ -10,6 +10,7 @@ import { computeFlexedDiff, computeIngredientStageUsage, computeMonthlyUsage, di
 import type { DiffRow, FlexedRow, IngredientStageRow, UsageResult } from '../lib/materialUsage';
 import { computeMonthlyProduction, filterProduction, STAGE_COLOR, STAGE_LETTERS } from '../lib/monthlyProduction';
 import type { MonthlyProduction } from '../lib/monthlyProduction';
+import { expandAmbientRecipeMap, expandRecipeMap } from '../lib/bomExpansion';
 
 /* ===== 캐시 ===== */
 const PREFIX = 'matAnalysis:';
@@ -130,6 +131,11 @@ export default function MaterialAnalysis() {
   // 마스터 DB 구독
   const [recipeMap, setRecipeMap] = useState<Map<string, Recipe>>(new Map());
   const [ambientRecipeMap, setAmbientRecipeMap] = useState<Map<string, AmbientRecipe>>(new Map());
+  const [subRecipeMap, setSubRecipeMap] = useState<Map<string, Recipe>>(new Map());
+  const [expandSub, setExpandSub] = useState<boolean>(() => {
+    try { return JSON.parse(localStorage.getItem('matAnalysis:expandSub') || 'true'); } catch { return true; }
+  });
+  useEffect(() => { try { localStorage.setItem('matAnalysis:expandSub', JSON.stringify(expandSub)); } catch {} }, [expandSub]);
   const [priceMap, setPriceMap] = useState<Map<string, number>>(new Map());
 
   useEffect(() => {
@@ -141,6 +147,17 @@ export default function MaterialAnalysis() {
         m.set(d.id.toLowerCase(), { ...data, code: d.id }); // 대소문자 호환
       });
       setRecipeMap(m);
+    });
+  }, []);
+  useEffect(() => {
+    return onSnapshot(collection(db, 'subRecipes'), (snap) => {
+      const m = new Map<string, Recipe>();
+      snap.forEach((d) => {
+        const data = d.data() as Recipe;
+        m.set(d.id, { ...data, code: d.id });
+        m.set(d.id.toLowerCase(), { ...data, code: d.id });
+      });
+      setSubRecipeMap(m);
     });
   }, []);
   useEffect(() => {
@@ -195,6 +212,10 @@ export default function MaterialAnalysis() {
     }, { merge: true }).catch((e) => console.error('[monthlyMeta save]', e));
   };
 
+  // 반제품 펼침 옵션 적용된 effective 레시피 맵
+  const effRecipeMap = useMemo(() => (expandSub ? expandRecipeMap(recipeMap, subRecipeMap) : recipeMap), [recipeMap, subRecipeMap, expandSub]);
+  const effAmbientRecipeMap = useMemo(() => (expandSub ? expandAmbientRecipeMap(ambientRecipeMap, subRecipeMap) : ambientRecipeMap), [ambientRecipeMap, subRecipeMap, expandSub]);
+
   const runAnalysis = async (bustCache = false) => {
     if (monthA === monthB) { setErr('A·B 월이 같습니다. 다른 월을 선택해주세요.'); return; }
     setRunning(true); setErr(null);
@@ -216,10 +237,10 @@ export default function MaterialAnalysis() {
       setAProd(aProd_); setBProd(bProd_);
 
       // 분석 2 — 각 월 자체 단가 결과 (기존 표)
-      const aRes = computeMonthlyUsage(monthA, aRaw.entries, aRaw.items, aRaw.ambient, aRaw.logistics, recipeMap, ambientRecipeMap, priceMap);
-      const bRes = computeMonthlyUsage(monthB, bRaw.entries, bRaw.items, bRaw.ambient, bRaw.logistics, recipeMap, ambientRecipeMap, priceMap);
+      const aRes = computeMonthlyUsage(monthA, aRaw.entries, aRaw.items, aRaw.ambient, aRaw.logistics, effRecipeMap, effAmbientRecipeMap, priceMap);
+      const bRes = computeMonthlyUsage(monthB, bRaw.entries, bRaw.items, bRaw.ambient, bRaw.logistics, effRecipeMap, effAmbientRecipeMap, priceMap);
       // A월 데이터를 B월 단가로 재평가 (Flexed Budget)
-      const aResB = computeMonthlyUsage(monthA, aRaw.entries, aRaw.items, aRaw.ambient, aRaw.logistics, recipeMap, ambientRecipeMap, priceMap, monthB);
+      const aResB = computeMonthlyUsage(monthA, aRaw.entries, aRaw.items, aRaw.ambient, aRaw.logistics, effRecipeMap, effAmbientRecipeMap, priceMap, monthB);
       setAResult(aRes); setBResult(bRes); setAResultBPrice(aResB);
       setDiff(diffUsage(aRes, bRes));
 
@@ -234,6 +255,16 @@ export default function MaterialAnalysis() {
   };
 
   // 연동 비율 (A월 → B월 규모) — EA 기본, 생산금액 둘 다 입력 시 ₩ 토글 가능
+  // 반제품 펼침 토글이나 레시피 DB 변경 시 분석 결과 자동 재계산 (raw 있을 때만)
+  useEffect(() => {
+    if (!aRaw || !bRaw) return;
+    const aRes = computeMonthlyUsage(monthA, aRaw.entries, aRaw.items, aRaw.ambient, aRaw.logistics, effRecipeMap, effAmbientRecipeMap, priceMap);
+    const bRes = computeMonthlyUsage(monthB, bRaw.entries, bRaw.items, bRaw.ambient, bRaw.logistics, effRecipeMap, effAmbientRecipeMap, priceMap);
+    const aResB = computeMonthlyUsage(monthA, aRaw.entries, aRaw.items, aRaw.ambient, aRaw.logistics, effRecipeMap, effAmbientRecipeMap, priceMap, monthB);
+    setAResult(aRes); setBResult(bRes); setAResultBPrice(aResB);
+    setDiff(diffUsage(aRes, bRes));
+  }, [effRecipeMap, effAmbientRecipeMap, priceMap, aRaw, bRaw, monthA, monthB]);
+
   const ratio = useMemo(() => {
     const aAmt = Number(aAmount) || 0;
     const bAmt = Number(bAmount) || 0;
@@ -269,8 +300,8 @@ export default function MaterialAnalysis() {
   const stageUsage = useMemo(() => {
     if (!search.trim() || !aRaw || !bRaw || !aProd || !bProd) return null;
     const q = search.trim().toLowerCase();
-    const aRows = computeIngredientStageUsage(monthA, aProd.coldByCode, aRaw.ambient, recipeMap, ambientRecipeMap, priceMap);
-    const bRows = computeIngredientStageUsage(monthB, bProd.coldByCode, bRaw.ambient, recipeMap, ambientRecipeMap, priceMap);
+    const aRows = computeIngredientStageUsage(monthA, aProd.coldByCode, aRaw.ambient, effRecipeMap, effAmbientRecipeMap, priceMap);
+    const bRows = computeIngredientStageUsage(monthB, bProd.coldByCode, bRaw.ambient, effRecipeMap, effAmbientRecipeMap, priceMap);
     const aFilt = aRows.filter((r) => r.name.toLowerCase().includes(q) || (r.code || '').toLowerCase().includes(q));
     const bFilt = bRows.filter((r) => r.name.toLowerCase().includes(q) || (r.code || '').toLowerCase().includes(q));
     // key 합집합
@@ -284,7 +315,7 @@ export default function MaterialAnalysis() {
       const code = v.b?.code || v.a?.code;
       return { key: k, name, code, a: v.a, b: v.b };
     });
-  }, [search, aRaw, bRaw, aProd, bProd, monthA, monthB, recipeMap, ambientRecipeMap, priceMap]);
+  }, [search, aRaw, bRaw, aProd, bProd, monthA, monthB, effRecipeMap, effAmbientRecipeMap, priceMap]);
 
   // ===== 분석1 원재료 필터 =====
   const ingKeyOf = (name: string, code?: string) =>
@@ -527,6 +558,13 @@ export default function MaterialAnalysis() {
         <span className="text-gray-400">vs</span>
         <span className="text-xs font-semibold text-rose-700">B</span>
         <input type="month" value={monthB} onChange={(e) => e.target.value && setMonthB(e.target.value)} className="border rounded px-2 py-1 text-sm font-bold" />
+        {subRecipeMap.size > 0 && (
+          <label className="flex items-center gap-1.5 text-xs px-2 py-1 rounded border bg-emerald-50 cursor-pointer hover:bg-emerald-100" title="반제품(순수본베이스/디포리육수 등)을 원물 단위로 자동 분해해 계산. 끄면 반제품을 그대로 한 원재료로 봄">
+            <input type="checkbox" checked={expandSub} onChange={(e) => setExpandSub(e.target.checked)} />
+            <span className="font-semibold text-emerald-700">🧪 반제품 펼침</span>
+            <span className="text-emerald-500">({expandSub ? '원물' : '반제품'})</span>
+          </label>
+        )}
         <div className="ml-auto flex items-center gap-1.5">
           <button onClick={() => runAnalysis(true)} disabled={running} title="캐시 무시" className="px-2.5 py-1 text-xs rounded border hover:bg-gray-50 disabled:opacity-50">🔄</button>
           <button onClick={downloadXlsx} disabled={!aResult || !bResult} className="px-3 py-1.5 text-xs rounded bg-emerald-600 text-white font-semibold hover:bg-emerald-700 disabled:bg-gray-300">📥 엑셀</button>

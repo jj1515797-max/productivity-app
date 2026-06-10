@@ -18,6 +18,8 @@ export default function ProductSettings() {
   const [showProductDB, setShowProductDB] = useState(false);
   const [showMaterialDB, setShowMaterialDB] = useState(false);
   const [showRecipeDB, setShowRecipeDB] = useState(false);
+  const [showSubRecipeDB, setShowSubRecipeDB] = useState(false);
+  const [subRecipeCount, setSubRecipeCount] = useState<number | null>(null);
   const [showAmbientRecipeDB, setShowAmbientRecipeDB] = useState(false);
   const [showPriceDB, setShowPriceDB] = useState(false);
   const [showInventoryPriceDB, setShowInventoryPriceDB] = useState(false);
@@ -36,6 +38,7 @@ export default function ProductSettings() {
     getCountFromServer(collection(db, 'productSettings')).then((s) => setProductCount(s.data().count)).catch(() => {});
     getCountFromServer(collection(db, 'materials')).then((s) => setMaterialCount(s.data().count)).catch(() => {});
     getCountFromServer(collection(db, 'recipes')).then((s) => setRecipeCount(s.data().count)).catch(() => {});
+    getCountFromServer(collection(db, 'subRecipes')).then((s) => setSubRecipeCount(s.data().count)).catch(() => {});
     getCountFromServer(collection(db, 'ambientRecipes')).then((s) => setAmbientRecipeCount(s.data().count)).catch(() => {});
     getCountFromServer(collection(db, 'materialPricesMonthly')).then((s) => setPriceCount(s.data().count)).catch(() => {});
     getCountFromServer(collection(db, 'materialPricesInventory')).then((s) => setInventoryPriceCount(s.data().count)).catch(() => {});
@@ -241,7 +244,27 @@ export default function ProductSettings() {
         open={showRecipeDB}
         onToggle={() => setShowRecipeDB(!showRecipeDB)}
       >
-        {showRecipeDB && <RecipeDB onCountChange={setRecipeCount} />}
+        {showRecipeDB && <RecipeDB onCountChange={setRecipeCount} collectionName="recipes" label="레시피" />}
+      </Section>
+
+      {/* 반제품 레시피 DB 섹션 (1g 단위, 분석에서 재귀 전개) */}
+      <Section
+        icon="🧪"
+        title="반제품 레시피 DB"
+        badge={subRecipeCount !== null ? `${subRecipeCount}개` : '...'}
+        open={showSubRecipeDB}
+        onToggle={() => setShowSubRecipeDB(!showSubRecipeDB)}
+      >
+        {showSubRecipeDB && (
+          <div className="space-y-2">
+            <div className="bg-emerald-50 border border-emerald-200 rounded p-2.5 text-xs text-emerald-800">
+              <b>반제품(중간 가공품) BOM</b>입니다. <code className="bg-white px-1 rounded">PB-Z-001 순수본베이스</code>, <code className="bg-white px-1 rounded">PB-Z-002 디포리육수</code> 같은 자가제조 중간품에 들어가는 원물을 등록하세요.<br/>
+              단위 = <b>반제품 1g 제조 시 원물 g</b> (예: 정제수 0.919 = 디포리육수 1g 만들 때 정제수 0.919g 투입).<br/>
+              분석1/2 에서 이 코드를 만나면 자동으로 원물 단위까지 풀어서 계산합니다. 반제품 자체에는 단가 안 넣어도 됩니다.
+            </div>
+            <RecipeDB onCountChange={setSubRecipeCount} collectionName="subRecipes" label="반제품 레시피" />
+          </div>
+        )}
       </Section>
 
       {/* 실온이유식 레시피 DB 섹션 (1회 배합 기준) */}
@@ -835,21 +858,22 @@ interface RecipeDoc {
   ingredients: RecipeIngredient[];
 }
 
-function RecipeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
+function RecipeDB({ onCountChange, collectionName = 'recipes', label = '레시피' }: { onCountChange: (n: number) => void; collectionName?: string; label?: string }) {
+  const COL = collectionName;
   const [recipes, setRecipes] = useState<RecipeDoc[]>([]);
   const [search, setSearch] = useState('');
   const [showImport, setShowImport] = useState(false);
   const [expanded, setExpanded] = useState<string | null>(null);
 
   useEffect(() => {
-    return onSnapshot(collection(db, 'recipes'), (snap) => {
+    return onSnapshot(collection(db, COL), (snap) => {
       const list: RecipeDoc[] = [];
       snap.forEach((d) => list.push({ ...(d.data() as RecipeDoc), code: d.id }));
       list.sort((a, b) => a.code.localeCompare(b.code));
       setRecipes(list);
       onCountChange(list.length);
     });
-  }, [onCountChange]);
+  }, [onCountChange, COL]);
 
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
@@ -863,7 +887,7 @@ function RecipeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
 
   const delRecipe = async (code: string) => {
     if (!confirm(`${code} 레시피를 삭제할까요?`)) return;
-    await deleteDoc(doc(db, 'recipes', code));
+    await deleteDoc(doc(db, COL, code));
   };
 
   // 식재료필요량(gPerPiece) 인라인 수정 → 해당 레시피 문서 ingredients 통째로 갱신
@@ -871,7 +895,7 @@ function RecipeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
     const next = (recipe.ingredients || []).map((ing) =>
       ing.seq === seq ? { ...ing, gPerPiece: newVal } : ing
     );
-    await updateDoc(doc(db, 'recipes', recipe.code), {
+    await updateDoc(doc(db, COL, recipe.code), {
       ingredients: next,
       updatedAt: new Date().toISOString(),
     });
@@ -884,7 +908,7 @@ function RecipeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
       if (trimmed) copy.code = trimmed; else delete copy.code;
       return copy;
     });
-    await updateDoc(doc(db, 'recipes', recipe.code), {
+    await updateDoc(doc(db, COL, recipe.code), {
       ingredients: next,
       updatedAt: new Date().toISOString(),
     });
@@ -914,7 +938,7 @@ function RecipeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
             if (newCode) copy.code = newCode; else delete copy.code;
             return copy;
           });
-          batch.update(doc(db, 'recipes', r.code), { ingredients: next, updatedAt: new Date().toISOString() });
+          batch.update(doc(db, COL, r.code), { ingredients: next, updatedAt: new Date().toISOString() });
         });
         await batch.commit();
       }
@@ -938,7 +962,7 @@ function RecipeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
       const CHUNK = 400;
       for (let i = 0; i < target.length; i += CHUNK) {
         const batch = writeBatch(db);
-        target.slice(i, i + CHUNK).forEach((r) => batch.delete(doc(db, 'recipes', r.code)));
+        target.slice(i, i + CHUNK).forEach((r) => batch.delete(doc(db, COL, r.code)));
         await batch.commit();
       }
       alert(`${target.length}개 삭제됨`);
@@ -1055,12 +1079,12 @@ function RecipeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
           </div>
         </div>
       )}
-      {showImport && <RecipeImportModal onClose={() => setShowImport(false)} />}
+      {showImport && <RecipeImportModal onClose={() => setShowImport(false)} collectionName={COL} label={label} />}
     </div>
   );
 }
 
-function RecipeImportModal({ onClose }: { onClose: () => void }) {
+function RecipeImportModal({ onClose, collectionName = 'recipes', label = '레시피' }: { onClose: () => void; collectionName?: string; label?: string }) {
   const [text, setText] = useState('');
   const [saving, setSaving] = useState(false);
 
@@ -1146,7 +1170,7 @@ function RecipeImportModal({ onClose }: { onClose: () => void }) {
       for (let i = 0; i < preview.recipes.length; i += CHUNK) {
         const batch = writeBatch(db);
         preview.recipes.slice(i, i + CHUNK).forEach((r) => {
-          batch.set(doc(db, 'recipes', r.code), {
+          batch.set(doc(db, collectionName, r.code), {
             code: r.code, name: r.name || '',
             ingredients: r.ingredients,
             updatedAt: new Date().toISOString(),
@@ -1163,7 +1187,7 @@ function RecipeImportModal({ onClose }: { onClose: () => void }) {
     <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
       <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl max-h-[92vh] overflow-hidden flex flex-col">
         <div className="px-5 py-4 border-b flex items-center justify-between bg-blue-50">
-          <h3 className="font-bold text-gray-800">📋 레시피 일괄 입력</h3>
+          <h3 className="font-bold text-gray-800">📋 {label} 일괄 입력</h3>
           <button onClick={onClose} className="w-7 h-7 rounded-full hover:bg-gray-200 text-gray-500">×</button>
         </div>
         <div className="flex-1 overflow-y-auto p-5 space-y-3">
