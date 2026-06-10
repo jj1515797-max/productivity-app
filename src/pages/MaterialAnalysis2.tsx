@@ -239,9 +239,9 @@ export default function MaterialAnalysis2() {
   // 결과 재계산 (byIng + outflow + price 변화 시)
   useEffect(() => {
     if (!byIng) { setResult(null); return; }
-    const r = allocateActualOutflow(byIng, outflowG, outflowAmt, monthBasePrice);
+    const r = allocateActualOutflow(byIng, outflowG, outflowAmt, monthBasePrice, monthBaseName);
     setResult(r);
-  }, [byIng, outflowG, outflowAmt, monthBasePrice]);
+  }, [byIng, outflowG, outflowAmt, monthBasePrice, monthBaseName]);
 
   // 입력 onBlur 핸들러
   const updateG = (key: string, val: number) => {
@@ -466,6 +466,11 @@ export default function MaterialAnalysis2() {
                           className="w-full bg-transparent focus:bg-yellow-50 focus:ring-1 focus:ring-yellow-300 rounded px-1 py-0.5"
                           title={`원본: ${r.name}`}
                         />
+                        {r.remappedFromKey && (
+                          <div className="text-[10px] text-indigo-600 pl-1" title={`출고 입력의 코드(${r.remappedFromKey.replace(CODE_KEY_PREFIX, '')})가 BOM 코드(${r.code || '-'})와 달라 이름으로 자동 매칭됨. 레시피DB 또는 단가표 코드를 통일해 주세요.`}>
+                            ↪ 코드불일치 → 이름으로 매칭됨 ({r.remappedFromKey.replace(CODE_KEY_PREFIX, '')})
+                          </div>
+                        )}
                       </td>
                       <td className="border px-2 py-1 text-center font-mono text-gray-500">{r.code || '-'}</td>
                       <td className="border px-2 py-1 text-right">{Math.round(r.theoreticalG).toLocaleString()}</td>
@@ -512,7 +517,7 @@ export default function MaterialAnalysis2() {
               <thead className="bg-rose-100 text-gray-700">
                 <tr>
                   <th className="border px-2 py-1.5 text-left">원재료</th>
-                  <th className="border px-2 py-1.5 text-left w-40">키</th>
+                  <th className="border px-2 py-1.5 text-left w-32">출고 입력 코드</th>
                   <th className="border px-2 py-1.5 text-right w-28">출고(g)</th>
                   <th className="border px-2 py-1.5 text-right w-28">금액(₩)</th>
                 </tr>
@@ -521,7 +526,7 @@ export default function MaterialAnalysis2() {
                 {result.orphans.map((o) => (
                   <tr key={o.key} className="border-t">
                     <td className="border px-2 py-1 font-semibold">{orphanLabel(o.key)}</td>
-                    <td className="border px-2 py-1 font-mono text-gray-400 text-[11px]">{o.key}</td>
+                    <td className="border px-2 py-1 font-mono text-gray-500">{o.key.startsWith(CODE_KEY_PREFIX) ? o.key.replace(CODE_KEY_PREFIX, '') : '(이름키)'}</td>
                     <td className="border px-2 py-1 text-right">{Math.round(o.actualG).toLocaleString()}</td>
                     <td className="border px-2 py-1 text-right">{Math.round(o.totalCost).toLocaleString()}</td>
                   </tr>

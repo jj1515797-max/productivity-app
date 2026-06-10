@@ -113,6 +113,8 @@ export interface PerIngResult {
   hasPrice: boolean;
   /** 분배 불가 = 이론사용량 0 인데 실제출고 입력됨 (BOM 누락/타 라인 등) */
   orphan: boolean;
+  /** 출고 입력 시 코드가 BOM 과 달라 이름으로 자동 재매칭됨 (사용자 정정 권고) */
+  remappedFromKey?: string;
 }
 export interface PerProductBreakdown {
   ingKey: string;
@@ -142,16 +144,45 @@ export function allocateActualOutflow(
   outflowGrams: Record<string, number>,
   outflowAmounts: Record<string, number>,
   basePriceMap: Map<string, number>,        // key = (CODE_KEY_PREFIX+normCode) 또는 normalizedName, value = ₩/g
+  outflowNames?: Map<string, string>,       // 출고 키 → 단가표상 원재료명 (이름 폴백 매칭용)
 ): AllocationResult {
   const perIng: PerIngResult[] = [];
   const orphans: PerIngResult[] = [];
   const perProductAcc = new Map<string, PerProductResult>();
   let ingTotalCost = 0, theoTotalCost = 0;
 
+  // 0) BOM 원재료들의 이름 인덱스 (코드가 안 맞을 때 이름으로 자동 재매칭)
+  const byIngByName = new Map<string, string[]>();
+  byIng.forEach((info, k) => {
+    const n = normalizeMaterialName(info.name);
+    if (!n) return;
+    const arr = byIngByName.get(n) || [];
+    arr.push(k);
+    byIngByName.set(n, arr);
+  });
+
+  // 0-2) outflow 키 정규화: BOM 에 없는 코드키 + 이름이 유일 매칭되면 BOM 키로 흡수
+  const effG: Record<string, number> = { ...outflowGrams };
+  const effAmt: Record<string, number> = { ...outflowAmounts };
+  const remapMeta = new Map<string, string>();  // BOM key → 원래 입력 키 (UI 안내)
+  Object.entries(outflowGrams).forEach(([k, g]) => {
+    if (!g || byIng.has(k)) return;
+    const inputName = outflowNames?.get(k);
+    if (!inputName) return;
+    const candidates = byIngByName.get(normalizeMaterialName(inputName)) || [];
+    if (candidates.length !== 1) return;
+    const target = candidates[0];
+    effG[target] = (effG[target] || 0) + Number(g);
+    if (outflowAmounts[k]) effAmt[target] = (effAmt[target] || 0) + Number(outflowAmounts[k]);
+    delete effG[k];
+    delete effAmt[k];
+    remapMeta.set(target, k);
+  });
+
   // 1) 모든 이론 원재료 순회
   byIng.forEach((info, key) => {
-    const actualG = Number(outflowGrams[key] || 0);
-    const actualAmt = Number(outflowAmounts[key] || 0);
+    const actualG = Number(effG[key] || 0);
+    const actualAmt = Number(effAmt[key] || 0);
     const basePriceRaw = basePriceMap.get(key) ?? lookupByName(basePriceMap, info.name);
     const hasPrice = basePriceRaw !== undefined && basePriceRaw > 0;
     const basePrice = hasPrice ? basePriceRaw! : 0;
@@ -164,6 +195,7 @@ export function allocateActualOutflow(
       theoreticalG: info.theoreticalGrams, actualG, yieldPct,
       basePrice, unitCost, usedActualPrice,
       totalCost, hasPrice, orphan: false,
+      ...(remapMeta.get(key) ? { remappedFromKey: remapMeta.get(key)! } : {}),
     });
     ingTotalCost += totalCost;
     theoTotalCost += info.theoreticalGrams * basePrice;
@@ -189,12 +221,12 @@ export function allocateActualOutflow(
     }
   });
 
-  // 3) Orphan = 이론에 없는데 실측 입력만 들어옴
-  Object.entries(outflowGrams).forEach(([k, v]) => {
+  // 3) Orphan = 이론에 없는데 실측 입력만 들어옴 (effG 기준: 이름으로 재매칭된 것 제외)
+  Object.entries(effG).forEach(([k, v]) => {
     const g = Number(v || 0);
     if (g <= 0) return;
     if (byIng.has(k)) return;   // 이미 처리됨
-    const amt = Number(outflowAmounts[k] || 0);
+    const amt = Number(effAmt[k] || 0);
     const basePriceRaw = basePriceMap.get(k);
     const hasPrice = basePriceRaw !== undefined && basePriceRaw > 0;
     const basePrice = hasPrice ? basePriceRaw! : 0;

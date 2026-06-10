@@ -890,6 +890,40 @@ function RecipeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
     });
   };
 
+  // 원재료코드 일괄변경 — 같은 이름의 원재료가 여러 레시피에 들어있을 때 코드를 한 번에 교정
+  const [codeFixing, setCodeFixing] = useState(false);
+  const bulkCodeFix = async () => {
+    const nameIn = prompt('코드를 일괄 변경할 원재료명을 입력하세요 (예: 돼지슬라이스):');
+    if (!nameIn?.trim()) return;
+    const target = normalizeMaterialName(nameIn);
+    const hits = recipes.filter((r) => (r.ingredients || []).some((i) => normalizeMaterialName(i.name) === target));
+    if (hits.length === 0) { alert(`'${nameIn}' 를 쓰는 레시피가 없습니다 (이름 정확히 일치해야 함)`); return; }
+    const sample = hits[0].ingredients.find((i) => normalizeMaterialName(i.name) === target);
+    const codeIn = prompt(`'${nameIn}' 사용 레시피 ${hits.length}개 발견 (현재 코드: ${sample?.code || '없음'}).\n새 원재료코드를 입력하세요 (비우면 코드 제거):`);
+    if (codeIn === null) return;
+    const newCode = codeIn.trim();
+    setCodeFixing(true);
+    try {
+      const CHUNK = 400;
+      for (let i = 0; i < hits.length; i += CHUNK) {
+        const batch = writeBatch(db);
+        hits.slice(i, i + CHUNK).forEach((r) => {
+          const next = (r.ingredients || []).map((ing) => {
+            if (normalizeMaterialName(ing.name) !== target) return ing;
+            const copy: RecipeIngredient = { ...ing };
+            if (newCode) copy.code = newCode; else delete copy.code;
+            return copy;
+          });
+          batch.update(doc(db, 'recipes', r.code), { ingredients: next, updatedAt: new Date().toISOString() });
+        });
+        await batch.commit();
+      }
+      alert(`레시피 ${hits.length}개의 '${nameIn}' 코드를 '${newCode || '(제거)'}' 로 변경했습니다`);
+    } catch (e: any) {
+      alert(`변경 실패: ${e?.message || e}`);
+    } finally { setCodeFixing(false); }
+  };
+
   // 일괄 삭제 (전체 또는 필터된 목록)
   const [bulkDeleting, setBulkDeleting] = useState(false);
   const bulkDelete = async (target: RecipeDoc[]) => {
@@ -919,6 +953,11 @@ function RecipeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
           className="flex-1 min-w-[240px] border rounded-md px-3 py-2 text-sm" />
         <span className="text-xs text-gray-500">{filtered.length}/{recipes.length}개</span>
         <button onClick={() => setShowImport(true)} className="px-3 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700">📋 일괄 입력</button>
+        <button onClick={bulkCodeFix} disabled={codeFixing}
+          className="px-3 py-2 bg-indigo-600 text-white rounded text-sm font-medium hover:bg-indigo-700 disabled:bg-gray-300"
+          title="같은 이름의 원재료가 들어간 모든 레시피의 원재료코드를 한 번에 변경">
+          {codeFixing ? '변경중...' : '🔧 원재료코드 일괄변경'}
+        </button>
         {search.trim() && filtered.length > 0 && filtered.length !== recipes.length && (
           <button onClick={() => bulkDelete(filtered)} disabled={bulkDeleting}
             className="px-3 py-2 bg-orange-600 text-white rounded text-sm font-medium hover:bg-orange-700 disabled:bg-gray-300">
