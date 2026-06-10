@@ -284,9 +284,9 @@ export default function MaterialAnalysis2() {
     // 시트 1: 원재료별 출고
     const ws1 = wb.addWorksheet('원재료별 출고');
     ws1.columns = [
-      { width: 24 }, { width: 12 }, { width: 14 }, { width: 14 }, { width: 10 }, { width: 12 }, { width: 14 }, { width: 14 },
+      { width: 24 }, { width: 12 }, { width: 14 }, { width: 14 }, { width: 10 }, { width: 12 }, { width: 12 }, { width: 14 }, { width: 14 },
     ];
-    ['원재료', '코드', '이론사용량(g)', '실제출고(g)', '수율%', '단위원가(₩/g)', '실측원가(₩)', '이론원가(₩)']
+    ['원재료', '코드', '이론사용량(g)', '실제출고(g)', '수율%', '기초단가(₩/g)', '실측단가(₩/g)', '실측원가(₩)', '이론원가(₩)']
       .forEach((h, i) => {
         const c = ws1.getCell(1, i + 1);
         c.value = h; c.font = { ...baseFont, bold: true }; c.alignment = { horizontal: 'center' };
@@ -299,15 +299,18 @@ export default function MaterialAnalysis2() {
       ws1.getCell(row, 3).value = Math.round(r.theoreticalG);
       ws1.getCell(row, 4).value = Math.round(r.actualG);
       ws1.getCell(row, 5).value = Number(r.yieldPct.toFixed(1));
-      ws1.getCell(row, 6).value = Number(r.unitCost.toFixed(2));
-      ws1.getCell(row, 7).value = Math.round(r.totalCost);
-      ws1.getCell(row, 8).value = Math.round(r.theoreticalG * r.unitCost);
-      for (let c = 1; c <= 8; c++) {
+      ws1.getCell(row, 6).value = Number(r.basePrice.toFixed(4));
+      ws1.getCell(row, 7).value = r.usedActualPrice ? Number(r.unitCost.toFixed(2)) : '';
+      ws1.getCell(row, 8).value = Math.round(r.totalCost);
+      ws1.getCell(row, 9).value = Math.round(r.theoreticalG * r.basePrice);
+      for (let c = 1; c <= 9; c++) {
         const cell = ws1.getCell(row, c);
         cell.font = baseFont; cell.border = border;
         cell.alignment = { horizontal: c <= 2 ? (c === 1 ? 'left' : 'center') : 'right' };
-        if (c >= 3 && c !== 5) cell.numFmt = '#,##0';
+        if ((c >= 3 && c <= 4) || c === 8 || c === 9) cell.numFmt = '#,##0';
         if (c === 5) cell.numFmt = '0.0';
+        if (c === 6) cell.numFmt = '0.0000';
+        if (c === 7) cell.numFmt = '0.00';
       }
     });
 
@@ -444,7 +447,7 @@ export default function MaterialAnalysis2() {
                   <th className="border px-2 py-1.5 text-right w-28">이론사용량(g)</th>
                   <th className="border px-2 py-1.5 text-right w-32">실제 출고(g)</th>
                   <th className="border px-2 py-1.5 text-right w-20">수율%</th>
-                  <th className="border px-2 py-1.5 text-right w-28" title="출고금액 입력 시 = 출고금액÷출고량, 미입력 시 = 기초단가">단가(₩/g)</th>
+                  <th className="border px-2 py-1.5 text-right w-32">기초단가 / 실측단가<br/><span className="text-[10px] font-normal text-gray-400">DB값 / 출고금액÷출고량</span></th>
                   <th className="border px-2 py-1.5 text-right w-32">실제 출고금액(₩)</th>
                   <th className="border px-2 py-1.5 text-right w-28">실측원가(₩)</th>
                 </tr>
@@ -473,7 +476,16 @@ export default function MaterialAnalysis2() {
                           className="w-full px-2 py-1 text-right border-0 focus:bg-yellow-50 focus:ring-1 focus:ring-yellow-300 rounded" />
                       </td>
                       <td className={`border px-2 py-1 text-right ${yClass}`}>{r.actualG > 0 ? yld.toFixed(1) + '%' : '-'}</td>
-                      <td className={`border px-2 py-1 text-right ${r.hasPrice ? 'text-gray-600' : 'text-amber-600'}`}>{r.hasPrice ? r.unitCost.toFixed(2) : '⚠️ 없음'}</td>
+                      <td className="border px-2 py-1 text-right">
+                        {r.hasPrice ? (
+                          <div className={`leading-tight ${r.usedActualPrice ? 'text-gray-400 line-through text-[11px]' : 'text-gray-800 font-semibold'}`}>{r.basePrice.toFixed(4)}</div>
+                        ) : (
+                          <div className="text-amber-600 text-[11px]">⚠️ 없음</div>
+                        )}
+                        {r.usedActualPrice && (
+                          <div className="text-indigo-700 font-bold leading-tight" title="출고금액÷출고량">{r.unitCost.toFixed(2)}</div>
+                        )}
+                      </td>
                       <td className="border px-2 py-0">
                         <input type="number" defaultValue={outflowAmt[r.key] || ''}
                           key={`amt-${r.key}-${outflowAmt[r.key] || 0}`}

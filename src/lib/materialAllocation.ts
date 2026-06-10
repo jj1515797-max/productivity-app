@@ -103,7 +103,12 @@ export interface PerIngResult {
   actualG: number;
   /** 이론/실제 비율 (예: 1000/1200 = 83.3%) 100% 이상이면 수율 양호 */
   yieldPct: number;
-  unitCost: number;          // ₩/g (출고금액 입력 시 실측, 미입력 시 기초단가)
+  /** 기초단가 DB 값 (₩/g). 매칭 안되면 0 */
+  basePrice: number;
+  /** 실제 적용 단가 — 출고금액 입력 시 출고금액/출고량, 미입력 시 basePrice */
+  unitCost: number;
+  /** 출고금액 입력으로 실측단가가 basePrice 와 다른지 */
+  usedActualPrice: boolean;
   totalCost: number;         // actualG × unitCost
   hasPrice: boolean;
   /** 분배 불가 = 이론사용량 0 인데 실제출고 입력됨 (BOM 누락/타 라인 등) */
@@ -147,18 +152,21 @@ export function allocateActualOutflow(
   byIng.forEach((info, key) => {
     const actualG = Number(outflowGrams[key] || 0);
     const actualAmt = Number(outflowAmounts[key] || 0);
-    const basePrice = basePriceMap.get(key) ?? lookupByName(basePriceMap, info.name);
-    const hasPrice = basePrice !== undefined && basePrice > 0;
-    const unitCost = actualAmt > 0 && actualG > 0 ? actualAmt / actualG : (hasPrice ? basePrice! : 0);
+    const basePriceRaw = basePriceMap.get(key) ?? lookupByName(basePriceMap, info.name);
+    const hasPrice = basePriceRaw !== undefined && basePriceRaw > 0;
+    const basePrice = hasPrice ? basePriceRaw! : 0;
+    const usedActualPrice = actualAmt > 0 && actualG > 0;
+    const unitCost = usedActualPrice ? actualAmt / actualG : basePrice;
     const totalCost = actualG * unitCost;
     const yieldPct = actualG > 0 ? (info.theoreticalGrams / actualG) * 100 : 0;
     perIng.push({
       key, name: info.name, code: info.code,
       theoreticalG: info.theoreticalGrams, actualG, yieldPct,
-      unitCost, totalCost, hasPrice, orphan: false,
+      basePrice, unitCost, usedActualPrice,
+      totalCost, hasPrice, orphan: false,
     });
     ingTotalCost += totalCost;
-    theoTotalCost += info.theoreticalGrams * (hasPrice ? basePrice! : 0);
+    theoTotalCost += info.theoreticalGrams * basePrice;
 
     // 2) 제품별 분배
     if (info.theoreticalGrams > 0 && actualG > 0) {
@@ -187,12 +195,16 @@ export function allocateActualOutflow(
     if (g <= 0) return;
     if (byIng.has(k)) return;   // 이미 처리됨
     const amt = Number(outflowAmounts[k] || 0);
-    const basePrice = basePriceMap.get(k);
-    const hasPrice = basePrice !== undefined && basePrice > 0;
-    const unitCost = amt > 0 ? amt / g : (hasPrice ? basePrice! : 0);
+    const basePriceRaw = basePriceMap.get(k);
+    const hasPrice = basePriceRaw !== undefined && basePriceRaw > 0;
+    const basePrice = hasPrice ? basePriceRaw! : 0;
+    const usedActualPrice = amt > 0;
+    const unitCost = usedActualPrice ? amt / g : basePrice;
     orphans.push({
       key: k, name: k, code: undefined,
-      theoreticalG: 0, actualG: g, yieldPct: 0, unitCost, totalCost: g * unitCost, hasPrice, orphan: true,
+      theoreticalG: 0, actualG: g, yieldPct: 0,
+      basePrice, unitCost, usedActualPrice,
+      totalCost: g * unitCost, hasPrice, orphan: true,
     });
   });
 
