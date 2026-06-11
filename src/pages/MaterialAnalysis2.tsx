@@ -471,8 +471,8 @@ export default function MaterialAnalysis2() {
       {/* DB 상태 */}
       {(recipeMap.size === 0 || basePriceMap.size === 0) && (
         <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
-          ⚠️ 설정 페이지에서 <b>레시피</b> + <b>원재료단가(재고평가현황 기초단가)</b> 를 먼저 입력해야 분석이 정확합니다.
-          {basePriceMap.size === 0 && <span className="ml-1 text-rose-600">(기초단가 비어있음)</span>}
+          ⚠️ 설정 페이지에서 <b>레시피</b> + <b>원재료단가(재고평가현황)</b> 를 먼저 입력해야 분석이 정확합니다.
+          {basePriceMap.size === 0 && <span className="ml-1 text-rose-600">(재고평가현황 비어있음)</span>}
         </div>
       )}
 

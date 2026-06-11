@@ -21,7 +21,6 @@ export default function ProductSettings() {
   const [showSubRecipeDB, setShowSubRecipeDB] = useState(false);
   const [subRecipeCount, setSubRecipeCount] = useState<number | null>(null);
   const [showAmbientRecipeDB, setShowAmbientRecipeDB] = useState(false);
-  const [showPriceDB, setShowPriceDB] = useState(false);
   const [showInventoryPriceDB, setShowInventoryPriceDB] = useState(false);
   const [inventoryPriceCount, setInventoryPriceCount] = useState<number | null>(null);
   const [showBulk, setShowBulk] = useState(false);
@@ -32,7 +31,6 @@ export default function ProductSettings() {
   const [materialCount, setMaterialCount] = useState<number | null>(null);
   const [recipeCount, setRecipeCount] = useState<number | null>(null);
   const [ambientRecipeCount, setAmbientRecipeCount] = useState<number | null>(null);
-  const [priceCount, setPriceCount] = useState<number | null>(null);
 
   useEffect(() => {
     getCountFromServer(collection(db, 'productSettings')).then((s) => setProductCount(s.data().count)).catch(() => {});
@@ -40,7 +38,6 @@ export default function ProductSettings() {
     getCountFromServer(collection(db, 'recipes')).then((s) => setRecipeCount(s.data().count)).catch(() => {});
     getCountFromServer(collection(db, 'subRecipes')).then((s) => setSubRecipeCount(s.data().count)).catch(() => {});
     getCountFromServer(collection(db, 'ambientRecipes')).then((s) => setAmbientRecipeCount(s.data().count)).catch(() => {});
-    getCountFromServer(collection(db, 'materialPricesMonthly')).then((s) => setPriceCount(s.data().count)).catch(() => {});
     getCountFromServer(collection(db, 'materialPricesInventory')).then((s) => setInventoryPriceCount(s.data().count)).catch(() => {});
   }, []);
 
@@ -278,26 +275,23 @@ export default function ProductSettings() {
         {showAmbientRecipeDB && <AmbientRecipeDB onCountChange={setAmbientRecipeCount} />}
       </Section>
 
-      {/* 원재료 단가 섹션 — 매입단가 (폐기금액 산출용) */}
-      <Section
-        icon="💰"
-        title="원재료단가 (매입단가)(폐기금액 산출용)"
-        badge={priceCount !== null ? `${priceCount}개` : '...'}
-        open={showPriceDB}
-        onToggle={() => setShowPriceDB(!showPriceDB)}
-      >
-        {showPriceDB && <MaterialPriceDB onCountChange={setPriceCount} collectionName="materialPricesMonthly" />}
-      </Section>
-
-      {/* 원재료 단가 섹션 — 기초단가 (재고평가현황 / 원재료분석2 용) */}
+      {/* 원재료 단가 섹션 — 재고평가현황 (출고수량·출고금액 → 단가 자동산출. 분석1/2 + 폐기 공용) */}
       <Section
         icon="💾"
-        title="원재료단가 (재고평가현황 기초단가)"
+        title="원재료단가 (재고평가현황)"
         badge={inventoryPriceCount !== null ? `${inventoryPriceCount}개` : '...'}
         open={showInventoryPriceDB}
         onToggle={() => setShowInventoryPriceDB(!showInventoryPriceDB)}
       >
-        {showInventoryPriceDB && <MaterialPriceDB onCountChange={setInventoryPriceCount} collectionName="materialPricesInventory" />}
+        {showInventoryPriceDB && (
+          <div className="space-y-2">
+            <div className="bg-blue-50 border border-blue-200 rounded p-2.5 text-xs text-blue-800">
+              ERP 재고평가현황에서 <b>원재료코드 / 원재료명 / 출고수량(g) / 출고금액(₩)</b> 4컬럼을 붙여넣으세요.
+              <b className="ml-1">단가 = 출고금액 ÷ 출고수량</b> 으로 자동 산출되며, <b>원재료분석1·2 + 폐기금액</b> 계산에 모두 사용됩니다.
+            </div>
+            <MaterialPriceDB onCountChange={setInventoryPriceCount} collectionName="materialPricesInventory" />
+          </div>
+        )}
       </Section>
 
       {/* 일괄 입력 모달 */}
@@ -1280,8 +1274,42 @@ function MaterialPriceDB({ onCountChange, collectionName = 'materialPricesMonthl
   const [newName, setNewName] = useState('');
   const [newCode, setNewCode] = useState('');
   const [newPrice, setNewPrice] = useState<string>('');  // 문자열 유지 — '0' (정제수 0원) 도 입력 가능
+  const [newOutG, setNewOutG] = useState<string>('');
+  const [newOutAmt, setNewOutAmt] = useState<string>('');
   const [legacyCount, setLegacyCount] = useState(0);
   const [migrating, setMigrating] = useState(false);
+  const isInventory = COL === 'materialPricesInventory';
+
+  // 재고평가현황 모드: 출고수량/출고금액 (materialOutflow/{month}) 같이 표시·편집
+  const [outflowG, setOutflowG] = useState<Record<string, number>>({});
+  const [outflowAmt, setOutflowAmt] = useState<Record<string, number>>({});
+  useEffect(() => {
+    if (!isInventory) return;
+    return onSnapshot(doc(db, 'materialOutflow', month), (snap) => {
+      const d = snap.data() as { outflowGrams?: Record<string, number>; outflowAmounts?: Record<string, number> } | undefined;
+      setOutflowG(d?.outflowGrams || {});
+      setOutflowAmt(d?.outflowAmounts || {});
+    });
+  }, [isInventory, month]);
+  const ingKey = (p: { name: string; code?: string }) =>
+    p.code ? (CODE_KEY_PREFIX + normalizeCode(p.code)) : normalizeMaterialName(p.name);
+  // 출고 수정 → outflow 문서 + 단가(출고금액÷출고수량) 자동 재계산해 단가 doc 갱신
+  const updateOutflow = async (p: MaterialPriceDoc & { month: string }, g: number | null, amt: number | null) => {
+    const key = ingKey(p);
+    const nextG = { ...outflowG };
+    const nextAmt = { ...outflowAmt };
+    if (g !== null) { if (g > 0) nextG[key] = g; else delete nextG[key]; }
+    if (amt !== null) { if (amt >= 0) nextAmt[key] = amt; else delete nextAmt[key]; }
+    setOutflowG(nextG); setOutflowAmt(nextAmt);
+    await setDoc(doc(db, 'materialOutflow', month), {
+      outflowGrams: nextG, outflowAmounts: nextAmt, updatedAt: new Date().toISOString(),
+    }, { merge: false }).catch(() => {});
+    // 단가 자동 산출
+    const gg = nextG[key] || 0;
+    const aa = nextAmt[key] ?? 0;
+    const price = gg > 0 ? aa / gg : 0;
+    await setDoc(doc(db, COL, p.id), { pricePerGram: price, updatedAt: new Date().toISOString() }, { merge: true }).catch(() => {});
+  };
 
   useEffect(() => {
     return onSnapshot(collection(db, COL), (snap) => {
@@ -1319,14 +1347,31 @@ function MaterialPriceDB({ onCountChange, collectionName = 'materialPricesMonthl
     await setDoc(doc(db, COL, id), { code: code.trim(), updatedAt: new Date().toISOString() }, { merge: true });
   };
   const addOne = async () => {
-    const p = parseFloat(newPrice);
-    if (!newName.trim() || isNaN(p) || p < 0) return;  // 0원 허용 (정제수 등)
+    if (!newName.trim()) return;
+    let p: number;
+    if (isInventory) {
+      const g = parseFloat(newOutG);
+      const amt = parseFloat(newOutAmt);
+      if (!(g > 0) || isNaN(amt) || amt < 0) return;
+      p = amt / g;  // 단가 자동 산출 (0원 가능 — 정제수)
+      // 출고 문서에도 기록
+      const key = newCode.trim() ? (CODE_KEY_PREFIX + normalizeCode(newCode)) : normalizeMaterialName(newName);
+      const nextG = { ...outflowG, [key]: g };
+      const nextAmt = { ...outflowAmt, [key]: amt };
+      setOutflowG(nextG); setOutflowAmt(nextAmt);
+      await setDoc(doc(db, 'materialOutflow', month), {
+        outflowGrams: nextG, outflowAmounts: nextAmt, updatedAt: new Date().toISOString(),
+      }, { merge: false }).catch(() => {});
+    } else {
+      p = parseFloat(newPrice);
+      if (isNaN(p) || p < 0) return;  // 0원 허용 (정제수 등)
+    }
     await setDoc(doc(db, COL, priceDocId(month, newName)), {
       month, name: newName.trim(), pricePerGram: p,
       ...(newCode.trim() ? { code: newCode.trim() } : {}),
       updatedAt: new Date().toISOString(),
     });
-    setNewName(''); setNewCode(''); setNewPrice('');
+    setNewName(''); setNewCode(''); setNewPrice(''); setNewOutG(''); setNewOutAmt('');
   };
   const delPrice = async (id: string, name: string) => {
     if (!confirm(`[${month}] '${name}' 단가를 삭제할까요?`)) return;
@@ -1392,7 +1437,7 @@ function MaterialPriceDB({ onCountChange, collectionName = 'materialPricesMonthl
         <input type="month" value={month} onChange={(e) => e.target.value && setMonth(e.target.value)}
           className="border rounded px-2 py-1 text-sm font-bold" />
         <button onClick={() => setMonth(shiftMonthStr(month, 1))} className="w-7 h-7 rounded hover:bg-amber-100">▶</button>
-        <span className="text-xs text-amber-700">{COL === 'materialPricesMonthly' ? `이 달 단가는 ${month} 폐기금액 계산에 사용됩니다` : `이 달 단가는 ${month} 원재료분석2의 기초단가로 사용됩니다`}</span>
+        <span className="text-xs text-amber-700">{isInventory ? `이 달 데이터는 ${month} 원재료분석1·2 + 폐기금액 계산에 사용됩니다` : `이 달 단가는 ${month} 폐기금액 계산에 사용됩니다`}</span>
         {legacyCount > 0 && (
           <button onClick={migrateLegacy} disabled={migrating}
             className="ml-auto px-3 py-1.5 text-xs rounded bg-purple-600 text-white font-semibold hover:bg-purple-700 disabled:bg-gray-300">
@@ -1427,13 +1472,28 @@ function MaterialPriceDB({ onCountChange, collectionName = 'materialPricesMonthl
           className="flex-1 min-w-[150px] border rounded px-2 py-1 text-sm" />
         <input value={newCode} onChange={(e) => setNewCode(e.target.value)} placeholder="원재료코드(선택)"
           className="w-32 border rounded px-2 py-1 text-sm font-mono" />
-        <input type="number" value={newPrice} onChange={(e) => setNewPrice(e.target.value)} placeholder="₩/g (0 가능)" min="0"
-          className="w-28 border rounded px-2 py-1 text-sm text-right" />
-        <button onClick={addOne} disabled={!newName.trim() || newPrice.trim() === '' || parseFloat(newPrice) < 0 || isNaN(parseFloat(newPrice))}
+        {isInventory ? (
+          <>
+            <input type="number" value={newOutG} onChange={(e) => setNewOutG(e.target.value)} placeholder="출고수량(g)" min="0"
+              className="w-28 border rounded px-2 py-1 text-sm text-right" />
+            <input type="number" value={newOutAmt} onChange={(e) => setNewOutAmt(e.target.value)} placeholder="출고금액(₩)" min="0"
+              className="w-28 border rounded px-2 py-1 text-sm text-right" />
+            <span className="text-xs text-gray-400 w-24 text-right">
+              단가 {(() => { const g = parseFloat(newOutG); const a = parseFloat(newOutAmt); return g > 0 && !isNaN(a) ? (a / g).toFixed(4) : '-'; })()} ₩/g
+            </span>
+          </>
+        ) : (
+          <input type="number" value={newPrice} onChange={(e) => setNewPrice(e.target.value)} placeholder="₩/g (0 가능)" min="0"
+            className="w-28 border rounded px-2 py-1 text-sm text-right" />
+        )}
+        <button onClick={addOne}
+          disabled={!newName.trim() || (isInventory
+            ? !(parseFloat(newOutG) > 0) || isNaN(parseFloat(newOutAmt)) || parseFloat(newOutAmt) < 0
+            : newPrice.trim() === '' || parseFloat(newPrice) < 0 || isNaN(parseFloat(newPrice)))}
           className="px-3 py-1 bg-emerald-600 text-white rounded text-xs font-medium hover:bg-emerald-700 disabled:bg-gray-300">추가</button>
       </div>
       {prices.length === 0 ? (
-        <div className="p-12 text-center text-gray-400 text-sm border rounded-lg">{month} 단가가 없습니다 — 📋 일괄 입력 으로 추가하세요 (입력 전까지 이 달 폐기는 "단가 없음")</div>
+        <div className="p-12 text-center text-gray-400 text-sm border rounded-lg">{month} 데이터가 없습니다 — 📋 일괄 입력 으로 추가하세요</div>
       ) : (
         <div className="border rounded-lg overflow-hidden">
           <div className="max-h-[600px] overflow-y-auto">
@@ -1442,12 +1502,18 @@ function MaterialPriceDB({ onCountChange, collectionName = 'materialPricesMonthl
               <tr>
                 <th className="px-3 py-2 text-left">원재료명</th>
                 <th className="px-3 py-2 text-left w-36">원재료코드</th>
-                <th className="px-3 py-2 text-right w-32">단가 (₩/g)</th>
+                {isInventory && <th className="px-3 py-2 text-right w-32">출고수량 (g)</th>}
+                {isInventory && <th className="px-3 py-2 text-right w-32">출고금액 (₩)</th>}
+                <th className="px-3 py-2 text-right w-32">단가 (₩/g){isInventory && <span className="block text-[10px] font-normal text-gray-400">자동 = 금액÷수량</span>}</th>
                 <th className="px-3 py-2 w-20"></th>
               </tr>
             </thead>
             <tbody>
-              {filtered.map((p) => (
+              {filtered.map((p) => {
+                const key = ingKey(p);
+                const g = outflowG[key] || 0;
+                const amt = outflowAmt[key] ?? 0;
+                return (
                 <tr key={p.id} className="border-t">
                   <td className="px-3 py-1.5">{p.name}</td>
                   <td className="px-3 py-1 text-left">
@@ -1459,19 +1525,46 @@ function MaterialPriceDB({ onCountChange, collectionName = 'materialPricesMonthl
                       placeholder="-"
                       className="w-28 border rounded px-2 py-1 text-sm font-mono" />
                   </td>
+                  {isInventory && (
+                    <td className="px-3 py-1 text-right">
+                      <input type="number" key={`${p.id}-g-${g}`} defaultValue={g || ''}
+                        onBlur={(e) => {
+                          const v = Number(e.target.value) || 0;
+                          if (v !== g) updateOutflow(p, v, null);
+                        }}
+                        placeholder="-"
+                        className="w-28 border rounded px-2 py-1 text-right text-sm" />
+                    </td>
+                  )}
+                  {isInventory && (
+                    <td className="px-3 py-1 text-right">
+                      <input type="number" key={`${p.id}-amt-${amt}`} defaultValue={amt || ''}
+                        onBlur={(e) => {
+                          const v = Number(e.target.value) || 0;
+                          if (v !== amt) updateOutflow(p, null, v);
+                        }}
+                        placeholder="-"
+                        className="w-28 border rounded px-2 py-1 text-right text-sm" />
+                    </td>
+                  )}
                   <td className="px-3 py-1 text-right">
-                    <input type="number" key={`${p.id}-${p.pricePerGram}`} defaultValue={p.pricePerGram}
-                      onBlur={(e) => {
-                        const v = Number(e.target.value) || 0;
-                        if (v !== p.pricePerGram) updatePrice(p.id, v);
-                      }}
-                      className="w-24 border rounded px-2 py-1 text-right text-sm" step="0.01" />
+                    {isInventory ? (
+                      <span className="font-mono text-gray-700">{p.pricePerGram ? p.pricePerGram.toFixed(4) : (g > 0 ? (amt / g).toFixed(4) : '-')}</span>
+                    ) : (
+                      <input type="number" key={`${p.id}-${p.pricePerGram}`} defaultValue={p.pricePerGram}
+                        onBlur={(e) => {
+                          const v = Number(e.target.value) || 0;
+                          if (v !== p.pricePerGram) updatePrice(p.id, v);
+                        }}
+                        className="w-24 border rounded px-2 py-1 text-right text-sm" step="0.01" />
+                    )}
                   </td>
                   <td className="px-3 py-1.5 text-right">
                     <button onClick={() => delPrice(p.id, p.name)} className="text-xs text-red-500 hover:underline">삭제</button>
                   </td>
                 </tr>
-              ))}
+                );
+              })}
             </tbody>
           </table>
           </div>
@@ -1500,9 +1593,10 @@ function PriceImportModal({ month, onClose, collectionName = 'materialPricesMont
     const OUTG_H = ['출고수량', '출고량', '실출고', '실사용량', '실제출고', '실제출고량', '실제출고수량', 'outflow', 'outflowg'];
     const OUTAMT_H = ['출고금액', '실사용금액', '실제출고금액', '출고가액', 'amount', 'outflowamt'];
     let nameCol = 0, priceCol = 1, codeCol = -1, outGCol = -1, outAmtCol = -1, startRow = 0;
+    // 헤더 행 = 원재료명 컬럼 + (단가 또는 출고수량) 컬럼이 있는 행
     const hRow = rows.findIndex((r) => {
       const c = r.map(norm);
-      return c.some((x) => NAME_H.includes(x)) && c.some((x) => PRICE_H.includes(x));
+      return c.some((x) => NAME_H.includes(x)) && (c.some((x) => PRICE_H.includes(x)) || c.some((x) => OUTG_H.includes(x)));
     });
     if (hRow >= 0) {
       const h = rows[hRow].map(norm);
@@ -1512,29 +1606,34 @@ function PriceImportModal({ month, onClose, collectionName = 'materialPricesMont
       outGCol = h.findIndex((x) => OUTG_H.includes(x));
       outAmtCol = h.findIndex((x) => OUTAMT_H.includes(x));
       startRow = hRow + 1;
+    } else if (withOutflow) {
+      // 헤더 없음 (재고평가현황): 기본 = 원재료코드 [탭] 원재료명 [탭] 출고수량 [탭] 출고금액
+      // 첫 컬럼이 숫자코드(5자리 이상)면 코드 우선 배치로 판단
+      const codeFirst = rows.slice(0, 5).filter((r) => /^\d{5,}$/.test((r[0] || '').replace(/[-\s]/g, ''))).length >= Math.min(rows.length, 3);
+      if (codeFirst) { codeCol = 0; nameCol = 1; outGCol = 2; outAmtCol = 3; priceCol = -1; }
+      else { nameCol = 0; codeCol = 1; outGCol = 2; outAmtCol = 3; priceCol = -1; }
     } else {
-      // 헤더 없음 → 위치 기반: 원재료명 [tab] 단가 [tab] 코드 [tab] 출고수량 [tab] 출고금액
+      // 헤더 없음 (일반): 원재료명 [탭] 단가 [탭] 코드
       nameCol = 0; priceCol = 1;
       const cols = rows[0]?.length || 0;
       codeCol = cols >= 3 ? 2 : -1;
-      if (withOutflow) {
-        outGCol = cols >= 4 ? 3 : -1;
-        outAmtCol = cols >= 5 ? 4 : -1;
-      }
     }
 
     for (let i = startRow; i < rows.length; i++) {
       const r = rows[i];
       const name = (r[nameCol] || '').trim();
-      const price = parseFloat((r[priceCol] || '').replace(/[^\d.]/g, ''));
+      if (!name) continue;
       const code = codeCol >= 0 ? (r[codeCol] || '').trim() : '';
-      if (!name || isNaN(price) || price < 0) continue;
+      let price = priceCol >= 0 ? parseFloat((r[priceCol] || '').replace(/[^\d.]/g, '')) : NaN;
+      const og = outGCol >= 0 ? parseFloat((r[outGCol] || '').replace(/[^\d.]/g, '')) : NaN;
+      const oa = outAmtCol >= 0 ? parseFloat((r[outAmtCol] || '').replace(/[^\d.]/g, '')) : NaN;
+      // 단가 미입력 시 출고금액÷출고수량 으로 자동 산출 (0원 가능 — 정제수)
+      if (isNaN(price) && !isNaN(og) && og > 0 && !isNaN(oa) && oa >= 0) price = oa / og;
+      if (isNaN(price) || price < 0) continue;
       const item: typeof list[number] = { name, price, code };
       if (withOutflow) {
-        const og = outGCol >= 0 ? parseFloat((r[outGCol] || '').replace(/[^\d.]/g, '')) : NaN;
-        const oa = outAmtCol >= 0 ? parseFloat((r[outAmtCol] || '').replace(/[^\d.]/g, '')) : NaN;
         if (!isNaN(og) && og > 0) item.outflowG = og;
-        if (!isNaN(oa) && oa > 0) item.outflowAmt = oa;
+        if (!isNaN(oa) && oa >= 0) item.outflowAmt = oa;
       }
       list.push(item);
     }
@@ -1598,20 +1697,24 @@ function PriceImportModal({ month, onClose, collectionName = 'materialPricesMont
     <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4">
       <div className={`bg-white rounded-xl shadow-2xl w-full ${withOutflow ? 'max-w-3xl' : 'max-w-xl'} overflow-hidden flex flex-col max-h-[92vh]`}>
         <div className="px-5 py-4 border-b flex items-center justify-between bg-blue-50">
-          <h3 className="font-bold text-gray-800">📋 {month} {withOutflow ? '기초단가·출고 일괄 입력' : '단가 일괄 입력'}</h3>
+          <h3 className="font-bold text-gray-800">📋 {month} {withOutflow ? '재고평가현황 일괄 입력' : '단가 일괄 입력'}</h3>
           <button onClick={onClose} className="w-7 h-7 rounded-full hover:bg-gray-200 text-gray-500">×</button>
         </div>
         <div className="flex-1 overflow-y-auto p-5 space-y-3">
           <div className="text-xs text-gray-600 bg-slate-50 p-3 rounded border">
-            <b className="text-amber-700">{month}</b> {withOutflow ? '기초단가 + 출고' : '단가'}로 저장됩니다. 한 줄에 한 원재료.<br />
-            형식: <code className="bg-white px-1 rounded">원재료명 [탭] 단가 [탭] 원재료코드 {withOutflow ? '[탭] 출고수량(g) [탭] 출고금액(₩)' : '(선택)'}</code><br />
+            <b className="text-amber-700">{month}</b> 데이터로 저장됩니다. 한 줄에 한 원재료.<br />
+            {withOutflow ? (
+              <>형식: <code className="bg-white px-1 rounded">원재료코드 [탭] 원재료명 [탭] 출고수량(g) [탭] 출고금액(₩)</code><br />
+              <b className="text-indigo-700">단가 = 출고금액 ÷ 출고수량</b> 자동 산출 (단가 컬럼 따로 안 넣어도 됨, 있으면 그 값 우선).<br /></>
+            ) : (
+              <>형식: <code className="bg-white px-1 rounded">원재료명 [탭] 단가 [탭] 원재료코드 (선택)</code><br /></>
+            )}
             <b className="text-blue-700">원재료코드</b>를 넣으면 레시피와 코드로 매칭돼요 (이름이 조금 달라도 OK).
-            헤더 줄(원재료명/단가/코드{withOutflow ? '/출고수량/출고금액' : ''})을 같이 붙여도 자동 인식합니다.
-            {withOutflow && <><br/><b className="text-indigo-700">출고수량·출고금액은 선택</b> — 비워두면 분석2 페이지에서 직접 입력하셔도 돼요. 두 값 다 있으면 단위원가는 출고금액/출고수량으로 계산됩니다.</>}
+            헤더 줄을 같이 붙여도 자동 인식합니다.
           </div>
           <textarea value={text} onChange={(e) => setText(e.target.value)}
             placeholder={withOutflow
-              ? '캐슈넛(인도산)\t23.18\tM0123\t1200\t27816\n닭가슴살(무항생제)\t5.00\tM0456\t8500\t42500\n무\t4.00'
+              ? '10110001\t멥쌀(유기농)\t10843771\t37182474\n10110002\t찹쌀\t1796457\t10564389\n9999999\t정제수\t50000000\t0'
               : '캐슈넛(인도산)\t23.18\tM0123\n닭가슴살(무항생제)\t5.00\tM0456\n무\t4.00'}
             className="w-full h-48 border rounded p-2 text-xs font-mono" />
           {text.trim() && (
@@ -1623,7 +1726,7 @@ function PriceImportModal({ month, onClose, collectionName = 'materialPricesMont
                 <div key={i} className="border-t py-1 flex justify-between gap-2">
                   <span className="flex-1 truncate">{p.name}</span>
                   <span className="font-mono text-gray-400 w-20 text-right">{p.code || '-'}</span>
-                  <span className="font-mono w-20 text-right">{p.price} ₩/g</span>
+                  <span className="font-mono w-20 text-right">{Number(p.price.toFixed(4))} ₩/g</span>
                   {withOutflow && <>
                     <span className={`font-mono w-20 text-right ${p.outflowG ? 'text-indigo-600' : 'text-gray-300'}`}>{p.outflowG ? p.outflowG.toLocaleString() + 'g' : '-'}</span>
                     <span className={`font-mono w-24 text-right ${p.outflowAmt ? 'text-indigo-600' : 'text-gray-300'}`}>{p.outflowAmt ? p.outflowAmt.toLocaleString() + '원' : '-'}</span>

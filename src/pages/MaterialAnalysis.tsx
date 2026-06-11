@@ -194,7 +194,8 @@ export default function MaterialAnalysis() {
     });
   }, []);
   useEffect(() => {
-    return onSnapshot(collection(db, 'materialPricesMonthly'), (snap) => {
+    // 단가: 재고평가현황(materialPricesInventory) — 출고금액÷출고수량 실측 평균단가
+    return onSnapshot(collection(db, 'materialPricesInventory'), (snap) => {
       const m = new Map<string, number>();
       snap.forEach((d) => {
         const data = d.data() as { month?: string; name?: string; pricePerGram?: number; code?: string };
