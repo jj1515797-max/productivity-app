@@ -1279,7 +1279,7 @@ function MaterialPriceDB({ onCountChange, collectionName = 'materialPricesMonthl
   const [showImport, setShowImport] = useState(false);
   const [newName, setNewName] = useState('');
   const [newCode, setNewCode] = useState('');
-  const [newPrice, setNewPrice] = useState<number>(0);
+  const [newPrice, setNewPrice] = useState<string>('');  // 문자열 유지 — '0' (정제수 0원) 도 입력 가능
   const [legacyCount, setLegacyCount] = useState(0);
   const [migrating, setMigrating] = useState(false);
 
@@ -1319,13 +1319,14 @@ function MaterialPriceDB({ onCountChange, collectionName = 'materialPricesMonthl
     await setDoc(doc(db, COL, id), { code: code.trim(), updatedAt: new Date().toISOString() }, { merge: true });
   };
   const addOne = async () => {
-    if (!newName.trim() || newPrice <= 0) return;
+    const p = parseFloat(newPrice);
+    if (!newName.trim() || isNaN(p) || p < 0) return;  // 0원 허용 (정제수 등)
     await setDoc(doc(db, COL, priceDocId(month, newName)), {
-      month, name: newName.trim(), pricePerGram: newPrice,
+      month, name: newName.trim(), pricePerGram: p,
       ...(newCode.trim() ? { code: newCode.trim() } : {}),
       updatedAt: new Date().toISOString(),
     });
-    setNewName(''); setNewCode(''); setNewPrice(0);
+    setNewName(''); setNewCode(''); setNewPrice('');
   };
   const delPrice = async (id: string, name: string) => {
     if (!confirm(`[${month}] '${name}' 단가를 삭제할까요?`)) return;
@@ -1426,9 +1427,9 @@ function MaterialPriceDB({ onCountChange, collectionName = 'materialPricesMonthl
           className="flex-1 min-w-[150px] border rounded px-2 py-1 text-sm" />
         <input value={newCode} onChange={(e) => setNewCode(e.target.value)} placeholder="원재료코드(선택)"
           className="w-32 border rounded px-2 py-1 text-sm font-mono" />
-        <input type="number" value={newPrice || ''} onChange={(e) => setNewPrice(Number(e.target.value) || 0)} placeholder="₩/g"
+        <input type="number" value={newPrice} onChange={(e) => setNewPrice(e.target.value)} placeholder="₩/g (0 가능)" min="0"
           className="w-28 border rounded px-2 py-1 text-sm text-right" />
-        <button onClick={addOne} disabled={!newName.trim() || newPrice <= 0}
+        <button onClick={addOne} disabled={!newName.trim() || newPrice.trim() === '' || parseFloat(newPrice) < 0 || isNaN(parseFloat(newPrice))}
           className="px-3 py-1 bg-emerald-600 text-white rounded text-xs font-medium hover:bg-emerald-700 disabled:bg-gray-300">추가</button>
       </div>
       {prices.length === 0 ? (
