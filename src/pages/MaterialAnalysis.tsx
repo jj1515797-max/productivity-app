@@ -109,20 +109,43 @@ export default function MaterialAnalysis() {
   // 분석1 — 원재료로 제품 필터
   const [prodSearch, setProdSearch] = useState<string>('');
   const [excludedIng, setExcludedIng] = useState<string[]>([]);
-  // 원재료명 로컬 별칭 (분석화면 한정, 코드/키 단위로 저장)
+  // 원재료명 별칭 — Firestore 공유 (appMeta/materialAliases)
+  //  - 기존 사용자의 localStorage 데이터는 처음 한 번 Firestore 로 자동 이전(merge)
   const NAME_OVERRIDE_KEY = PREFIX + 'nameOverrides';
-  const [nameOverrides, setNameOverrides] = useState<Record<string, string>>(() => {
-    try { return JSON.parse(localStorage.getItem(NAME_OVERRIDE_KEY) || '{}'); } catch { return {}; }
-  });
-  const saveNameOverride = (key: string, name: string, fallback: string) => {
-    setNameOverrides((prev) => {
-      const next = { ...prev };
-      const trimmed = name.trim();
-      if (!trimmed || trimmed === fallback) delete next[key];
-      else next[key] = trimmed;
-      try { localStorage.setItem(NAME_OVERRIDE_KEY, JSON.stringify(next)); } catch {}
-      return next;
+  const NAME_OVERRIDE_MIGRATED_KEY = PREFIX + 'nameOverridesMigrated';
+  const [nameOverrides, setNameOverrides] = useState<Record<string, string>>({});
+  useEffect(() => {
+    const unsub = onSnapshot(doc(db, 'appMeta', 'materialAliases'), (snap) => {
+      const data = snap.exists() ? (snap.data() as { overrides?: Record<string, string> }) : {};
+      setNameOverrides(data.overrides || {});
     });
+    // 1회 이전: 기존 localStorage 의 별칭을 서버에 머지 (충돌은 서버 우선)
+    try {
+      if (!localStorage.getItem(NAME_OVERRIDE_MIGRATED_KEY)) {
+        const local = JSON.parse(localStorage.getItem(NAME_OVERRIDE_KEY) || '{}');
+        if (local && Object.keys(local).length > 0) {
+          getDoc(doc(db, 'appMeta', 'materialAliases')).then((snap) => {
+            const server = (snap.exists() && (snap.data() as { overrides?: Record<string, string> }).overrides) || {};
+            const merged = { ...local, ...server };  // 서버값 우선
+            setDoc(doc(db, 'appMeta', 'materialAliases'), { overrides: merged, updatedAt: new Date().toISOString() }, { merge: true })
+              .then(() => { localStorage.setItem(NAME_OVERRIDE_MIGRATED_KEY, '1'); })
+              .catch(() => {});
+          }).catch(() => {});
+        } else {
+          localStorage.setItem(NAME_OVERRIDE_MIGRATED_KEY, '1');
+        }
+      }
+    } catch {}
+    return unsub;
+  }, []);
+  const saveNameOverride = (key: string, name: string, fallback: string) => {
+    const trimmed = name.trim();
+    const next = { ...nameOverrides };
+    if (!trimmed || trimmed === fallback) delete next[key]; else next[key] = trimmed;
+    setNameOverrides(next);  // 낙관적 업데이트
+    // 전체 overrides 를 통째로 덮어써서 삭제도 반영 (merge 안 함 — 중첩 map 머지 회피)
+    setDoc(doc(db, 'appMeta', 'materialAliases'), { overrides: next, updatedAt: new Date().toISOString() })
+      .catch((e) => console.error('[materialAliases save]', e));
   };
   const displayName = (key: string, original: string) => nameOverrides[key] || original;
   const [expandStages, setExpandStages] = useState<Record<string, boolean>>({});

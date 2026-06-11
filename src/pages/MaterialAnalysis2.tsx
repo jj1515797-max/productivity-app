@@ -105,18 +105,19 @@ export default function MaterialAnalysis2() {
   const [basePriceMap, setBasePriceMap] = useState<Map<string, number>>(new Map());  // 기초단가 (materialPricesInventory)
   const [baseNameMap, setBaseNameMap] = useState<Map<string, string>>(new Map());    // 키 → 단가표상 이름
 
-  // 이름 별칭 — 분석1과 동일 키 (localStorage matAnalysis:nameOverrides)
-  const [nameOverrides, setNameOverrides] = useState<Record<string, string>>(() => {
-    try { return JSON.parse(localStorage.getItem('matAnalysis:nameOverrides') || '{}'); } catch { return {}; }
-  });
+  // 이름 별칭 — 분석1과 동일 Firestore 문서(appMeta/materialAliases) 공유
+  const [nameOverrides, setNameOverrides] = useState<Record<string, string>>({});
+  useEffect(() => onSnapshot(doc(db, 'appMeta', 'materialAliases'), (snap) => {
+    const data = snap.exists() ? (snap.data() as { overrides?: Record<string, string> }) : {};
+    setNameOverrides(data.overrides || {});
+  }), []);
   const saveNameOverride = (key: string, name: string, fallback: string) => {
-    setNameOverrides((prev) => {
-      const next = { ...prev };
-      const trimmed = name.trim();
-      if (!trimmed || trimmed === fallback) delete next[key]; else next[key] = trimmed;
-      try { localStorage.setItem('matAnalysis:nameOverrides', JSON.stringify(next)); } catch {}
-      return next;
-    });
+    const trimmed = name.trim();
+    const next = { ...nameOverrides };
+    if (!trimmed || trimmed === fallback) delete next[key]; else next[key] = trimmed;
+    setNameOverrides(next);
+    setDoc(doc(db, 'appMeta', 'materialAliases'), { overrides: next, updatedAt: new Date().toISOString() })
+      .catch((e) => console.error('[materialAliases save]', e));
   };
   const displayName = (key: string, original: string) => nameOverrides[key] || original;
 
