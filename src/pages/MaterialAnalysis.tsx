@@ -450,33 +450,34 @@ export default function MaterialAnalysis() {
       wf.getCell(r, 1).value = idx + 1;
       wf.getCell(r, 2).value = row.name;
       wf.getCell(r, 3).value = row.code || '';
-      wf.getCell(r, 4).value = Math.round(row.aCost);
-      wf.getCell(r, 5).value = Math.round(row.flexedCost);
-      wf.getCell(r, 6).value = Math.round(row.bCost);
-      wf.getCell(r, 7).value = Math.round(row.diffCost);
-      wf.getCell(r, 8).value = Number(row.diffPct.toFixed(1));
+      // 원본 정밀도 그대로 — 표시 포맷만 적용, 셀 클릭 시 full 값
+      wf.getCell(r, 4).value = row.aCost;
+      wf.getCell(r, 5).value = row.flexedCost;
+      wf.getCell(r, 6).value = row.bCost;
+      wf.getCell(r, 7).value = row.diffCost;
+      wf.getCell(r, 8).value = row.diffPct;
       for (let c = 1; c <= 8; c++) {
         const cell = wf.getCell(r, c);
         cell.font = baseFont; cell.border = border;
         cell.alignment = { horizontal: c <= 3 ? (c === 2 ? 'left' : 'center') : 'right', vertical: 'middle' };
-        if (c >= 4 && c <= 7) cell.numFmt = '#,##0';
-        if (c === 8) cell.numFmt = '+#,##0.0;-#,##0.0;0';
+        if (c >= 4 && c <= 7) cell.numFmt = '#,##0.00########';
+        if (c === 8) cell.numFmt = '+#,##0.0000########;-#,##0.0000########;0';
       }
     });
     const fTotRow = 4 + flexed.length;
     wf.getCell(fTotRow, 1).value = '합계';
     wf.mergeCells(fTotRow, 1, fTotRow, 3);
-    wf.getCell(fTotRow, 4).value = Math.round(flexAtotal);
-    wf.getCell(fTotRow, 5).value = Math.round(flexFlexedTotal);
-    wf.getCell(fTotRow, 6).value = Math.round(flexBtotal);
-    wf.getCell(fTotRow, 7).value = Math.round(flexDiffTotal);
-    wf.getCell(fTotRow, 8).value = Number(flexDiffPct.toFixed(1));
+    wf.getCell(fTotRow, 4).value = flexAtotal;
+    wf.getCell(fTotRow, 5).value = flexFlexedTotal;
+    wf.getCell(fTotRow, 6).value = flexBtotal;
+    wf.getCell(fTotRow, 7).value = flexDiffTotal;
+    wf.getCell(fTotRow, 8).value = flexDiffPct;
     for (let c = 1; c <= 8; c++) {
       const cell = wf.getCell(fTotRow, c);
       cell.font = { ...baseFont, bold: true }; cell.border = border; cell.fill = fill('FFFEF9C3');
       cell.alignment = { horizontal: c <= 3 ? 'center' : 'right', vertical: 'middle' };
-      if (c >= 4 && c <= 7) cell.numFmt = '#,##0';
-      if (c === 8) cell.numFmt = '+#,##0.0;-#,##0.0;0';
+      if (c >= 4 && c <= 7) cell.numFmt = '#,##0.00########';
+      if (c === 8) cell.numFmt = '+#,##0.0000########;-#,##0.0000########;0';
     }
 
     const ws = wb.addWorksheet('원재료별 비교(각월단가)');
@@ -503,35 +504,35 @@ export default function MaterialAnalysis() {
       ws.getCell(r, 1).value = idx + 1;
       ws.getCell(r, 2).value = row.name;
       ws.getCell(r, 3).value = row.code || '';
-      ws.getCell(r, 4).value = Math.round(row.aGrams);
-      ws.getCell(r, 5).value = Math.round(row.aCost);
-      ws.getCell(r, 6).value = Math.round(row.bGrams);
-      ws.getCell(r, 7).value = Math.round(row.bCost);
-      ws.getCell(r, 8).value = Math.round(row.diffCost);
-      ws.getCell(r, 9).value = Number(row.diffPct.toFixed(1));
+      ws.getCell(r, 4).value = row.aGrams;
+      ws.getCell(r, 5).value = row.aCost;
+      ws.getCell(r, 6).value = row.bGrams;
+      ws.getCell(r, 7).value = row.bCost;
+      ws.getCell(r, 8).value = row.diffCost;
+      ws.getCell(r, 9).value = row.diffPct;
       for (let c = 1; c <= 9; c++) {
         const cell = ws.getCell(r, c);
         cell.font = baseFont; cell.border = border;
         cell.alignment = { horizontal: c <= 3 ? (c === 2 ? 'left' : 'center') : 'right', vertical: 'middle' };
-        if (c >= 4 && c <= 8) cell.numFmt = '#,##0';
-        if (c === 9) cell.numFmt = '+#,##0.0;-#,##0.0;0';
+        if (c >= 4 && c <= 8) cell.numFmt = '#,##0.00########';
+        if (c === 9) cell.numFmt = '+#,##0.0000########;-#,##0.0000########;0';
       }
     });
     // 합계 행
     const totRow = 4 + diff.length;
     ws.getCell(totRow, 1).value = '합계';
     ws.mergeCells(totRow, 1, totRow, 4);
-    ws.getCell(totRow, 5).value = Math.round(aTotal);
+    ws.getCell(totRow, 5).value = aTotal;
     ws.getCell(totRow, 6).value = '';
-    ws.getCell(totRow, 7).value = Math.round(bTotal);
-    ws.getCell(totRow, 8).value = Math.round(diffTotal);
-    ws.getCell(totRow, 9).value = Number(diffPct.toFixed(1));
+    ws.getCell(totRow, 7).value = bTotal;
+    ws.getCell(totRow, 8).value = diffTotal;
+    ws.getCell(totRow, 9).value = diffPct;
     for (let c = 1; c <= 9; c++) {
       const cell = ws.getCell(totRow, c);
       cell.font = { ...baseFont, bold: true }; cell.border = border; cell.fill = fill('FFFEF9C3');
       cell.alignment = { horizontal: c <= 4 ? 'center' : 'right', vertical: 'middle' };
-      if (c === 5 || c === 7 || c === 8) cell.numFmt = '#,##0';
-      if (c === 9) cell.numFmt = '+#,##0.0;-#,##0.0;0';
+      if (c === 5 || c === 7 || c === 8) cell.numFmt = '#,##0.00########';
+      if (c === 9) cell.numFmt = '+#,##0.0000########;-#,##0.0000########;0';
     }
 
     // 미매칭 시트

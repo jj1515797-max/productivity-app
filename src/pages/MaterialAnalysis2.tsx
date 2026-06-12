@@ -396,28 +396,29 @@ export default function MaterialAnalysis2() {
       const row = 2 + idx;
       ws1.getCell(row, 1).value = displayName(r.key, r.name);
       ws1.getCell(row, 2).value = r.code || '';
-      ws1.getCell(row, 3).value = Math.round(r.theoreticalG);
-      ws1.getCell(row, 4).value = Math.round(r.actualG);
-      ws1.getCell(row, 5).value = Number(r.yieldPct.toFixed(1));
-      ws1.getCell(row, 6).value = Number(r.basePrice.toFixed(4));
-      ws1.getCell(row, 7).value = r.usedActualPrice ? Number(r.unitCost.toFixed(2)) : '';
-      ws1.getCell(row, 8).value = Math.round(r.totalCost);
-      ws1.getCell(row, 9).value = Math.round(r.theoreticalG * r.basePrice);
+      // 원본 정밀도 그대로 — 표시 포맷(numFmt)만 보기 좋게, 셀 클릭 시 full 값 확인 가능
+      ws1.getCell(row, 3).value = r.theoreticalG;
+      ws1.getCell(row, 4).value = r.actualG;
+      ws1.getCell(row, 5).value = r.yieldPct;
+      ws1.getCell(row, 6).value = r.basePrice;
+      ws1.getCell(row, 7).value = r.usedActualPrice ? r.unitCost : '';
+      ws1.getCell(row, 8).value = r.totalCost;
+      ws1.getCell(row, 9).value = r.theoreticalG * r.basePrice;
       for (let c = 1; c <= 9; c++) {
         const cell = ws1.getCell(row, c);
         cell.font = baseFont; cell.border = border;
         cell.alignment = { horizontal: c <= 2 ? (c === 1 ? 'left' : 'center') : 'right' };
-        if ((c >= 3 && c <= 4) || c === 8 || c === 9) cell.numFmt = '#,##0';
-        if (c === 5) cell.numFmt = '0.0';
-        if (c === 6) cell.numFmt = '0.0000';
-        if (c === 7) cell.numFmt = '0.00';
+        if ((c >= 3 && c <= 4) || c === 8 || c === 9) cell.numFmt = '#,##0.00########';
+        if (c === 5) cell.numFmt = '0.0000########';
+        if (c === 6) cell.numFmt = '0.000000########';
+        if (c === 7) cell.numFmt = '0.000000########';
       }
     });
 
     // 시트 2: 제품별 원재료원가 (요약)
     const ws2 = wb.addWorksheet('제품별 원재료원가');
     ws2.columns = [
-      { width: 14 }, { width: 36 }, { width: 12 }, { width: 16 }, { width: 14 },
+      { width: 14 }, { width: 36 }, { width: 12 }, { width: 18 }, { width: 16 },
     ];
     ['제품코드', '제품명', '생산수량(EA)', '원재료비(₩)', 'EA당 원가(₩)'].forEach((h, i) => {
       const c = ws2.getCell(1, i + 1);
@@ -429,20 +430,21 @@ export default function MaterialAnalysis2() {
       ws2.getCell(row, 1).value = p.code;
       ws2.getCell(row, 2).value = p.productName;
       ws2.getCell(row, 3).value = p.productionQty;
-      ws2.getCell(row, 4).value = Math.round(p.materialCost);
-      ws2.getCell(row, 5).value = Math.round(p.materialCostPerEA);
+      ws2.getCell(row, 4).value = p.materialCost;
+      ws2.getCell(row, 5).value = p.materialCostPerEA;
       for (let c = 1; c <= 5; c++) {
         const cell = ws2.getCell(row, c);
         cell.font = baseFont; cell.border = border;
         cell.alignment = { horizontal: c === 2 ? 'left' : c === 1 ? 'center' : 'right' };
-        if (c >= 3) cell.numFmt = '#,##0';
+        if (c === 3) cell.numFmt = '#,##0';
+        if (c === 4 || c === 5) cell.numFmt = '#,##0.00########';
       }
     });
 
     // 시트 2-2: 제품별 원재료 상세 (breakdown 펼침과 동일)
     const ws2b = wb.addWorksheet('제품별 원재료 상세');
     ws2b.columns = [
-      { width: 14 }, { width: 30 }, { width: 12 }, { width: 24 }, { width: 14 }, { width: 10 }, { width: 14 }, { width: 12 },
+      { width: 14 }, { width: 30 }, { width: 12 }, { width: 24 }, { width: 16 }, { width: 12 }, { width: 16 }, { width: 14 },
     ];
     ['제품코드', '제품명', '생산EA', '원재료', '분배 g', '분배 %', '원가(₩)', 'EA당(₩)'].forEach((h, i) => {
       const c = ws2b.getCell(1, i + 1);
@@ -456,14 +458,15 @@ export default function MaterialAnalysis2() {
       ws2b.getCell(rr, 2).value = p.productName;
       ws2b.getCell(rr, 3).value = p.productionQty;
       ws2b.getCell(rr, 4).value = `합계 (원재료 ${p.breakdown.length}종)`;
-      ws2b.getCell(rr, 7).value = Math.round(p.materialCost);
-      ws2b.getCell(rr, 8).value = Math.round(p.materialCostPerEA);
+      ws2b.getCell(rr, 7).value = p.materialCost;
+      ws2b.getCell(rr, 8).value = p.materialCostPerEA;
       for (let c = 1; c <= 8; c++) {
         const cell = ws2b.getCell(rr, c);
         cell.font = { ...baseFont, bold: true }; cell.border = border;
         cell.fill = fill('FFF1F5F9');
         cell.alignment = { horizontal: c === 2 || c === 4 ? 'left' : c === 1 ? 'center' : 'right' };
-        if (c === 3 || c === 7 || c === 8) cell.numFmt = '#,##0';
+        if (c === 3) cell.numFmt = '#,##0';
+        if (c === 7 || c === 8) cell.numFmt = '#,##0.00########';
       }
       rr++;
       // 원재료별 상세 행
@@ -471,16 +474,17 @@ export default function MaterialAnalysis2() {
         const total = totalActualByIngKey.get(b.ingKey) || 0;
         const pct = total > 0 ? (b.actualG / total) * 100 : 0;
         ws2b.getCell(rr, 4).value = displayName(b.ingKey, b.name);
-        ws2b.getCell(rr, 5).value = Math.round(b.actualG);
-        ws2b.getCell(rr, 6).value = Number(pct.toFixed(2));
-        ws2b.getCell(rr, 7).value = Math.round(b.cost);
-        ws2b.getCell(rr, 8).value = p.productionQty > 0 ? Math.round(b.cost / p.productionQty) : 0;
+        ws2b.getCell(rr, 5).value = b.actualG;
+        ws2b.getCell(rr, 6).value = pct;
+        ws2b.getCell(rr, 7).value = b.cost;
+        ws2b.getCell(rr, 8).value = p.productionQty > 0 ? b.cost / p.productionQty : 0;
         for (let c = 1; c <= 8; c++) {
           const cell = ws2b.getCell(rr, c);
           cell.font = baseFont; cell.border = border;
           cell.alignment = { horizontal: c === 4 ? 'left' : 'right' };
-          if (c === 5 || c === 7 || c === 8) cell.numFmt = '#,##0';
-          if (c === 6) cell.numFmt = '0.00"%"';
+          if (c === 5) cell.numFmt = '#,##0.00########';
+          if (c === 6) cell.numFmt = '0.0000########"%"';
+          if (c === 7 || c === 8) cell.numFmt = '#,##0.00########';
         }
         rr++;
       });
@@ -489,16 +493,19 @@ export default function MaterialAnalysis2() {
     // 시트 3: 분배 불가
     if (result.orphans.length > 0) {
       const ws3 = wb.addWorksheet('분배 불가');
-      ws3.columns = [{ width: 24 }, { width: 14 }, { width: 14 }];
+      ws3.columns = [{ width: 24 }, { width: 16 }, { width: 16 }];
       ['원재료', '출고량(g)', '금액(₩)'].forEach((h, i) => {
         const c = ws3.getCell(1, i + 1);
         c.value = h; c.font = { ...baseFont, bold: true };
         c.fill = fill('FFFEE2E2'); c.border = border;
       });
       result.orphans.forEach((o, idx) => {
-        ws3.getCell(2 + idx, 1).value = o.name;
-        ws3.getCell(2 + idx, 2).value = Math.round(o.actualG);
-        ws3.getCell(2 + idx, 3).value = Math.round(o.totalCost);
+        const r = 2 + idx;
+        ws3.getCell(r, 1).value = o.name;
+        ws3.getCell(r, 2).value = o.actualG;
+        ws3.getCell(r, 3).value = o.totalCost;
+        ws3.getCell(r, 2).numFmt = '#,##0.00########';
+        ws3.getCell(r, 3).numFmt = '#,##0.00########';
       });
     }
 
