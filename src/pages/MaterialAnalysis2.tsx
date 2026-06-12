@@ -1,4 +1,5 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
+import type { ReactNode } from 'react';
 import { collection, collectionGroup, doc, getDoc, getDocs, onSnapshot, query, setDoc, where } from 'firebase/firestore';
 import ExcelJS from 'exceljs';
 import { db } from '../firebase';
@@ -6,7 +7,7 @@ import type { AmbientEntry, Item, MachineEntry } from '../types';
 import type { AmbientRecipe, Recipe } from '../lib/wasteCompute';
 import { CODE_KEY_PREFIX, monthPriceKey, normalizeCode, normalizeMaterialName } from '../lib/wasteCompute';
 import { canonicalShort } from '../lib/codeUtil';
-import { computeMonthlyProduction } from '../lib/monthlyProduction';
+import { computeMonthlyProduction, getStage, STAGE_COLOR, STAGE_LETTERS } from '../lib/monthlyProduction';
 import type { MonthlyProduction } from '../lib/monthlyProduction';
 import { allocateActualOutflow, computeTheoreticalByProduct } from '../lib/materialAllocation';
 import type { AllocationResult, IngTheoretical } from '../lib/materialAllocation';
@@ -338,6 +339,39 @@ export default function MaterialAnalysis2() {
     if (!q) return result.perProduct;
     return result.perProduct.filter((p) => p.breakdown.some((b) => filteredIngKeys.has(b.ingKey)));
   }, [result, search, filteredIngKeys]);
+
+  // 제품 표 정렬: 'stage' = 단계별 그룹(코드순) / 'perEA' = EA당 원가 내림차순(그룹 해제)
+  const [prodSort, setProdSort] = useState<'stage' | 'perEA'>('stage');
+  const stageIndex = (code: string) => {
+    const s = getStage(code);
+    const i = s ? (STAGE_LETTERS as readonly string[]).indexOf(s) : -1;
+    return i < 0 ? 999 : i;  // 단계 없는 코드는 맨 뒤
+  };
+  // EA당 정렬 모드: 평탄 리스트
+  const sortedPerEA = useMemo(
+    () => [...filteredPerProduct].sort((a, b) => b.materialCostPerEA - a.materialCostPerEA),
+    [filteredPerProduct],
+  );
+  // 단계별 그룹: 단계 → 제품들(코드순)
+  const groupedByStage = useMemo(() => {
+    const groups = new Map<string, typeof filteredPerProduct>();
+    filteredPerProduct.forEach((p) => {
+      const s = getStage(p.code) || (p.isAmbient ? 'S' : '기타');
+      if (!groups.has(s)) groups.set(s, []);
+      groups.get(s)!.push(p);
+    });
+    // 단계 순서대로 정렬 (A,B,...,I,S,기타), 그룹 내 코드순
+    const order = [...STAGE_LETTERS, '기타'];
+    const sortedKeys = Array.from(groups.keys()).sort((a, b) => {
+      const ia = order.indexOf(a); const ib = order.indexOf(b);
+      return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib);
+    });
+    return sortedKeys.map((stage) => {
+      const list = groups.get(stage)!.slice().sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }));
+      const subtotal = list.reduce((s, p) => s + p.materialCost, 0);
+      return { stage, list, subtotal, count: list.length };
+    });
+  }, [filteredPerProduct, stageIndex]);
 
   const downloadXlsx = async () => {
     if (!result) return;
@@ -685,18 +719,79 @@ export default function MaterialAnalysis2() {
       )}
 
       {/* 제품별 원재료 원가 */}
-      {result && (
+      {result && (() => {
+        // 한 제품 행 + (펼침) 원재료 상세 렌더
+        const renderProductRow = (p: typeof filteredPerProduct[number], rankLabel: ReactNode) => {
+          const k = p.code + (p.isAmbient ? '_A' : '_C');
+          const open = !!expand[k];
+          return (
+            <Fragment key={k}>
+              <tr className="border-t hover:bg-slate-50 cursor-pointer"
+                onClick={() => setExpand((prev) => ({ ...prev, [k]: !prev[k] }))}>
+                <td className="border px-2 py-1 text-center text-gray-500">{rankLabel}</td>
+                <td className="border px-2 py-1 font-mono text-gray-500">{p.code}{p.isAmbient && <span className="ml-1 text-orange-500">S</span>}</td>
+                <td className="border px-2 py-1">{p.productName}</td>
+                <td className="border px-2 py-1 text-right">{p.productionQty.toLocaleString()}</td>
+                <td className="border px-2 py-1 text-right font-semibold">{Math.round(p.materialCost).toLocaleString()}</td>
+                <td className="border px-2 py-1 text-right font-bold text-emerald-700">{Math.round(p.materialCostPerEA).toLocaleString()}</td>
+                <td className="border px-2 py-1 text-center text-gray-400">{open ? '▾' : '▸'}</td>
+              </tr>
+              {open && (
+                <tr className="bg-slate-50">
+                  <td colSpan={7} className="border px-2 py-2">
+                    <table className="w-full text-xs">
+                      <thead className="text-gray-500">
+                        <tr>
+                          <th className="text-left px-2">원재료</th>
+                          <th className="text-right px-2 w-28">분배 g</th>
+                          <th className="text-right px-2 w-16">분배 %</th>
+                          <th className="text-right px-2 w-28">원가(₩)</th>
+                          <th className="text-right px-2 w-20">EA당(₩)</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {p.breakdown.map((b) => {
+                          const total = totalActualByIngKey.get(b.ingKey) || 0;
+                          const pct = total > 0 ? (b.actualG / total) * 100 : 0;
+                          return (
+                          <tr key={b.ingKey} className="border-t border-gray-200">
+                            <td className="px-2 py-0.5">{displayName(b.ingKey, b.name)}</td>
+                            <td className="px-2 py-0.5 text-right">{Math.round(b.actualG).toLocaleString()}</td>
+                            <td className="px-2 py-0.5 text-right text-gray-500">{pct.toFixed(2)}%</td>
+                            <td className="px-2 py-0.5 text-right">{Math.round(b.cost).toLocaleString()}</td>
+                            <td className="px-2 py-0.5 text-right">{p.productionQty > 0 ? Math.round(b.cost / p.productionQty).toLocaleString() : '-'}</td>
+                          </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </td>
+                </tr>
+              )}
+            </Fragment>
+          );
+        };
+        return (
         <div className="bg-white border-2 border-emerald-200 rounded-lg overflow-hidden">
           <div className="px-4 py-3 bg-emerald-600 text-white font-bold text-sm flex items-center gap-2 flex-wrap">
             <span>🍱 제품별 원재료 원가 ({filteredPerProduct.length}품목)</span>
-            <span className="text-xs font-normal text-emerald-100">실측 출고 역배분 기준 · 원가 큰 순</span>
-            <span className="ml-auto text-xs text-emerald-100">행 클릭 → 원재료별 상세</span>
+            <span className="text-xs font-normal text-emerald-100">실측 출고 역배분 기준</span>
+            <div className="ml-auto flex items-center gap-1.5">
+              <button onClick={() => setProdSort('stage')}
+                className={`px-2.5 py-1 text-xs rounded font-semibold ${prodSort === 'stage' ? 'bg-white text-emerald-700' : 'bg-emerald-500 text-white hover:bg-emerald-400'}`}>
+                🗂️ 단계별 그룹
+              </button>
+              <button onClick={() => setProdSort('perEA')}
+                className={`px-2.5 py-1 text-xs rounded font-semibold ${prodSort === 'perEA' ? 'bg-white text-emerald-700' : 'bg-emerald-500 text-white hover:bg-emerald-400'}`}>
+                💰 EA당 높은순
+              </button>
+            </div>
           </div>
           <div className="overflow-x-auto max-h-[700px] overflow-y-auto">
             <table className="w-full text-xs">
               <thead className="bg-slate-50 text-gray-600 sticky top-0 z-10">
                 <tr>
-                  <th className="border px-2 py-1.5 w-10">순위</th>
+                  <th className="border px-2 py-1.5 w-10">{prodSort === 'perEA' ? '순위' : '단계'}</th>
                   <th className="border px-2 py-1.5 w-24">코드</th>
                   <th className="border px-2 py-1.5 text-left">제품명</th>
                   <th className="border px-2 py-1.5 text-right w-24">생산 EA</th>
@@ -706,61 +801,28 @@ export default function MaterialAnalysis2() {
                 </tr>
               </thead>
               <tbody>
-                {filteredPerProduct.map((p, idx) => {
-                  const open = !!expand[p.code + (p.isAmbient ? '_A' : '_C')];
-                  const k = p.code + (p.isAmbient ? '_A' : '_C');
-                  return (
-                    <Fragment key={k}>
-                      <tr className="border-t hover:bg-slate-50 cursor-pointer"
-                        onClick={() => setExpand((prev) => ({ ...prev, [k]: !prev[k] }))}>
-                        <td className="border px-2 py-1 text-center text-gray-500">{idx + 1}</td>
-                        <td className="border px-2 py-1 font-mono text-gray-500">{p.code}{p.isAmbient && <span className="ml-1 text-orange-500">S</span>}</td>
-                        <td className="border px-2 py-1">{p.productName}</td>
-                        <td className="border px-2 py-1 text-right">{p.productionQty.toLocaleString()}</td>
-                        <td className="border px-2 py-1 text-right font-semibold">{Math.round(p.materialCost).toLocaleString()}</td>
-                        <td className="border px-2 py-1 text-right font-bold text-emerald-700">{Math.round(p.materialCostPerEA).toLocaleString()}</td>
-                        <td className="border px-2 py-1 text-center text-gray-400">{open ? '▾' : '▸'}</td>
-                      </tr>
-                      {open && (
-                        <tr className="bg-slate-50">
-                          <td colSpan={7} className="border px-2 py-2">
-                            <table className="w-full text-xs">
-                              <thead className="text-gray-500">
-                                <tr>
-                                  <th className="text-left px-2">원재료</th>
-                                  <th className="text-right px-2 w-28">분배 g</th>
-                                  <th className="text-right px-2 w-16">분배 %</th>
-                                  <th className="text-right px-2 w-28">원가(₩)</th>
-                                  <th className="text-right px-2 w-20">EA당(₩)</th>
-                                </tr>
-                              </thead>
-                              <tbody>
-                                {p.breakdown.map((b) => {
-                                  const total = totalActualByIngKey.get(b.ingKey) || 0;
-                                  const pct = total > 0 ? (b.actualG / total) * 100 : 0;
-                                  return (
-                                  <tr key={b.ingKey} className="border-t border-gray-200">
-                                    <td className="px-2 py-0.5">{displayName(b.ingKey, b.name)}</td>
-                                    <td className="px-2 py-0.5 text-right">{Math.round(b.actualG).toLocaleString()}</td>
-                                    <td className="px-2 py-0.5 text-right text-gray-500">{pct.toFixed(2)}%</td>
-                                    <td className="px-2 py-0.5 text-right">{Math.round(b.cost).toLocaleString()}</td>
-                                    <td className="px-2 py-0.5 text-right">{p.productionQty > 0 ? Math.round(b.cost / p.productionQty).toLocaleString() : '-'}</td>
-                                  </tr>
-                                  );
-                                })}
-                              </tbody>
-                            </table>
+                {prodSort === 'perEA'
+                  ? sortedPerEA.map((p, idx) => renderProductRow(p, idx + 1))
+                  : groupedByStage.map((grp) => (
+                      <Fragment key={`grp-${grp.stage}`}>
+                        <tr className="bg-emerald-50 sticky top-[29px] z-[5]">
+                          <td className="border px-2 py-1.5" colSpan={4}>
+                            <span className={`inline-block w-6 h-6 rounded text-white text-[11px] font-bold leading-6 text-center mr-2 ${STAGE_COLOR[grp.stage] || 'bg-gray-400'}`}>{grp.stage}</span>
+                            <span className="font-bold text-emerald-800">{grp.stage} 단계</span>
+                            <span className="text-gray-500 ml-1">· {grp.count}품목</span>
                           </td>
+                          <td className="border px-2 py-1.5 text-right font-bold text-emerald-800">{Math.round(grp.subtotal).toLocaleString()}</td>
+                          <td className="border" colSpan={2}></td>
                         </tr>
-                      )}
-                    </Fragment>
-                  );
-                })}
+                        {grp.list.map((p) => renderProductRow(p, <span className="text-gray-300">·</span>))}
+                      </Fragment>
+                    ))}
               </tbody>
             </table>
           </div>
         </div>
-      )}
+        );
+      })()}
 
       {!result && !running && (
         <div className="bg-white border border-dashed border-gray-300 rounded-lg p-16 text-center text-gray-400 text-sm">
@@ -787,5 +849,3 @@ function KpiCard({ label, value, accent, sub }: { label: string; value: string; 
     </div>
   );
 }
-
-import { Fragment } from 'react';
