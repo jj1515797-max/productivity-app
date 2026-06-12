@@ -165,19 +165,51 @@ export function allocateActualOutflow(
     byIngByName.set(n, arr);
   });
 
+  // 0-0) 동일 이름이 name-key + code-key 둘 다로 들어와 있으면 stale name-key 자동 제거
+  //   - 옛 import(코드 없이) + 새 import(코드 포함) 가 누적된 케이스 대응
+  //   - code-key 가 있으면 그 값이 진실, name-key 는 같은 이름이면 중복으로 간주
+  const effG: Record<string, number> = { ...outflowGrams };
+  const effAmt: Record<string, number> = { ...outflowAmounts };
+  const dedupRemoved: string[] = [];
+  if (outflowNames && outflowNames.size > 0) {
+    // 1) name(정규화) → 갖고 있는 키 목록
+    const keysByName = new Map<string, { codeKeys: string[]; nameKeys: string[] }>();
+    Object.keys(outflowGrams).forEach((k) => {
+      const nm = outflowNames.get(k);
+      if (!nm) return;
+      const norm = normalizeMaterialName(nm);
+      if (!keysByName.has(norm)) keysByName.set(norm, { codeKeys: [], nameKeys: [] });
+      const entry = keysByName.get(norm)!;
+      if (k.startsWith(CODE_KEY_PREFIX)) entry.codeKeys.push(k);
+      else entry.nameKeys.push(k);
+    });
+    // 2) 코드키가 있으면 nameKey들 제거 (stale 처리)
+    keysByName.forEach((entry) => {
+      if (entry.codeKeys.length === 0) return;
+      entry.nameKeys.forEach((nk) => {
+        if (effG[nk] !== undefined || effAmt[nk] !== undefined) {
+          delete effG[nk];
+          delete effAmt[nk];
+          dedupRemoved.push(nk);
+        }
+      });
+    });
+  }
+  if (dedupRemoved.length > 0) {
+    console.warn(`[allocateActualOutflow] stale name-keys removed (${dedupRemoved.length}):`, dedupRemoved);
+  }
+
   // 0-2) outflow 키 정규화: BOM 에 없는 코드키 → 이름으로 BOM 흡수
   //   - 단일 매칭: 그 BOM 키에 그대로 흡수
   //   - 다중 매칭: 각 BOM 후보의 이론 g 비율로 자동 분배 (같은 이름·다른 코드가 BOM에 섞여있는 과도기 대응)
-  const effG: Record<string, number> = { ...outflowGrams };
-  const effAmt: Record<string, number> = { ...outflowAmounts };
   const remapMeta = new Map<string, string>();  // BOM key → 원래 입력 키 (UI 안내)
-  Object.entries(outflowGrams).forEach(([k, g]) => {
+  Object.entries(effG).forEach(([k, g]) => {
     if (!g || byIng.has(k)) return;
     const inputName = outflowNames?.get(k);
     if (!inputName) return;
     const candidates = byIngByName.get(normalizeMaterialName(inputName)) || [];
     if (candidates.length === 0) return;
-    const amt = Number(outflowAmounts[k] || 0);
+    const amt = Number(effAmt[k] || 0);
     if (candidates.length === 1) {
       const target = candidates[0];
       effG[target] = (effG[target] || 0) + Number(g);

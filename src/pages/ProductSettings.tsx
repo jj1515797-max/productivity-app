@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
-import { collection, deleteDoc, doc, getCountFromServer, getDocs, onSnapshot, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
+import { collection, deleteDoc, doc, getCountFromServer, getDoc, getDocs, onSnapshot, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import type { Material, ProductSetting } from '../types';
 import { canonicalShort, convertErpCode } from '../lib/codeUtil';
@@ -1722,20 +1722,34 @@ function PriceImportModal({ month, onClose, collectionName = 'materialPricesMont
         await batch.commit();
       }
 
-      // 2) 출고 입력이 같이 있으면 materialOutflow/{month} 에 병합 저장
-      //    키 규칙은 MaterialAnalysis2 와 동일: 코드 우선(CODE_KEY_PREFIX + normalizeCode), 없으면 normalizeMaterialName
+      // 2) 출고 입력이 같이 있으면 materialOutflow/{month} 에 머지 저장 + stale alt-key 정리
+      //    같은 원재료가 옛날엔 코드 없이(name-key), 지금은 코드 포함(code-key) 으로 들어오면
+      //    기존 name-key 를 제거해 중복(분배불가 ghost) 방지
       if (withOutflow && outflowCount > 0) {
-        const outflowGrams: Record<string, number> = {};
-        const outflowAmounts: Record<string, number> = {};
+        // 기존 outflow 불러오기
+        const existingSnap = await getDoc(doc(db, 'materialOutflow', month));
+        const existing = (existingSnap.data() || {}) as { outflowGrams?: Record<string, number>; outflowAmounts?: Record<string, number> };
+        const nextG: Record<string, number> = { ...(existing.outflowGrams || {}) };
+        const nextAmt: Record<string, number> = { ...(existing.outflowAmounts || {}) };
+        let staleCleanup = 0;
         parsed.forEach((p) => {
           if (p.outflowG === undefined && p.outflowAmt === undefined) return;
-          const key = p.code ? (CODE_KEY_PREFIX + normalizeCode(p.code)) : normalizeMaterialName(p.name);
-          if (p.outflowG !== undefined) outflowGrams[key] = p.outflowG;
-          if (p.outflowAmt !== undefined) outflowAmounts[key] = p.outflowAmt;
+          // 기본 키 + 같은 원재료의 대체 키들 (둘 다 정리)
+          const nameKey = normalizeMaterialName(p.name);
+          const codeKey = p.code ? (CODE_KEY_PREFIX + normalizeCode(p.code)) : '';
+          const targetKey = codeKey || nameKey;
+          // stale 정리: 다른 키로 이미 들어가 있던 항목 제거
+          if (codeKey && nameKey !== codeKey) {
+            if (nextG[nameKey] !== undefined) { delete nextG[nameKey]; staleCleanup++; }
+            if (nextAmt[nameKey] !== undefined) delete nextAmt[nameKey];
+          }
+          if (p.outflowG !== undefined) nextG[targetKey] = p.outflowG;
+          if (p.outflowAmt !== undefined) nextAmt[targetKey] = p.outflowAmt;
         });
+        if (staleCleanup > 0) console.warn(`[PriceImport] stale alt-key cleanup: ${staleCleanup}`);
         await setDoc(doc(db, 'materialOutflow', month), {
-          outflowGrams, outflowAmounts, updatedAt: new Date().toISOString(),
-        }, { merge: true });
+          outflowGrams: nextG, outflowAmounts: nextAmt, updatedAt: new Date().toISOString(),
+        }, { merge: false });
       }
 
       const msg = withOutflow
