@@ -33,6 +33,9 @@ function thisMonth(): string {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
+// 천단위 콤마 입력 헬퍼
+function parseNum(s: string): number { return Number((s || '').replace(/[^\d.-]/g, '')) || 0; }
+function fmtNum(n: number): string { return n ? Math.round(n).toLocaleString() : ''; }
 function shiftMonth(m: string, delta: number): string {
   const [y, mm] = m.split('-').map(Number);
   const d = new Date(y, mm - 1 + delta, 1);
@@ -290,25 +293,25 @@ export default function MaterialAnalysis2() {
     saveOutflow({ outflowAmounts: next });
   };
 
-  // 원재료별 총 실제 출고량 — 분배% 계산용 + 검증
+  // 원재료별 원가 산출 수량(costedG) — 분배% 계산용 + 검증
   const totalActualByIngKey = useMemo(() => {
     const m = new Map<string, number>();
-    result?.perIng.forEach((r) => m.set(r.key, r.actualG));
+    result?.perIng.forEach((r) => m.set(r.key, r.costedG));
     return m;
   }, [result]);
 
-  // 검증: 각 원재료의 Σ 제품 분배g 이 실제 출고g 과 일치하는지 (실수 누적 오차 허용)
+  // 검증: 각 원재료의 Σ 제품 분배g 이 원가산출 수량(costedG)과 일치하는지 (실수 누적 오차 허용)
   const verifyRows = useMemo(() => {
     if (!result) return [] as { name: string; code?: string; actualG: number; sumG: number; diff: number; pct: number }[];
     const sumByIng = new Map<string, number>();
     result.perProduct.forEach((p) => p.breakdown.forEach((b) => sumByIng.set(b.ingKey, (sumByIng.get(b.ingKey) || 0) + b.actualG)));
     return result.perIng
-      .filter((r) => r.actualG > 0)
+      .filter((r) => r.costedG > 0)
       .map((r) => {
         const sumG = sumByIng.get(r.key) || 0;
-        const diff = sumG - r.actualG;
-        const pct = r.actualG > 0 ? (Math.abs(diff) / r.actualG) * 100 : 0;
-        return { name: r.name, code: r.code, actualG: r.actualG, sumG, diff, pct };
+        const diff = sumG - r.costedG;
+        const pct = r.costedG > 0 ? (Math.abs(diff) / r.costedG) * 100 : 0;
+        return { name: r.name, code: r.code, actualG: r.costedG, sumG, diff, pct };
       });
   }, [result]);
   const verifySummary = useMemo(() => {
@@ -377,10 +380,10 @@ export default function MaterialAnalysis2() {
       }
     });
 
-    // 시트 2: 제품별 원재료원가
+    // 시트 2: 제품별 원재료원가 (요약)
     const ws2 = wb.addWorksheet('제품별 원재료원가');
     ws2.columns = [
-      { width: 14 }, { width: 36 }, { width: 12 }, { width: 14 }, { width: 14 },
+      { width: 14 }, { width: 36 }, { width: 12 }, { width: 16 }, { width: 14 },
     ];
     ['제품코드', '제품명', '생산수량(EA)', '원재료비(₩)', 'EA당 원가(₩)'].forEach((h, i) => {
       const c = ws2.getCell(1, i + 1);
@@ -400,6 +403,53 @@ export default function MaterialAnalysis2() {
         cell.alignment = { horizontal: c === 2 ? 'left' : c === 1 ? 'center' : 'right' };
         if (c >= 3) cell.numFmt = '#,##0';
       }
+    });
+
+    // 시트 2-2: 제품별 원재료 상세 (breakdown 펼침과 동일)
+    const ws2b = wb.addWorksheet('제품별 원재료 상세');
+    ws2b.columns = [
+      { width: 14 }, { width: 30 }, { width: 12 }, { width: 24 }, { width: 14 }, { width: 10 }, { width: 14 }, { width: 12 },
+    ];
+    ['제품코드', '제품명', '생산EA', '원재료', '분배 g', '분배 %', '원가(₩)', 'EA당(₩)'].forEach((h, i) => {
+      const c = ws2b.getCell(1, i + 1);
+      c.value = h; c.font = { ...baseFont, bold: true }; c.alignment = { horizontal: 'center' };
+      c.fill = fill('FFE2E8F0'); c.border = border;
+    });
+    let rr = 2;
+    result.perProduct.forEach((p) => {
+      // 제품 헤더(합계) 행
+      ws2b.getCell(rr, 1).value = p.code;
+      ws2b.getCell(rr, 2).value = p.productName;
+      ws2b.getCell(rr, 3).value = p.productionQty;
+      ws2b.getCell(rr, 4).value = `합계 (원재료 ${p.breakdown.length}종)`;
+      ws2b.getCell(rr, 7).value = Math.round(p.materialCost);
+      ws2b.getCell(rr, 8).value = Math.round(p.materialCostPerEA);
+      for (let c = 1; c <= 8; c++) {
+        const cell = ws2b.getCell(rr, c);
+        cell.font = { ...baseFont, bold: true }; cell.border = border;
+        cell.fill = fill('FFF1F5F9');
+        cell.alignment = { horizontal: c === 2 || c === 4 ? 'left' : c === 1 ? 'center' : 'right' };
+        if (c === 3 || c === 7 || c === 8) cell.numFmt = '#,##0';
+      }
+      rr++;
+      // 원재료별 상세 행
+      p.breakdown.forEach((b) => {
+        const total = totalActualByIngKey.get(b.ingKey) || 0;
+        const pct = total > 0 ? (b.actualG / total) * 100 : 0;
+        ws2b.getCell(rr, 4).value = displayName(b.ingKey, b.name);
+        ws2b.getCell(rr, 5).value = Math.round(b.actualG);
+        ws2b.getCell(rr, 6).value = Number(pct.toFixed(2));
+        ws2b.getCell(rr, 7).value = Math.round(b.cost);
+        ws2b.getCell(rr, 8).value = p.productionQty > 0 ? Math.round(b.cost / p.productionQty) : 0;
+        for (let c = 1; c <= 8; c++) {
+          const cell = ws2b.getCell(rr, c);
+          cell.font = baseFont; cell.border = border;
+          cell.alignment = { horizontal: c === 4 ? 'left' : 'right' };
+          if (c === 5 || c === 7 || c === 8) cell.numFmt = '#,##0';
+          if (c === 6) cell.numFmt = '0.00"%"';
+        }
+        rr++;
+      });
     });
 
     // 시트 3: 분배 불가
@@ -517,9 +567,9 @@ export default function MaterialAnalysis2() {
                   <th className="border px-2 py-1.5 text-right w-28">이론사용량(g)</th>
                   <th className="border px-2 py-1.5 text-right w-32">실제 출고(g)</th>
                   <th className="border px-2 py-1.5 text-right w-20">수율%</th>
-                  <th className="border px-2 py-1.5 text-right w-32">기초단가 / 실측단가<br/><span className="text-[10px] font-normal text-gray-400">DB값 / 출고금액÷출고량</span></th>
+                  <th className="border px-2 py-1.5 text-right w-32">적용단가 (₩/g)<br/><span className="text-[10px] font-normal text-gray-400">실측 = 출고금액 ÷ 출고수량</span></th>
                   <th className="border px-2 py-1.5 text-right w-32">실제 출고금액(₩)</th>
-                  <th className="border px-2 py-1.5 text-right w-28">실측원가(₩)</th>
+                  <th className="border px-2 py-1.5 text-right w-28">원재료원가(₩)</th>
                 </tr>
               </thead>
               <tbody>
@@ -545,30 +595,38 @@ export default function MaterialAnalysis2() {
                       <td className="border px-2 py-1 text-center font-mono text-gray-500">{r.code || '-'}</td>
                       <td className="border px-2 py-1 text-right">{Math.round(r.theoreticalG).toLocaleString()}</td>
                       <td className="border px-2 py-0">
-                        <input type="number" defaultValue={r.actualG || ''}
+                        <input inputMode="numeric" defaultValue={fmtNum(r.actualG)}
                           key={`g-${r.key}-${r.actualG}`}
-                          onBlur={(e) => updateG(r.key, Number(e.target.value) || 0)}
+                          onBlur={(e) => { const v = parseNum(e.target.value); updateG(r.key, v); e.target.value = fmtNum(v); }}
                           className="w-full px-2 py-1 text-right border-0 focus:bg-yellow-50 focus:ring-1 focus:ring-yellow-300 rounded" />
                       </td>
                       <td className={`border px-2 py-1 text-right ${yClass}`}>{r.actualG > 0 ? yld.toFixed(1) + '%' : '-'}</td>
                       <td className="border px-2 py-1 text-right">
-                        {r.hasPrice ? (
-                          <div className={`leading-tight ${r.usedActualPrice ? 'text-gray-400 line-through text-[11px]' : 'text-gray-800 font-semibold'}`}>{r.basePrice.toFixed(4)}</div>
-                        ) : (
+                        {!r.hasPrice && !r.usedActualPrice ? (
                           <div className="text-amber-600 text-[11px]">⚠️ 없음</div>
-                        )}
-                        {r.usedActualPrice && (
-                          <div className="text-indigo-700 font-bold leading-tight" title="출고금액÷출고량">{r.unitCost.toFixed(2)}</div>
+                        ) : r.usedActualPrice ? (
+                          <div className="leading-tight">
+                            <span className="text-indigo-700 font-bold" title="출고금액 ÷ 출고수량">{r.unitCost.toFixed(2)}</span>
+                            <span className="ml-1 text-[10px] text-blue-500">실측</span>
+                          </div>
+                        ) : (
+                          <div className="leading-tight">
+                            <span className="text-gray-800 font-semibold">{r.basePrice.toFixed(4)}</span>
+                            <span className="ml-1 text-[10px] text-amber-600">기초</span>
+                          </div>
                         )}
                       </td>
                       <td className="border px-2 py-0">
-                        <input type="number" defaultValue={outflowAmt[r.key] || ''}
+                        <input inputMode="numeric" defaultValue={fmtNum(outflowAmt[r.key] || 0)}
                           key={`amt-${r.key}-${outflowAmt[r.key] || 0}`}
                           placeholder="선택"
-                          onBlur={(e) => updateAmt(r.key, Number(e.target.value) || 0)}
+                          onBlur={(e) => { const v = parseNum(e.target.value); updateAmt(r.key, v); e.target.value = v ? fmtNum(v) : ''; }}
                           className="w-full px-2 py-1 text-right border-0 focus:bg-yellow-50 focus:ring-1 focus:ring-yellow-300 rounded text-gray-500" />
                       </td>
-                      <td className="border px-2 py-1 text-right font-semibold">{Math.round(r.totalCost).toLocaleString()}</td>
+                      <td className="border px-2 py-1 text-right font-semibold">
+                        {Math.round(r.totalCost).toLocaleString()}
+                        {r.usedTheoretical && <span className="ml-1 text-[10px] text-amber-600" title="출고 데이터가 없어 이론사용량 × 기초단가로 산출">이론</span>}
+                      </td>
                     </tr>
                   );
                 })}
@@ -612,11 +670,12 @@ export default function MaterialAnalysis2() {
         <div className={`border-2 rounded-lg p-3 text-sm ${verifySummary.maxPct < 0.001 ? 'bg-emerald-50 border-emerald-200' : verifySummary.maxPct < 0.5 ? 'bg-blue-50 border-blue-200' : 'bg-amber-50 border-amber-300'}`}>
           <div className="font-bold text-gray-800 mb-1">🔬 분배 검증</div>
           <div className="text-xs text-gray-700">
-            전체 {verifyRows.length}개 원재료의 <b>Σ(제품별 분배 g)</b> = {Math.round(verifySummary.totalSum).toLocaleString()}g, <b>입력 실측 출고</b> 합계 = {Math.round(verifySummary.totalActual).toLocaleString()}g
+            전체 {verifyRows.length}개 원재료의 <b>Σ(제품별 분배 g)</b> = {Math.round(verifySummary.totalSum).toLocaleString()}g, <b>원가산출 수량</b> 합계 = {Math.round(verifySummary.totalActual).toLocaleString()}g
             <span className="ml-2 font-mono">(최대 오차 {verifySummary.maxPct.toFixed(4)}%)</span>
+            <span className="ml-1 text-gray-400">· 원가산출 수량 = 출고있으면 실제출고, 없으면 이론사용량</span>
           </div>
           {verifySummary.maxPct < 0.001
-            ? <div className="text-xs text-emerald-700 mt-1">✓ 모든 원재료의 분배 합이 실측 출고와 정확히 일치합니다 (분배 무손실)</div>
+            ? <div className="text-xs text-emerald-700 mt-1">✓ 모든 원재료의 분배 합이 원가산출 수량과 정확히 일치합니다 (분배 무손실)</div>
             : verifySummary.maxPct < 0.5
               ? <div className="text-xs text-blue-700 mt-1">✓ 부동소수점 누적 오차 범위 내 (실질적으로 일치)</div>
               : <div className="text-xs text-amber-700 mt-1">

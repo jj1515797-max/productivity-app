@@ -109,7 +109,11 @@ export interface PerIngResult {
   unitCost: number;
   /** 출고금액 입력으로 실측단가가 basePrice 와 다른지 */
   usedActualPrice: boolean;
-  totalCost: number;         // actualG × unitCost
+  /** 원가 산출에 실제 쓰인 수량 g (출고 있으면 actualG, 없으면 이론사용량 폴백) */
+  costedG: number;
+  /** 출고 데이터 없어 이론사용량 × 기초단가로 산출됨 */
+  usedTheoretical: boolean;
+  totalCost: number;         // costedG × unitCost
   hasPrice: boolean;
   /** 분배 불가 = 이론사용량 0 인데 실제출고 입력됨 (BOM 누락/타 라인 등) */
   orphan: boolean;
@@ -203,22 +207,25 @@ export function allocateActualOutflow(
     const basePrice = hasPrice ? basePriceRaw! : 0;
     const usedActualPrice = actualAmt > 0 && actualG > 0;
     const unitCost = usedActualPrice ? actualAmt / actualG : basePrice;
-    const totalCost = actualG * unitCost;
+    // 출고 있으면 actualG, 없으면 기초단가 × 이론사용량 으로 폴백 산출
+    const usedTheoretical = actualG <= 0 && hasPrice && info.theoreticalGrams > 0;
+    const costedG = actualG > 0 ? actualG : (usedTheoretical ? info.theoreticalGrams : 0);
+    const totalCost = costedG * unitCost;
     const yieldPct = actualG > 0 ? (info.theoreticalGrams / actualG) * 100 : 0;
     perIng.push({
       key, name: info.name, code: info.code,
       theoreticalG: info.theoreticalGrams, actualG, yieldPct,
-      basePrice, unitCost, usedActualPrice,
+      basePrice, unitCost, usedActualPrice, costedG, usedTheoretical,
       totalCost, hasPrice, orphan: false,
       ...(remapMeta.get(key) ? { remappedFromKey: remapMeta.get(key)! } : {}),
     });
     ingTotalCost += totalCost;
     theoTotalCost += info.theoreticalGrams * basePrice;
 
-    // 2) 제품별 분배
-    if (info.theoreticalGrams > 0 && actualG > 0) {
+    // 2) 제품별 분배 (costedG 기준 — 출고 없으면 이론수량으로 분배)
+    if (info.theoreticalGrams > 0 && costedG > 0) {
       info.contributions.forEach((c) => {
-        const allocG = actualG * c.share;
+        const allocG = costedG * c.share;
         const allocCost = allocG * unitCost;
         const pk = `${c.isAmbient ? 'A:' : 'C:'}${c.code}`;
         let p = perProductAcc.get(pk);
@@ -250,7 +257,7 @@ export function allocateActualOutflow(
     orphans.push({
       key: k, name: k, code: undefined,
       theoreticalG: 0, actualG: g, yieldPct: 0,
-      basePrice, unitCost, usedActualPrice,
+      basePrice, unitCost, usedActualPrice, costedG: g, usedTheoretical: false,
       totalCost: g * unitCost, hasPrice, orphan: true,
     });
   });
