@@ -29,7 +29,10 @@ export interface UsageResult {
   missingPrices: string[];
 }
 
-/** 그 달 제품코드별 실제 생산수 (잔여량 수정 시 계획 분배) */
+/** 그 달 제품코드별 실제 생산수
+ *  잔여량(logistics) 수정이 있는 날: items.totalQty + (잔여량조정 × totalQty비율) 비례분배
+ *  없는 날: entries(actual+additional)
+ *  ※ computeMonthlyProduction(monthlyProduction.ts) 와 동일 규칙 — 월별현황 합계와 일치 */
 export function computeColdProductionByCode(
   entries: MachineEntry[],
   items: Item[],
@@ -63,11 +66,21 @@ export function computeColdProductionByCode(
     ...Object.keys(logisticsByDay),
   ]);
   allDates.forEach((d) => {
-    const useItems = logisticsByDay[d] !== undefined; // 잔여량 수정 있으면 계획 분배
-    const src = useItems ? (itemsByDateCode[d] || {}) : (entriesByDateCode[d] || {});
-    Object.entries(src).forEach(([code, n]) => {
-      out.set(code, (out.get(code) || 0) + n);
-    });
+    if (logisticsByDay[d] !== undefined) {
+      // 잔여량 수정일: 계획(totalQty) + 잔여량조정을 totalQty 비율로 분배
+      const dayItems = itemsByDateCode[d] || {};
+      const plannedTot = Object.values(dayItems).reduce((s, v) => s + v, 0);
+      const adj = logisticsByDay[d];
+      Object.entries(dayItems).forEach(([code, tq]) => {
+        const share = plannedTot > 0 ? tq / plannedTot : 0;
+        out.set(code, (out.get(code) || 0) + tq + adj * share);
+      });
+    } else {
+      const src = entriesByDateCode[d] || {};
+      Object.entries(src).forEach(([code, n]) => {
+        out.set(code, (out.get(code) || 0) + n);
+      });
+    }
   });
   return out;
 }

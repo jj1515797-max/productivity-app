@@ -444,9 +444,9 @@ export default function MaterialAnalysis2() {
     // 시트 2-2: 제품별 원재료 상세 (breakdown 펼침과 동일)
     const ws2b = wb.addWorksheet('제품별 원재료 상세');
     ws2b.columns = [
-      { width: 14 }, { width: 30 }, { width: 12 }, { width: 24 }, { width: 16 }, { width: 12 }, { width: 16 }, { width: 14 },
+      { width: 14 }, { width: 30 }, { width: 12 }, { width: 24 }, { width: 16 }, { width: 16 }, { width: 12 }, { width: 16 }, { width: 14 },
     ];
-    ['제품코드', '제품명', '생산EA', '원재료', '분배 g', '분배 %', '원가(₩)', 'EA당(₩)'].forEach((h, i) => {
+    ['제품코드', '제품명', '생산EA', '원재료', 'BOM 이론(g)', '분배 g', '분배 %', '원가(₩)', 'EA당(₩)'].forEach((h, i) => {
       const c = ws2b.getCell(1, i + 1);
       c.value = h; c.font = { ...baseFont, bold: true }; c.alignment = { horizontal: 'center' };
       c.fill = fill('FFE2E8F0'); c.border = border;
@@ -458,15 +458,15 @@ export default function MaterialAnalysis2() {
       ws2b.getCell(rr, 2).value = p.productName;
       ws2b.getCell(rr, 3).value = p.productionQty;
       ws2b.getCell(rr, 4).value = `합계 (원재료 ${p.breakdown.length}종)`;
-      ws2b.getCell(rr, 7).value = p.materialCost;
-      ws2b.getCell(rr, 8).value = p.materialCostPerEA;
-      for (let c = 1; c <= 8; c++) {
+      ws2b.getCell(rr, 8).value = p.materialCost;
+      ws2b.getCell(rr, 9).value = p.materialCostPerEA;
+      for (let c = 1; c <= 9; c++) {
         const cell = ws2b.getCell(rr, c);
         cell.font = { ...baseFont, bold: true }; cell.border = border;
         cell.fill = fill('FFF1F5F9');
         cell.alignment = { horizontal: c === 2 || c === 4 ? 'left' : c === 1 ? 'center' : 'right' };
         if (c === 3) cell.numFmt = '#,##0';
-        if (c === 7 || c === 8) cell.numFmt = '#,##0.00########';
+        if (c === 8 || c === 9) cell.numFmt = '#,##0.00########';
       }
       rr++;
       // 원재료별 상세 행
@@ -474,17 +474,18 @@ export default function MaterialAnalysis2() {
         const total = totalActualByIngKey.get(b.ingKey) || 0;
         const pct = total > 0 ? (b.actualG / total) * 100 : 0;
         ws2b.getCell(rr, 4).value = displayName(b.ingKey, b.name);
-        ws2b.getCell(rr, 5).value = b.actualG;
-        ws2b.getCell(rr, 6).value = pct;
-        ws2b.getCell(rr, 7).value = b.cost;
-        ws2b.getCell(rr, 8).value = p.productionQty > 0 ? b.cost / p.productionQty : 0;
-        for (let c = 1; c <= 8; c++) {
+        ws2b.getCell(rr, 5).value = b.theoreticalG;
+        ws2b.getCell(rr, 6).value = b.actualG;
+        ws2b.getCell(rr, 7).value = pct;
+        ws2b.getCell(rr, 8).value = b.cost;
+        ws2b.getCell(rr, 9).value = p.productionQty > 0 ? b.cost / p.productionQty : 0;
+        for (let c = 1; c <= 9; c++) {
           const cell = ws2b.getCell(rr, c);
           cell.font = baseFont; cell.border = border;
           cell.alignment = { horizontal: c === 4 ? 'left' : 'right' };
-          if (c === 5) cell.numFmt = '#,##0.00########';
-          if (c === 6) cell.numFmt = '0.0000########"%"';
-          if (c === 7 || c === 8) cell.numFmt = '#,##0.00########';
+          if (c === 5 || c === 6) cell.numFmt = '#,##0.00########';
+          if (c === 7) cell.numFmt = '0.0000########"%"';
+          if (c === 8 || c === 9) cell.numFmt = '#,##0.00########';
         }
         rr++;
       });
@@ -750,6 +751,7 @@ export default function MaterialAnalysis2() {
                       <thead className="text-gray-500">
                         <tr>
                           <th className="text-left px-2">원재료</th>
+                          <th className="text-right px-2 w-28">BOM 이론(g)</th>
                           <th className="text-right px-2 w-28">분배 g</th>
                           <th className="text-right px-2 w-16">분배 %</th>
                           <th className="text-right px-2 w-28">원가(₩)</th>
@@ -763,6 +765,7 @@ export default function MaterialAnalysis2() {
                           return (
                           <tr key={b.ingKey} className="border-t border-gray-200">
                             <td className="px-2 py-0.5">{displayName(b.ingKey, b.name)}</td>
+                            <td className="px-2 py-0.5 text-right text-gray-500">{Math.round(b.theoreticalG).toLocaleString()}</td>
                             <td className="px-2 py-0.5 text-right">{Math.round(b.actualG).toLocaleString()}</td>
                             <td className="px-2 py-0.5 text-right text-gray-500">{pct.toFixed(2)}%</td>
                             <td className="px-2 py-0.5 text-right">{Math.round(b.cost).toLocaleString()}</td>

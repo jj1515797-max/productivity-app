@@ -123,6 +123,9 @@ export interface PerIngResult {
 export interface PerProductBreakdown {
   ingKey: string;
   name: string;
+  /** BOM 이론사용량 (이 제품의 이 원재료 = gPerPiece × 생산량) */
+  theoreticalG: number;
+  /** 실측 출고 역배분된 g (= costedG × share) */
   actualG: number;
   cost: number;
 }
@@ -270,7 +273,7 @@ export function allocateActualOutflow(
           perProductAcc.set(pk, p);
         }
         p.materialCost += allocCost;
-        p.breakdown.push({ ingKey: key, name: info.name, actualG: allocG, cost: allocCost });
+        p.breakdown.push({ ingKey: key, name: info.name, theoreticalG: c.grams, actualG: allocG, cost: allocCost });
       });
     }
   });

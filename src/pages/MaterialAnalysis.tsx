@@ -923,6 +923,8 @@ export default function MaterialAnalysis() {
                     <th className="border px-2 py-1.5 w-10">순위</th>
                     <th className="border px-2 py-1.5 text-left">원재료</th>
                     <th className="border px-2 py-1.5 w-24">코드</th>
+                    <th className="border px-2 py-1.5 text-right w-24">{monthA} 이론(g)</th>
+                    <th className="border px-2 py-1.5 text-right w-24">{monthB} 이론(g)</th>
                     <th className="border px-2 py-1.5 text-right w-28">{monthA} 금액</th>
                     <th className="border px-2 py-1.5 text-right w-28">연동 금액</th>
                     <th className="border px-2 py-1.5 text-right w-28">{monthB} 금액</th>
@@ -951,6 +953,8 @@ export default function MaterialAnalysis() {
                           {displayName(r.key, r.name)}
                         </td>
                         <td className="border px-2 py-1 text-center font-mono text-gray-500">{r.code || '-'}</td>
+                        <td className="border px-2 py-1 text-right text-gray-500">{Math.round(r.aGrams).toLocaleString()}</td>
+                        <td className="border px-2 py-1 text-right text-gray-500">{Math.round(r.bGrams).toLocaleString()}</td>
                         <td className="border px-2 py-1 text-right text-gray-600">{Math.round(r.aCost).toLocaleString()}</td>
                         <td className="border px-2 py-1 text-right font-semibold text-indigo-700">{Math.round(r.flexedCost).toLocaleString()}</td>
                         <td className="border px-2 py-1 text-right">{Math.round(r.bCost).toLocaleString()}</td>
@@ -974,6 +978,8 @@ export default function MaterialAnalysis() {
                 <tfoot>
                   <tr className="bg-amber-50 font-bold sticky bottom-0">
                     <td className="border px-2 py-1.5 text-center" colSpan={3}>합계</td>
+                    <td className="border px-2 py-1.5 text-right text-gray-500">{Math.round(flexed.reduce((s, r) => s + r.aGrams, 0)).toLocaleString()}</td>
+                    <td className="border px-2 py-1.5 text-right text-gray-500">{Math.round(flexed.reduce((s, r) => s + r.bGrams, 0)).toLocaleString()}</td>
                     <td className="border px-2 py-1.5 text-right">{Math.round(flexAtotal).toLocaleString()}</td>
                     <td className="border px-2 py-1.5 text-right text-indigo-700">{Math.round(flexFlexedTotal).toLocaleString()}</td>
                     <td className="border px-2 py-1.5 text-right">{Math.round(flexBtotal).toLocaleString()}</td>
