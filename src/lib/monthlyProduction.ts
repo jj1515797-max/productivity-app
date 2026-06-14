@@ -139,9 +139,9 @@ export function computeMonthlyProduction(
   const coldTotal = Math.round(coldTotalRaw);
   const ambientTotal = ambientList.reduce((s, a) => s + a.qty, 0);
 
-  // 정수 코드별 Map (검색 시 단계 분배용)
-  const coldByCodeRounded = new Map<string, number>();
-  codeQty.forEach((v, k) => coldByCodeRounded.set(k, Math.round(v)));
+  // 코드별 Map — 분석2/검색이 이걸로 이론사용량을 계산하므로 raw 정확값 유지 (반올림 X)
+  const coldByCode = new Map<string, number>();
+  codeQty.forEach((v, k) => coldByCode.set(k, v));
 
   return {
     coldTotal,
@@ -150,7 +150,7 @@ export function computeMonthlyProduction(
     stages,
     ambient: ambientList,
     maxStage,
-    coldByCode: coldByCodeRounded,
+    coldByCode,
   };
 }
 
