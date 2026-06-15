@@ -244,19 +244,6 @@ export default function MaterialAnalysis2() {
     } finally { setRunning(false); }
   };
 
-  // 자동 채움: 이론사용량으로 출고량 채우기
-  const fillTheoretical = () => {
-    if (!byIng) return;
-    const next: Record<string, number> = {};
-    byIng.forEach((v, k) => { next[k] = Math.round(v.theoreticalGrams); });
-    setOutflowG(next);
-    saveOutflow({ outflowGrams: next });
-  };
-  const clearOutflow = () => {
-    if (!confirm('실제 출고량 입력을 모두 지울까요?')) return;
-    setOutflowG({}); setOutflowAmt({});
-    saveOutflow({ outflowGrams: {}, outflowAmounts: {} });
-  };
 
   // 반제품 펼침 옵션에 따라 effective recipe map 산출
   const effRecipeMap = useMemo(() => (expandSub ? expandRecipeMap(recipeMap, subRecipeMap) : recipeMap), [recipeMap, subRecipeMap, expandSub]);
@@ -610,7 +597,7 @@ export default function MaterialAnalysis2() {
       {kpi && kpi.totalActualG > 0 && kpi.totalActualG < kpi.totalTheoG * 0.1 && (
         <div className="bg-rose-50 border-2 border-rose-300 rounded-lg p-3 text-sm text-rose-800">
           🚨 <b>출고 입력이 비정상적으로 작습니다</b> — 실제 출고 합계 {Math.round(kpi.totalActualG).toLocaleString()}g 가 이론 사용량 {Math.round(kpi.totalTheoG).toLocaleString()}g 의 10% 미만입니다.
-          이전에 천단위 콤마가 깨진 상태로 저장된 데이터일 수 있어요. <b>🗑️ 입력 초기화</b> 후 일괄입력을 다시 하거나 표에서 직접 수정하세요.
+          이전에 천단위 콤마가 깨진 상태로 저장된 데이터일 수 있어요. 설정 &gt; 재고평가현황 에서 일괄입력 다시 또는 표에서 직접 수정하세요.
         </div>
       )}
 
@@ -629,13 +616,11 @@ export default function MaterialAnalysis2() {
         <div className="bg-white border-2 border-indigo-200 rounded-lg overflow-hidden">
           <div className="px-4 py-3 bg-indigo-600 text-white font-bold text-sm flex items-center gap-2 flex-wrap">
             <span>📌 원재료별 실제 출고 입력 ({result.perIng.length}건)</span>
-            <span className="text-xs font-normal text-indigo-100">자동 채움 후 ERP 재고평가 실측치로 수정 → 자동 저장</span>
+            <span className="text-xs font-normal text-indigo-100">설정 &gt; 재고평가현황 일괄입력으로 데이터 관리 → 자동 반영</span>
             <div className="ml-auto flex gap-1.5">
               <input value={search} onChange={(e) => setSearch(e.target.value)}
                 placeholder="🔍 원재료/코드 검색"
                 className="text-gray-800 text-xs rounded px-2 py-1 border-0" />
-              <button onClick={fillTheoretical} className="px-2 py-1 text-xs rounded bg-white text-indigo-700 font-semibold hover:bg-indigo-50">📋 이론사용량으로 채우기</button>
-              <button onClick={clearOutflow} className="px-2 py-1 text-xs rounded bg-rose-500 text-white font-semibold hover:bg-rose-600">🗑️ 입력 초기화</button>
             </div>
           </div>
           <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
