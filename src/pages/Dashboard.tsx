@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState } from 'react';
-import { collection, doc, onSnapshot, writeBatch } from 'firebase/firestore';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { collection, doc, onSnapshot, runTransaction, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
 import { loadViewDate, saveViewDate } from '../lib/viewDate';
 import type { Item } from '../types';
 import { compareCode } from '../lib/codeUtil';
+import { sendCompletionMail } from '../lib/productionNotify';
+import type { NotifySettings } from '../lib/productionNotify';
 
 const MACHINES = ['1호기', '2호기', '3호기'] as const;
 
@@ -39,6 +41,13 @@ export default function Dashboard() {
     return day === 0 || day === 6;
   });
   const [hasSample, setHasSample] = useState(false);
+
+  // 생산완료 Gmail 알림 설정 구독
+  const [notifyCfg, setNotifyCfg] = useState<NotifySettings>({});
+  useEffect(() => onSnapshot(doc(db, 'appMeta', 'notifySettings'), (snap) => {
+    setNotifyCfg((snap.data() || {}) as NotifySettings);
+  }), []);
+  const prevPctRef = useRef<number | null>(null);
 
   // 각 호기의 실제 생산량: { code: qty }
   const [machineQty, setMachineQty] = useState<Record<string, Record<string, number>>>({
@@ -147,6 +156,44 @@ export default function Dashboard() {
       : 0;
     return { totalQty, actual, itemCount, completedItems, pct };
   }, [items, actualByCode, logisticsByCode, hasLogistics]);
+
+  // 진행률 100% 전환 순간 Gmail 알림 발송 (당일 현황만, 하루 1통)
+  useEffect(() => {
+    const pct = stats.pct;
+    const prev = prevPctRef.current;
+    prevPctRef.current = pct;
+    if (prev === null) return;                 // 첫 렌더(초기값)는 트리거 안 함
+    if (!(prev < 100 && pct >= 100)) return;   // 99→100 전환 순간만
+    if (viewDate !== todayKey()) return;        // 오늘 현황일 때만
+    if (stats.totalQty <= 0) return;            // 데이터 있는 날만
+    const cfg = notifyCfg;
+    if (!cfg.enabled || !cfg.webAppUrl?.trim() || !cfg.emails?.trim()) return;
+
+    (async () => {
+      try {
+        // 멀티 클라이언트 중복 방지: notifyLog 트랜잭션으로 그날 미발송일 때만 발송
+        const ref = doc(db, 'appMeta', 'notifyLog');
+        const today = todayKey();
+        const claimed = await runTransaction(db, async (tx) => {
+          const snap = await tx.get(ref);
+          const data = (snap.data() || {}) as { sentDates?: Record<string, number> };
+          const sent = data.sentDates || {};
+          if (sent[today]) return false;           // 이미 누군가 발송함
+          sent[today] = Date.now();
+          tx.set(ref, { sentDates: sent }, { merge: true });
+          return true;
+        });
+        if (!claimed) return;
+
+        const dateStr = dateLabel(today);
+        const subject = '내포장 100% 진행 완료';
+        const body = `내포장이 100% 진행 완료되었습니다.\n\n날짜: ${dateStr}\n공장: 순수본 1공장\n완료: ${stats.completedItems}/${stats.itemCount}품목`;
+        await sendCompletionMail(cfg.webAppUrl!, cfg.emails!, subject, body);
+      } catch (e) {
+        console.error('[생산완료 알림] 발송 실패:', e);
+      }
+    })();
+  }, [stats.pct, stats.totalQty, stats.completedItems, stats.itemCount, viewDate, notifyCfg]);
 
   const onPaste = async () => {
     const num = (s: string) => {
