@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { collection, doc, onSnapshot, runTransaction, writeBatch } from 'firebase/firestore';
+import { collection, doc, onSnapshot, runTransaction, setDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
 import { loadViewDate, saveViewDate } from '../lib/viewDate';
@@ -164,6 +164,24 @@ export default function Dashboard() {
       : 0;
     return { totalQty, actual, itemCount, completedItems, pct };
   }, [items, actualByCode, logisticsByCode, hasLogistics]);
+
+  // 오늘 현황의 진행률을 단일 문서에 저장 → Apps Script 시간트리거가 이 한 줄만 읽어 판단
+  //  (화면이 켜져 진행률이 바뀔 때만 가벼운 1쓰기. 과거 날짜 조회 시엔 저장 안 함)
+  const lastProgressRef = useRef<string>('');
+  useEffect(() => {
+    if (viewDate !== todayKey()) return;
+    const sig = `${stats.pct}|${stats.completedItems}|${stats.itemCount}|${stats.totalQty}`;
+    if (lastProgressRef.current === sig) return;   // 값 안 바뀌면 쓰기 생략
+    lastProgressRef.current = sig;
+    setDoc(doc(db, 'appMeta', 'dailyProgress'), {
+      date: viewDate,
+      pct: stats.pct,
+      completedItems: stats.completedItems,
+      itemCount: stats.itemCount,
+      totalQty: stats.totalQty,
+      updatedAt: new Date().toISOString(),
+    }, { merge: true }).catch(() => {});
+  }, [stats.pct, stats.completedItems, stats.itemCount, stats.totalQty, viewDate]);
 
   // 진행률 100% 이면 Gmail 알림 발송 (당일 현황만, 하루 1통)
   //  전환 감지(99→100) 대신 "100% 상태이고 그날 미발송"이면 발송 → 이미 100%인 화면을 열거나
