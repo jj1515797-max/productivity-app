@@ -6,22 +6,6 @@
  */
 export interface NotifySettings {
   enabled?: boolean;
-  webAppUrl?: string;
-  emails?: string;   // 콤마 구분
+  emails?: string;   // 콤마 구분 — Apps Script(시간트리거)가 appMeta/notifySettings 에서 읽어 발송
   updatedAt?: string;
-}
-
-export async function sendCompletionMail(
-  webAppUrl: string,
-  emails: string,
-  subject: string,
-  body: string,
-): Promise<void> {
-  if (!webAppUrl || !emails.trim()) return;
-  await fetch(webAppUrl, {
-    method: 'POST',
-    mode: 'no-cors',
-    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
-    body: JSON.stringify({ emails, subject, body }),
-  });
 }

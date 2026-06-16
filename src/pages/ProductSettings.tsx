@@ -4,7 +4,6 @@ import { db } from '../firebase';
 import type { Material, ProductSetting } from '../types';
 import { canonicalShort, convertErpCode } from '../lib/codeUtil';
 import { CODE_KEY_PREFIX, normalizeCode, normalizeMaterialName } from '../lib/wasteCompute';
-import { sendCompletionMail } from '../lib/productionNotify';
 import type { NotifySettings } from '../lib/productionNotify';
 
 type ProdType = '냄비' | '바트';
@@ -323,15 +322,14 @@ export default function ProductSettings() {
 }
 
 function NotifySettingsPanel() {
-  const [cfg, setCfg] = useState<NotifySettings>({ enabled: false, webAppUrl: '', emails: '' });
+  const [cfg, setCfg] = useState<NotifySettings>({ enabled: false, emails: '' });
   const [loaded, setLoaded] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [testing, setTesting] = useState(false);
 
   useEffect(() => {
     return onSnapshot(doc(db, 'appMeta', 'notifySettings'), (snap) => {
       const d = (snap.data() || {}) as NotifySettings;
-      setCfg({ enabled: !!d.enabled, webAppUrl: d.webAppUrl || '', emails: d.emails || '' });
+      setCfg({ enabled: !!d.enabled, emails: d.emails || '' });
       setLoaded(true);
     });
   }, []);
@@ -340,23 +338,10 @@ function NotifySettingsPanel() {
     setCfg(next);
     setSaving(true);
     try {
-      await setDoc(doc(db, 'appMeta', 'notifySettings'), { ...next, updatedAt: new Date().toISOString() }, { merge: true });
+      await setDoc(doc(db, 'appMeta', 'notifySettings'), {
+        enabled: !!next.enabled, emails: next.emails || '', updatedAt: new Date().toISOString(),
+      }, { merge: true });
     } finally { setSaving(false); }
-  };
-
-  const test = async () => {
-    if (!cfg.webAppUrl?.trim() || !cfg.emails?.trim()) { alert('웹앱 URL 과 받는 이메일을 먼저 입력하세요.'); return; }
-    setTesting(true);
-    try {
-      await sendCompletionMail(
-        cfg.webAppUrl, cfg.emails,
-        '[테스트] 내포장 100% 진행 완료',
-        '내포장 알림 테스트 메일입니다.\n이 메일이 도착하면 설정이 정상입니다.',
-      );
-      alert('테스트 발송을 요청했습니다.\n잠시 후 받는 이메일의 받은편지함(스팸함 포함)을 확인하세요.\n(브라우저 보안상 발송 성공 여부는 화면에서 확인할 수 없어 메일 도착으로 판단합니다)');
-    } catch (e: any) {
-      alert('발송 요청 실패: ' + (e?.message || e));
-    } finally { setTesting(false); }
   };
 
   if (!loaded) return <div className="p-4 text-sm text-gray-400">불러오는 중…</div>;
@@ -364,10 +349,9 @@ function NotifySettingsPanel() {
   return (
     <div className="space-y-3">
       <div className="bg-blue-50 border border-blue-200 rounded p-3 text-xs text-blue-800 space-y-1">
-        <div><b>현황 진행률이 100% 되는 순간</b> 등록된 이메일로 Gmail 알림이 자동 발송됩니다.</div>
-        <div>· 누군가 <b>현황 페이지를 켜둔 상태</b>여야 발송됩니다(공장 모니터 등). 모든 기기가 닫혀있으면 안 됨.</div>
-        <div>· 같은 날 1통만 발송되고, 여러 기기가 켜져 있어도 중복 발송되지 않습니다.</div>
-        <div>· 아래 <b>Google Apps Script 웹앱 URL</b> 이 필요합니다 (설정법은 화면 하단 안내 참고).</div>
+        <div><b>현황 진행률이 100% 되면</b> 아래 등록된 이메일로 Gmail 알림이 자동 발송됩니다.</div>
+        <div>· 발송은 <b>Google Apps Script(구글 서버)</b> 가 매일 <b>15:00~18:00 사이 1분마다</b> 확인해 처리합니다 — 현황 화면을 안 켜둬도 됩니다.</div>
+        <div>· 같은 날 1통만 발송됩니다. 여기서 <b>받는 이메일을 추가/삭제</b>하면 즉시 반영됩니다.</div>
       </div>
 
       <label className="flex items-center gap-2 text-sm">
@@ -380,47 +364,10 @@ function NotifySettingsPanel() {
         <label className="text-xs text-gray-600 font-semibold">받는 이메일 (여러 명은 콤마로 구분)</label>
         <input value={cfg.emails || ''} onChange={(e) => setCfg({ ...cfg, emails: e.target.value })}
           onBlur={() => save(cfg)}
-          placeholder="hong@gmail.com, kim@gmail.com"
+          placeholder="hong@gmail.com, kim@bongroup.co.kr"
           className="mt-1 w-full border rounded px-3 py-2 text-sm" />
+        <div className="text-[11px] text-gray-400 mt-1">입력 후 칸 밖을 클릭하면 자동 저장됩니다.</div>
       </div>
-
-      <div>
-        <label className="text-xs text-gray-600 font-semibold">Google Apps Script 웹앱 URL</label>
-        <input value={cfg.webAppUrl || ''} onChange={(e) => setCfg({ ...cfg, webAppUrl: e.target.value })}
-          onBlur={() => save(cfg)}
-          placeholder="https://script.google.com/macros/s/AKfyc.../exec"
-          className="mt-1 w-full border rounded px-3 py-2 text-sm font-mono" />
-      </div>
-
-      <button onClick={test} disabled={testing}
-        className="px-4 py-2 bg-emerald-600 text-white rounded text-sm font-semibold hover:bg-emerald-700 disabled:bg-gray-300">
-        {testing ? '요청 중…' : '✉️ 테스트 발송'}
-      </button>
-
-      <details className="text-xs text-gray-600 bg-slate-50 border rounded p-3">
-        <summary className="cursor-pointer font-semibold text-gray-700">📋 Apps Script 웹앱 만드는 법 (1회, 5분)</summary>
-        <ol className="mt-2 ml-4 list-decimal space-y-1">
-          <li>구글 드라이브 → 새로 만들기 → 더보기 → <b>Google Apps Script</b></li>
-          <li>아래 코드를 전부 붙여넣고 저장</li>
-          <li>우측 상단 <b>배포 → 새 배포 → 유형: 웹 앱</b></li>
-          <li>실행 계정 = <b>본인</b>, 액세스 권한 = <b>모든 사용자</b> → 배포</li>
-          <li>나오는 <b>웹 앱 URL</b> 을 위 칸에 붙여넣기</li>
-        </ol>
-        <pre className="mt-2 bg-white border rounded p-2 overflow-x-auto whitespace-pre text-[11px] leading-snug">{`function doPost(e) {
-  try {
-    var d = JSON.parse(e.postData.contents);
-    var emails = String(d.emails || '').split(/\\s*,\\s*/).filter(Boolean);
-    var subject = d.subject || '생산 완료 알림';
-    var body = d.body || '생산이 100% 완료되었습니다.';
-    emails.forEach(function(to){
-      try { MailApp.sendEmail({ to: to, subject: subject, body: body }); } catch (x) {}
-    });
-    return ContentService.createTextOutput(JSON.stringify({ ok: true }));
-  } catch (err) {
-    return ContentService.createTextOutput(JSON.stringify({ ok: false, error: String(err) }));
-  }
-}`}</pre>
-      </details>
     </div>
   );
 }
