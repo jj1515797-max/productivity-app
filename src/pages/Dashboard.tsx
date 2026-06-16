@@ -47,7 +47,15 @@ export default function Dashboard() {
   useEffect(() => onSnapshot(doc(db, 'appMeta', 'notifySettings'), (snap) => {
     setNotifyCfg((snap.data() || {}) as NotifySettings);
   }), []);
-  const prevPctRef = useRef<number | null>(null);
+  const sessionSentRef = useRef<string>('');  // 이 세션에서 마지막으로 발송 처리한 날짜
+  // 탭이 백그라운드였다 다시 보일 때 알림 effect 재평가 (이미 100%였던 경우 누락 방지)
+  const [visibleTick, setVisibleTick] = useState(0);
+  useEffect(() => {
+    const bump = () => { if (document.visibilityState === 'visible') setVisibleTick((t) => t + 1); };
+    document.addEventListener('visibilitychange', bump);
+    window.addEventListener('focus', bump);
+    return () => { document.removeEventListener('visibilitychange', bump); window.removeEventListener('focus', bump); };
+  }, []);
 
   // 각 호기의 실제 생산량: { code: qty }
   const [machineQty, setMachineQty] = useState<Record<string, Record<string, number>>>({
@@ -157,23 +165,23 @@ export default function Dashboard() {
     return { totalQty, actual, itemCount, completedItems, pct };
   }, [items, actualByCode, logisticsByCode, hasLogistics]);
 
-  // 진행률 100% 전환 순간 Gmail 알림 발송 (당일 현황만, 하루 1통)
+  // 진행률 100% 이면 Gmail 알림 발송 (당일 현황만, 하루 1통)
+  //  전환 감지(99→100) 대신 "100% 상태이고 그날 미발송"이면 발송 → 이미 100%인 화면을 열거나
+  //  백그라운드 탭이 늦게 깨어나도 누락 없이 발송됨. 중복은 notifyLog + 세션ref 가 막음.
   useEffect(() => {
-    const pct = stats.pct;
-    const prev = prevPctRef.current;
-    prevPctRef.current = pct;
-    if (prev === null) return;                 // 첫 렌더(초기값)는 트리거 안 함
-    if (!(prev < 100 && pct >= 100)) return;   // 99→100 전환 순간만
+    if (stats.pct < 100) return;
     if (viewDate !== todayKey()) return;        // 오늘 현황일 때만
     if (stats.totalQty <= 0) return;            // 데이터 있는 날만
     const cfg = notifyCfg;
     if (!cfg.enabled || !cfg.webAppUrl?.trim() || !cfg.emails?.trim()) return;
 
+    const today = todayKey();
+    if (sessionSentRef.current === today) return;  // 이 세션에서 오늘 이미 처리함(불필요한 트랜잭션 방지)
+
     (async () => {
       try {
         // 멀티 클라이언트 중복 방지: notifyLog 트랜잭션으로 그날 미발송일 때만 발송
         const ref = doc(db, 'appMeta', 'notifyLog');
-        const today = todayKey();
         const claimed = await runTransaction(db, async (tx) => {
           const snap = await tx.get(ref);
           const data = (snap.data() || {}) as { sentDates?: Record<string, number> };
@@ -183,6 +191,7 @@ export default function Dashboard() {
           tx.set(ref, { sentDates: sent }, { merge: true });
           return true;
         });
+        sessionSentRef.current = today;            // claimed 여부와 무관하게 이 세션은 오늘 처리 완료
         if (!claimed) return;
 
         const dateStr = dateLabel(today);
@@ -193,7 +202,7 @@ export default function Dashboard() {
         console.error('[생산완료 알림] 발송 실패:', e);
       }
     })();
-  }, [stats.pct, stats.totalQty, stats.completedItems, stats.itemCount, viewDate, notifyCfg]);
+  }, [stats.pct, stats.totalQty, stats.completedItems, stats.itemCount, viewDate, notifyCfg, visibleTick]);
 
   const onPaste = async () => {
     const num = (s: string) => {
