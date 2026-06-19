@@ -166,11 +166,14 @@ function computeMonthStats(
   const coldDaysN = workedDays.filter((d) => (coldByDay[d] || 0) > 0).length;
   const ambDaysN = workedDays.filter((d) => (ambByDay[d] || 0) > 0).length;
 
-  // 품목수는 냉장만 카운트
+  // 품목수: 그날 계획(items)에 올라온 냉장 품목 수 기준 (엑셀 '품목수'와 동일).
+  //  실제생산(entries) 기준이 아니라, 발주/계획된 품목 수라 진행중인 날도 안정적.
+  //  items 가 있는 날만 분모에 들어가므로 토요일 등 생산 없는 날은 자동 제외.
   const itemsByDay: Record<string, Set<string>> = {};
-  useEntries.forEach((e) => {
-    if (!itemsByDay[e.date]) itemsByDay[e.date] = new Set();
-    itemsByDay[e.date].add(e.code.toLowerCase());
+  useItems.forEach((it) => {
+    if (!it.code) return;
+    if (!itemsByDay[it.date]) itemsByDay[it.date] = new Set();
+    itemsByDay[it.date].add(it.code.toLowerCase());
   });
   const counts = Object.values(itemsByDay).map((s) => s.size);
   const itemsAvgPerDay = counts.length ? counts.reduce((s, v) => s + v, 0) / counts.length : 0;
