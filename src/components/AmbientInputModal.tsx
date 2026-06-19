@@ -253,9 +253,20 @@ function MonthView({ defaultMonth, onClose }: { defaultMonth: string; onClose: (
   // 빠른 추가 폼
   const [addDate, setAddDate] = useState(`${defaultMonth}-01`);
   const [addProduct, setAddProduct] = useState('');
+  const [addQuery, setAddQuery] = useState('');     // 자동완성 입력 텍스트
+  const [showSuggest, setShowSuggest] = useState(false);
   const [addQty, setAddQty] = useState<number>(0);
 
   useEffect(() => { setAddDate(`${month}-01`); }, [month]);
+
+  // 자동완성 후보 (입력어 부분일치)
+  const suggestions = useMemo(() => {
+    const q = addQuery.trim().toLowerCase();
+    if (!q) return [];
+    return AMBIENT_PRODUCTS
+      .filter((p) => p.name.toLowerCase().includes(q))
+      .slice(0, 12);
+  }, [addQuery]);
 
   useEffect(() => {
     const start = `${month}-01`;
@@ -309,6 +320,12 @@ function MonthView({ defaultMonth, onClose }: { defaultMonth: string; onClose: (
     await deleteDoc(doc(db, 'days', d, 'ambient', slug)).catch(() => {});
   };
 
+  const pickProduct = (name: string, cat: string) => {
+    setAddProduct(name);
+    setAddQuery(name.replace(`${cat}_`, '').replace('순수본_', ''));
+    setShowSuggest(false);
+  };
+
   const quickAdd = async () => {
     if (!addProduct || addQty <= 0 || !addDate) return;
     const product = AMBIENT_PRODUCTS.find((p) => p.name === addProduct);
@@ -318,6 +335,7 @@ function MonthView({ defaultMonth, onClose }: { defaultMonth: string; onClose: (
       productName: addProduct, category: product.category, qty: addQty, date: addDate,
     });
     setAddQty(0);
+    setAddProduct(''); setAddQuery('');
   };
 
   const dLabel = (d: string) => {
@@ -350,16 +368,34 @@ function MonthView({ defaultMonth, onClose }: { defaultMonth: string; onClose: (
             <span className="text-xs font-bold text-orange-700">+ 추가:</span>
             <input type="date" value={addDate} min={`${month}-01`} max={`${month}-31`}
               onChange={(e) => setAddDate(e.target.value)} className="border rounded px-2 py-1 text-sm" />
-            <select value={addProduct} onChange={(e) => setAddProduct(e.target.value)} className="border rounded px-2 py-1 text-sm min-w-[180px]">
-              <option value="">제품 선택…</option>
-              {AMBIENT_CATEGORIES.map((cat) => (
-                <optgroup key={cat} label={cat}>
-                  {AMBIENT_PRODUCTS.filter((p) => p.category === cat).map((p) => (
-                    <option key={p.name} value={p.name}>{p.name.replace(`${cat}_`, '').replace('순수본_', '')}</option>
-                  ))}
-                </optgroup>
-              ))}
-            </select>
+            {/* 제품 자동완성 */}
+            <div className="relative">
+              <input
+                value={addQuery}
+                onChange={(e) => { setAddQuery(e.target.value); setAddProduct(''); setShowSuggest(true); }}
+                onFocus={() => setShowSuggest(true)}
+                onBlur={() => setTimeout(() => setShowSuggest(false), 150)}
+                placeholder="제품명 입력…"
+                className="border rounded px-2 py-1 text-sm min-w-[200px]"
+              />
+              {showSuggest && suggestions.length > 0 && (
+                <div className="absolute z-20 left-0 top-full mt-1 w-64 max-h-60 overflow-y-auto bg-white border rounded-lg shadow-lg">
+                  {suggestions.map((p) => {
+                    const style = CATEGORY_STYLES[p.category as keyof typeof CATEGORY_STYLES] || CATEGORY_STYLES['순수본'];
+                    return (
+                      <button key={p.name}
+                        onMouseDown={(e) => { e.preventDefault(); pickProduct(p.name, p.category); }}
+                        className="w-full text-left px-3 py-1.5 text-sm hover:bg-orange-50 flex items-center gap-2 border-b last:border-b-0">
+                        <span className={`inline-block w-2 h-2 rounded-full ${style.chip}`} />
+                        <span className="text-[11px] text-gray-400">{p.category}</span>
+                        <span>{p.name.replace(`${p.category}_`, '').replace('순수본_', '')}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+              {addProduct && <span className="absolute -bottom-4 left-1 text-[10px] text-emerald-600">✓ 선택됨</span>}
+            </div>
             <input type="number" value={addQty || ''} onChange={(e) => setAddQty(Number(e.target.value) || 0)}
               placeholder="수량(EA)" className="w-24 border rounded px-2 py-1 text-sm text-right" />
             <button onClick={quickAdd} disabled={!addProduct || addQty <= 0}
