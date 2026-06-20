@@ -83,6 +83,16 @@ export default function AnalyticsDaily() {
     });
   }, [viewDate]);
 
+  // 일자 메타 (AR 일용직 출근수) — productivity 문서에 attend 없을 때 fallback 에 더해줌
+  const [arPresent, setArPresent] = useState(0);
+  useEffect(() => {
+    setArPresent(0);
+    return onSnapshot(doc(db, 'attendanceMeta', viewDate), (snap) => {
+      const d = snap.exists() ? (snap.data() as { arPresent?: number }) : {};
+      setArPresent(Number(d.arPresent) || 0);
+    });
+  }, [viewDate]);
+
   // 잔여량 (물류) 구독 — 잔여량 수정 후 즉시 반영
   useEffect(() => {
     setLogisticsTotal({ total: 0, hasData: false, byCode: {} });
@@ -179,7 +189,7 @@ export default function AnalyticsDaily() {
 
     // 출근인원 / 연차 (수동 우선, 없으면 조직도 자동 계산)
     const summary = summarizeAttendance(members, attendRecords, viewDate);
-    const attend = productivity.attend ?? summary.presentN;
+    const attend = productivity.attend ?? (summary.presentN + arPresent);  // 자동값에 AR(일용직) 포함
     const leave = productivity.leave ?? summary.leaveDays;
     const denom = attend + leave;
     const productivityValue = denom > 0 && coldOrdered > 0 ? coldOrdered / denom : null;
@@ -188,7 +198,7 @@ export default function AnalyticsDaily() {
       totalActual, coldActual, ambientTotal, itemCount, remaining, byStage, maxStage,
       coldOrdered, attend, leave, productivityValue,
     };
-  }, [items, ambient, actualByCode, members, attendRecords, productivity, viewDate, logisticsTotal]);
+  }, [items, ambient, actualByCode, members, attendRecords, productivity, viewDate, logisticsTotal, arPresent]);
 
   return (
     <div className="space-y-5">
