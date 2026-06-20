@@ -8,7 +8,7 @@ import { summarizeAttendance } from '../lib/attendance';
 import { canonicalShort, convertErpCode, normalizeCode } from '../lib/codeUtil';
 
 /* ===== localStorage 캐시 ===== */
-const CACHE_PREFIX = 'productivity:';
+const CACHE_PREFIX = 'productivity:v2:';   // v2: 출근수에 AR(일용직) 포함 — 캐시 무효화
 const TTL_PAST    = 24 * 60 * 60 * 1000; // 과거 월: 24h
 const TTL_CURRENT = 5 * 60 * 1000;       // 현재 월: 5분
 
@@ -359,11 +359,13 @@ export default function Productivity() {
 
       const recsByDate: Record<string, Record<string, AttendanceRecord>> = {};
       const snapshotByDate: Record<string, Member[]> = {};
+      const arPresentByDate: Record<string, number> = {};  // attendanceMeta.arPresent (일용직 출근수)
       await Promise.all(datesNeedingAttendance.map(async (date) => {
         try {
-          const [recSnap, memSnap] = await Promise.all([
+          const [recSnap, memSnap, metaSnap] = await Promise.all([
             getDocs(collection(db, 'attendance', date, 'records')),
             getDoc(doc(db, 'attendanceSnapshot', date)),
+            getDoc(doc(db, 'attendanceMeta', date)),
           ]);
           const map: Record<string, AttendanceRecord> = {};
           recSnap.forEach((d) => { map[d.id] = d.data() as AttendanceRecord; });
@@ -371,6 +373,10 @@ export default function Productivity() {
           if (memSnap.exists()) {
             const data = memSnap.data() as { members?: Member[] };
             if (Array.isArray(data.members)) snapshotByDate[date] = data.members;
+          }
+          if (metaSnap.exists()) {
+            const md = metaSnap.data() as { arPresent?: number };
+            arPresentByDate[date] = Number(md.arPresent) || 0;
           }
         } catch {}
       }));
@@ -420,11 +426,12 @@ export default function Productivity() {
         const auto = potBatByDate[date] || { pot: 0, bat: 0 };
         const memsForDate = snapshotByDate[date] || members;
         const attSummary = summarizeAttendance(memsForDate, recsByDate[date] || {}, date);
+        const arP = arPresentByDate[date] || 0;
         byMonth[mk].push({
           date,
           pot: Number(doc.pot ?? auto.pot) || 0,
           bat: Number(doc.bat ?? auto.bat) || 0,
-          attend: Number(doc.attend ?? attSummary.presentN) || 0,
+          attend: Number(doc.attend ?? (attSummary.presentN + arP)) || 0,    // 자동값에 AR(일용직) 포함
           leave: Number(doc.leave ?? attSummary.leaveDays) || 0,
           pp_people: doc.pp_people, pp_start: doc.pp_start, pp_end: doc.pp_end,
           bg_people: doc.bg_people, bg_start: doc.bg_start, bg_end: doc.bg_end,
