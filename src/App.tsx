@@ -17,6 +17,7 @@ import MaterialAnalysis2 from './pages/MaterialAnalysis2';
 import ProductSettings from './pages/ProductSettings';
 import Inventory from './pages/Inventory';
 import Remix from './pages/Remix';
+import Scoop from './pages/Scoop';
 import Logo from './components/Logo';
 import AnalyticsGate from './components/AnalyticsGate';
 import { useTrackVisit } from './lib/presence';
@@ -41,6 +42,8 @@ function MainContainer() {
         <Route path="/" element={<Dashboard />} />
         <Route path="/machine/:id" element={<Machine />} />
         <Route path="/external/:id" element={<ExternalPack />} />
+        <Route path="/scoop" element={<Scoop />} />
+        <Route path="/scoop/board" element={<Scoop board />} />
         <Route path="/remaining" element={<Remaining />} />
         <Route path="/report" element={<Report />} />
         <Route path="/import" element={<Import />} />
@@ -68,7 +71,7 @@ function MainContainer() {
 type Section = 'dashboard' | 'input' | 'analytics' | 'attendance' | 'inventory';
 
 function getSection(pathname: string): Section {
-  if (pathname.startsWith('/machine') || pathname.startsWith('/external')) return 'input';
+  if (pathname.startsWith('/machine') || pathname.startsWith('/external') || pathname.startsWith('/scoop')) return 'input';
   if (pathname.startsWith('/analytics') || pathname === '/report' || pathname === '/remaining') return 'analytics';
   if (pathname.startsWith('/attendance')) return 'attendance';
   if (pathname.startsWith('/inventory')) return 'inventory';
@@ -84,6 +87,8 @@ const SUB_TABS: Record<Section, { label: string; to: string; exact?: boolean }[]
     { label: '외포장-1', to: '/external/1' },
     { label: '외포장-2', to: '/external/2' },
     { label: '외포장-3', to: '/external/3' },
+    { label: '내포장', to: '/scoop' },
+    { label: '내포장 현황판', to: '/scoop/board' },
   ],
   analytics: [
     { label: '일별요약', to: '/analytics', exact: true },
