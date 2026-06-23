@@ -338,6 +338,16 @@ function BoardView({
     return { it, s, done, tg, remain, pct: tg > 0 ? Math.min(100, (done / tg) * 100) : 0 };
   });
   const active = rows.filter((r) => r.s && r.s.total > 0);
+  // 정렬: 남음(remain>0) → 완료(remain=0) → 초과(remain<0)
+  //  현장 직책자가 부족한 품목을 즉시 보도록.
+  const statusOrder = (remain: number) => remain > 0 ? 0 : remain === 0 ? 1 : 2;
+  active.sort((a, b) => {
+    const so = statusOrder(a.remain) - statusOrder(b.remain);
+    if (so !== 0) return so;
+    if (a.remain > 0 && b.remain > 0) return b.remain - a.remain;       // 남음 많은 순
+    if (a.remain < 0 && b.remain < 0) return a.remain - b.remain;       // 초과 많은 순(절대값 큰 게 위)
+    return a.it.code.localeCompare(b.it.code);
+  });
   const totalTarget = rows.reduce((sum, r) => sum + r.tg, 0);
   const totalDone = rows.reduce((sum, r) => sum + r.done, 0);
   const overall = totalTarget > 0 ? (totalDone / totalTarget) * 100 : 0;
@@ -384,20 +394,20 @@ function BoardView({
                   </div>
                   <div className="text-right whitespace-nowrap">
                     <div className="text-xl">
-                      <span className={`font-bold ${remain <= 0 ? 'text-emerald-700' : 'text-violet-700'}`}>{done.toLocaleString()}</span>
+                      <span className={`font-bold ${remain > 0 ? 'text-rose-600' : remain === 0 ? 'text-emerald-700' : 'text-violet-700'}`}>{done.toLocaleString()}</span>
                       <span className="text-gray-400 text-base"> / {tg.toLocaleString()}</span>
                     </div>
                     {remain > 0 ? (
-                      <div className="text-xs text-amber-600 font-semibold">남음 {remain.toLocaleString()}</div>
+                      <div className="text-xs text-rose-600 font-bold">남음 {remain.toLocaleString()}</div>
                     ) : remain < 0 ? (
-                      <div className="text-xs text-rose-600 font-bold">초과 {Math.abs(remain).toLocaleString()}</div>
+                      <div className="text-xs text-violet-600 font-bold">초과 {Math.abs(remain).toLocaleString()}</div>
                     ) : (
                       <div className="text-xs text-emerald-600 font-bold">완료 ✓</div>
                     )}
                   </div>
                 </div>
                 <div className="mt-2 h-2.5 bg-gray-100 rounded-full overflow-hidden">
-                  <div className={`h-full ${remain < 0 ? 'bg-rose-500' : remain === 0 ? 'bg-emerald-500' : 'bg-violet-500'}`} style={{ width: `${pct}%` }} />
+                  <div className={`h-full ${remain > 0 ? 'bg-rose-500' : remain === 0 ? 'bg-emerald-500' : 'bg-violet-500'}`} style={{ width: `${pct}%` }} />
                 </div>
                 {s && s.byWorker.size > 0 && (
                   <div className="mt-2 flex flex-wrap gap-1.5 text-xs">
