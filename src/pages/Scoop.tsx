@@ -274,6 +274,11 @@ function TabletView({
                     const tg = it.totalQty || 0;
                     const pct = tg > 0 ? Math.min(100, (done / tg) * 100) : 0;
                     const workerCount = s?.byWorker.size || 0;
+                    // 현황판과 동일 색: 남음=빨강 / 완료=초록 / 초과=보라 (목표0=회색)
+                    const remain = tg - done;
+                    const started = done > 0;
+                    const bar = tg <= 0 ? 'bg-gray-300' : remain > 0 ? 'bg-rose-500' : remain === 0 ? 'bg-emerald-500' : 'bg-violet-500';
+                    const numCls = !started ? 'text-gray-500' : remain > 0 ? 'text-rose-600' : remain === 0 ? 'text-emerald-700' : 'text-violet-700';
                     return (
                       <li key={it.code}>
                         <button onClick={() => { setPicked(it.code); setShowPicker(false); setSearch(''); }}
@@ -282,12 +287,12 @@ function TabletView({
                             <div className="text-xs text-gray-400 font-mono">{it.code}</div>
                             <div className="font-semibold truncate">{it.name}</div>
                             <div className="mt-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                              <div className={`h-full ${done >= tg && tg > 0 ? 'bg-emerald-500' : 'bg-violet-500'}`} style={{ width: `${pct}%` }} />
+                              <div className={`h-full ${bar}`} style={{ width: `${pct}%` }} />
                             </div>
                           </div>
                           <div className="text-right whitespace-nowrap">
                             <div className="text-sm">
-                              <span className="font-bold text-violet-700">{done.toLocaleString()}</span>
+                              <span className={`font-bold ${numCls}`}>{done.toLocaleString()}</span>
                               <span className="text-gray-400"> / {tg.toLocaleString()}</span>
                             </div>
                             {workerCount > 0 && <div className="text-[10px] text-gray-500">{workerCount}명 작업중</div>}
