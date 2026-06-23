@@ -9,6 +9,7 @@ import { addDoc, collection, deleteDoc, doc, onSnapshot } from 'firebase/firesto
 import { db } from '../firebase';
 import type { Item } from '../types';
 import { todayKey } from '../lib/dateUtil';
+import { getStage, STAGE_LETTERS } from '../lib/monthlyProduction';
 
 interface ScoopEvent {
   id: string;
@@ -69,6 +70,7 @@ function TabletView({
   const [worker, setWorker] = useState<string>(() => localStorage.getItem(WORKER_KEY) || '');
   const [picked, setPicked] = useState<string>(() => localStorage.getItem(PICKED_KEY) || '');
   const [search, setSearch] = useState('');
+  const [stageFilter, setStageFilter] = useState<string>('');   // '' = 전체
   const [showPicker, setShowPicker] = useState(false);
   const [manualQty, setManualQty] = useState<number>(0);
   const [saving, setSaving] = useState(false);
@@ -76,11 +78,21 @@ function TabletView({
   useEffect(() => { localStorage.setItem(WORKER_KEY, worker); }, [worker]);
   useEffect(() => { localStorage.setItem(PICKED_KEY, picked); }, [picked]);
 
+  // 현재 품목에 실제 존재하는 단계만 탭으로 (빈 단계 숨김)
+  const presentStages = useMemo(() => {
+    const set = new Set<string>();
+    items.forEach((i) => { const s = getStage(i.code); if (s) set.add(s); });
+    return STAGE_LETTERS.filter((s) => set.has(s));
+  }, [items]);
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
-    if (!q) return items;
-    return items.filter((i) => i.code.toLowerCase().includes(q) || (i.name || '').toLowerCase().includes(q));
-  }, [items, search]);
+    return items.filter((i) => {
+      if (stageFilter && getStage(i.code) !== stageFilter) return false;
+      if (q && !(i.code.toLowerCase().includes(q) || (i.name || '').toLowerCase().includes(q))) return false;
+      return true;
+    });
+  }, [items, search, stageFilter]);
 
   const cur = items.find((i) => i.code === picked);
   const stat = picked ? byCode.get(picked) : undefined;
@@ -150,7 +162,10 @@ function TabletView({
               <div className="text-xs text-violet-500 font-mono">{cur.code}</div>
               <div className="text-2xl font-bold text-gray-800 truncate">{cur.name || cur.code}</div>
             </div>
-            <button onClick={() => setShowPicker(true)} className="px-3 py-1.5 text-xs border rounded hover:bg-gray-50">품목 변경</button>
+            <button onClick={() => setShowPicker(true)}
+              className="px-5 py-3 bg-violet-100 text-violet-700 border-2 border-violet-300 rounded-xl text-base font-bold hover:bg-violet-200 active:scale-95 transition whitespace-nowrap shadow-sm">
+              🔄 품목 변경
+            </button>
           </div>
 
           {/* 진행률 큰 표시 */}
@@ -230,10 +245,23 @@ function TabletView({
               <h3 className="font-bold">품목 선택</h3>
               <button onClick={() => setShowPicker(false)} className="w-8 h-8 rounded-full hover:bg-gray-200 text-gray-500">×</button>
             </div>
-            <div className="p-3 border-b">
+            <div className="p-3 border-b space-y-2">
               <input value={search} onChange={(e) => setSearch(e.target.value)}
                 placeholder="🔍 코드 또는 품목명…" autoFocus
                 className="w-full border rounded-lg px-4 py-3 text-lg" />
+              {/* 단계 탭 */}
+              <div className="flex flex-wrap gap-1.5">
+                <button onClick={() => setStageFilter('')}
+                  className={`px-3 py-1.5 rounded-lg text-sm font-bold ${stageFilter === '' ? 'bg-violet-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                  전체
+                </button>
+                {presentStages.map((s) => (
+                  <button key={s} onClick={() => setStageFilter(s)}
+                    className={`px-3 py-1.5 rounded-lg text-sm font-bold ${stageFilter === s ? 'bg-violet-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                    {s === 'F500' ? 'F-500' : s}
+                  </button>
+                ))}
+              </div>
             </div>
             <div className="flex-1 overflow-y-auto">
               {filtered.length === 0 ? (
