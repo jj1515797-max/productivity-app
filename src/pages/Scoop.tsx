@@ -178,16 +178,21 @@ function TabletView({
               <div className="text-xs text-emerald-700">현재</div>
               <div className="text-2xl font-bold text-emerald-700">{total.toLocaleString()}</div>
             </div>
-            <div className={`rounded-lg p-3 ${remain < 0 ? 'bg-rose-50' : 'bg-amber-50'}`}>
-              <div className={`text-xs ${remain < 0 ? 'text-rose-700' : 'text-amber-700'}`}>{remain < 0 ? '초과' : '부족'}</div>
-              <div className={`text-2xl font-bold ${remain < 0 ? 'text-rose-700' : 'text-amber-700'}`}>{Math.abs(remain).toLocaleString()}</div>
+            <div className={`rounded-lg p-3 ${remain > 0 ? 'bg-rose-50' : remain === 0 && total > 0 ? 'bg-emerald-50' : remain < 0 ? 'bg-violet-50' : 'bg-slate-50'}`}>
+              <div className={`text-xs ${remain > 0 ? 'text-rose-700' : remain === 0 && total > 0 ? 'text-emerald-700' : remain < 0 ? 'text-violet-700' : 'text-gray-500'}`}>{remain > 0 ? '부족' : remain < 0 ? '초과' : (total > 0 ? '완료' : '부족')}</div>
+              <div className={`text-2xl font-bold ${remain > 0 ? 'text-rose-700' : remain === 0 && total > 0 ? 'text-emerald-700' : remain < 0 ? 'text-violet-700' : 'text-gray-700'}`}>{Math.abs(remain).toLocaleString()}</div>
             </div>
           </div>
 
-          {/* 진행 바 */}
+          {/* 진행 바 — 현황판과 색 통일: 부족=빨강 / 완료=초록 / 초과=보라 */}
           <div className="mt-3 h-4 bg-gray-100 rounded-full overflow-hidden">
             <div
-              className={`h-full ${remain < 0 ? 'bg-rose-500' : 'bg-emerald-500'} transition-all`}
+              className={`h-full transition-all ${
+                target <= 0 ? 'bg-gray-300'
+                : remain > 0 ? 'bg-rose-500'
+                : remain === 0 ? 'bg-emerald-500'
+                : 'bg-violet-500'
+              }`}
               style={{ width: `${target > 0 ? Math.min(100, (total / target) * 100) : 0}%` }}
             />
           </div>
