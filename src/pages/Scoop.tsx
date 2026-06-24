@@ -400,20 +400,33 @@ function BoardView({
 
       {/* 단계별 진척 — 완료+초과 / 전체 (부족 미카운트) */}
       {stageProgress.length > 0 && (
-        <div className="bg-white border rounded-xl px-4 py-3 flex items-center gap-4 flex-wrap">
-          <span className="text-xs font-bold text-gray-500">단계별 완료</span>
-          {stageProgress.map((sp) => {
-            const allDone = sp.doneCnt >= sp.total;
-            return (
-              <div key={sp.stage} className="flex items-center gap-1.5">
-                <span className={`inline-block min-w-[2.5rem] text-center px-2 py-0.5 rounded text-xs font-bold ${allDone ? 'bg-emerald-500 text-white' : 'bg-gray-100 text-gray-700'}`}>
-                  {sp.stage === 'F500' ? 'F-500' : sp.stage}
-                </span>
-                <span className={`text-sm font-bold ${allDone ? 'text-emerald-700' : 'text-gray-700'}`}>{sp.doneCnt}</span>
-                <span className="text-xs text-gray-400">/ {sp.total}</span>
-              </div>
-            );
-          })}
+        <div className="bg-white border rounded-xl p-3">
+          <div className="text-xs font-bold text-gray-500 mb-2 px-1">단계별 완료</div>
+          <div className="grid grid-flow-col auto-cols-fr gap-2">
+            {stageProgress.map((sp) => {
+              const allDone = sp.doneCnt >= sp.total;
+              const pct = sp.total > 0 ? (sp.doneCnt / sp.total) * 100 : 0;
+              return (
+                <div key={sp.stage}
+                  className={`rounded-lg px-3 py-2.5 text-center border-2 transition ${
+                    allDone
+                      ? 'bg-emerald-50 border-emerald-400'
+                      : sp.doneCnt > 0 ? 'bg-white border-gray-200' : 'bg-gray-50 border-gray-200'
+                  }`}>
+                  <div className={`text-base font-extrabold mb-1 ${allDone ? 'text-emerald-700' : 'text-gray-700'}`}>
+                    {sp.stage === 'F500' ? 'F-500' : sp.stage}
+                  </div>
+                  <div className="flex items-baseline justify-center gap-1">
+                    <span className={`text-2xl font-bold leading-none ${allDone ? 'text-emerald-700' : 'text-gray-800'}`}>{sp.doneCnt}</span>
+                    <span className="text-sm text-gray-400">/ {sp.total}</span>
+                  </div>
+                  <div className="mt-1.5 h-1 bg-gray-100 rounded-full overflow-hidden">
+                    <div className={`h-full ${allDone ? 'bg-emerald-500' : 'bg-violet-400'}`} style={{ width: `${pct}%` }} />
+                  </div>
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
 
