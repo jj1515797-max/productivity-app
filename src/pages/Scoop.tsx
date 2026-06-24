@@ -179,7 +179,7 @@ function TabletView({
               <div className="text-2xl font-bold text-emerald-700">{total.toLocaleString()}</div>
             </div>
             <div className={`rounded-lg p-3 ${remain < 0 ? 'bg-rose-50' : 'bg-amber-50'}`}>
-              <div className={`text-xs ${remain < 0 ? 'text-rose-700' : 'text-amber-700'}`}>{remain < 0 ? '초과' : '남음'}</div>
+              <div className={`text-xs ${remain < 0 ? 'text-rose-700' : 'text-amber-700'}`}>{remain < 0 ? '초과' : '부족'}</div>
               <div className={`text-2xl font-bold ${remain < 0 ? 'text-rose-700' : 'text-amber-700'}`}>{Math.abs(remain).toLocaleString()}</div>
             </div>
           </div>
@@ -357,6 +357,21 @@ function BoardView({
   const totalDone = rows.reduce((sum, r) => sum + r.done, 0);
   const overall = totalTarget > 0 ? (totalDone / totalTarget) * 100 : 0;
 
+  // 단계별 진척: 그날 단계별 품목수 중 '완료(딱 맞음) + 초과' 만 카운트 (부족은 미카운트)
+  const stageProgress = useMemo(() => {
+    const m = new Map<string, { total: number; doneCnt: number }>();
+    rows.forEach((r) => {
+      if (r.tg <= 0) return;
+      const s = getStage(r.it.code);
+      if (!s) return;
+      const e = m.get(s) || { total: 0, doneCnt: 0 };
+      e.total += 1;
+      if (r.remain <= 0) e.doneCnt += 1;     // 완료(=0) + 초과(<0)
+      m.set(s, e);
+    });
+    return STAGE_LETTERS.filter((s) => m.has(s)).map((s) => ({ stage: s, ...m.get(s)! }));
+  }, [rows]);
+
   return (
     <div className="space-y-3">
       <div className="bg-white border rounded-lg p-3 flex items-center gap-3 flex-wrap">
@@ -383,6 +398,25 @@ function BoardView({
         </div>
       </div>
 
+      {/* 단계별 진척 — 완료+초과 / 전체 (부족 미카운트) */}
+      {stageProgress.length > 0 && (
+        <div className="bg-white border rounded-xl px-4 py-3 flex items-center gap-4 flex-wrap">
+          <span className="text-xs font-bold text-gray-500">단계별 완료</span>
+          {stageProgress.map((sp) => {
+            const allDone = sp.doneCnt >= sp.total;
+            return (
+              <div key={sp.stage} className="flex items-center gap-1.5">
+                <span className={`inline-block min-w-[2.5rem] text-center px-2 py-0.5 rounded text-xs font-bold ${allDone ? 'bg-emerald-500 text-white' : 'bg-gray-100 text-gray-700'}`}>
+                  {sp.stage === 'F500' ? 'F-500' : sp.stage}
+                </span>
+                <span className={`text-sm font-bold ${allDone ? 'text-emerald-700' : 'text-gray-700'}`}>{sp.doneCnt}</span>
+                <span className="text-xs text-gray-400">/ {sp.total}</span>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       {/* 작업중인 품목 */}
       <div className="bg-white border-2 border-violet-200 rounded-xl overflow-hidden">
         <div className="px-4 py-2 bg-violet-50 font-bold text-violet-800 text-sm">진행중 ({active.length})</div>
@@ -403,7 +437,7 @@ function BoardView({
                       <span className="text-gray-400 text-base"> / {tg.toLocaleString()}</span>
                     </div>
                     {remain > 0 ? (
-                      <div className="text-xs text-rose-600 font-bold">남음 {remain.toLocaleString()}</div>
+                      <div className="text-xs text-rose-600 font-bold">부족 {remain.toLocaleString()}</div>
                     ) : remain < 0 ? (
                       <div className="text-xs text-violet-600 font-bold">초과 {Math.abs(remain).toLocaleString()}</div>
                     ) : (
