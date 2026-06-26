@@ -83,6 +83,7 @@ export interface ProductSetting {
   type?: '냄비' | '바트' | null;
   name?: string;
   packWeight?: number;   // 포장중량 (g) — 냉장 기준
+  vatMaxQty?: number;    // 완바트 수량 (한 바트당 최대 수량). 999면 냄비.
 }
 
 export interface Material {

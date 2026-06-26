@@ -5,11 +5,12 @@
  *  - 작업자 이름은 기기별 localStorage 에 저장
  */
 import { useEffect, useMemo, useState } from 'react';
-import { addDoc, collection, deleteDoc, doc, onSnapshot } from 'firebase/firestore';
+import { addDoc, collection, deleteDoc, doc, getDocs, onSnapshot } from 'firebase/firestore';
 import { db } from '../firebase';
-import type { Item } from '../types';
+import type { Item, ProductSetting } from '../types';
 import { todayKey } from '../lib/dateUtil';
 import { getStage, STAGE_LETTERS } from '../lib/monthlyProduction';
+import { canonicalShort } from '../lib/codeUtil';
 
 interface ScoopEvent {
   id: string;
@@ -74,9 +75,22 @@ function TabletView({
   const [showPicker, setShowPicker] = useState(false);
   const [manualQty, setManualQty] = useState<number>(0);
   const [saving, setSaving] = useState(false);
+  // 완바트 수량 표시용: productSettings 1회 로드 → canonicalShort 기준 맵
+  const [prodMap, setProdMap] = useState<Map<string, ProductSetting>>(new Map());
 
   useEffect(() => { localStorage.setItem(WORKER_KEY, worker); }, [worker]);
   useEffect(() => { localStorage.setItem(PICKED_KEY, picked); }, [picked]);
+
+  useEffect(() => {
+    getDocs(collection(db, 'productSettings')).then((snap) => {
+      const m = new Map<string, ProductSetting>();
+      snap.forEach((d) => {
+        const data = { ...(d.data() as ProductSetting), code: d.id };
+        m.set(canonicalShort(d.id), data);
+      });
+      setProdMap(m);
+    }).catch(() => {});
+  }, []);
 
   // 현재 품목에 실제 존재하는 단계만 탭으로 (빈 단계 숨김)
   const presentStages = useMemo(() => {
@@ -159,8 +173,26 @@ function TabletView({
         <div className="bg-white border-2 border-violet-300 rounded-2xl p-5 shadow-sm">
           <div className="flex items-start justify-between gap-3">
             <div className="flex-1 min-w-0">
-              <div className="text-xs text-violet-500 font-mono">{cur.code}</div>
-              <div className="text-2xl font-bold text-gray-800 truncate">{cur.name || cur.code}</div>
+              <div className="text-lg text-violet-600 font-mono font-bold">{cur.code}</div>
+              <div className="flex items-center gap-2 flex-wrap">
+                <div className="text-2xl font-bold text-gray-800 truncate">{cur.name || cur.code}</div>
+                {(() => {
+                  const v = prodMap.get(canonicalShort(cur.code))?.vatMaxQty;
+                  if (v === undefined || v === null) return null;
+                  if (v === 999) {
+                    return (
+                      <span className="px-2.5 py-1 bg-orange-100 text-orange-700 border border-orange-300 rounded-full text-sm font-bold whitespace-nowrap">
+                        냄비
+                      </span>
+                    );
+                  }
+                  return (
+                    <span className="px-2.5 py-1 bg-cyan-100 text-cyan-700 border border-cyan-300 rounded-full text-sm font-bold whitespace-nowrap">
+                      완바트 {v.toLocaleString()}개
+                    </span>
+                  );
+                })()}
+              </div>
             </div>
             <button onClick={() => setShowPicker(true)}
               className="px-5 py-3 bg-violet-100 text-violet-700 border-2 border-violet-300 rounded-xl text-base font-bold hover:bg-violet-200 active:scale-95 transition whitespace-nowrap shadow-sm">

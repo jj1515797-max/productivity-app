@@ -27,6 +27,7 @@ export default function ProductSettings() {
   const [showNotify, setShowNotify] = useState(false);
   const [showBulk, setShowBulk] = useState(false);
   const [showWeightBulk, setShowWeightBulk] = useState(false);
+  const [showVatBulk, setShowVatBulk] = useState(false);
   const [materials, setMaterials] = useState<Material[]>([]);
   // 헤더에 표시할 총개수만 가볍게 (count aggregation = 1읽기)
   const [productCount, setProductCount] = useState<number | null>(null);
@@ -88,6 +89,10 @@ export default function ProductSettings() {
     await setDoc(doc(db, 'productSettings', code), { code, packWeight: w }, { merge: true });
   };
 
+  const setVatMaxQty = async (code: string, v: number | null) => {
+    await setDoc(doc(db, 'productSettings', code), { code, vatMaxQty: v }, { merge: true });
+  };
+
   const remove = async (code: string) => {
     if (!confirm(`'${code}' 항목을 삭제할까요?`)) return;
     await deleteDoc(doc(db, 'productSettings', code));
@@ -126,6 +131,10 @@ export default function ProductSettings() {
               className="px-3 py-2 border rounded-md font-medium text-sm hover:bg-gray-100"
             >⚖️ 포장중량 일괄</button>
             <button
+              onClick={() => setShowVatBulk(true)}
+              className="px-3 py-2 border rounded-md font-medium text-sm hover:bg-gray-100"
+            >🪣 완바트 일괄</button>
+            <button
               onClick={() => {
                 const code = prompt('새 제품 코드 (예: A-01)');
                 if (code?.trim()) setType(code.trim().toUpperCase(), null);
@@ -160,6 +169,7 @@ export default function ProductSettings() {
                     <th className="px-4 py-2 text-left w-44">코드</th>
                     <th className="px-4 py-2 text-left">품목명</th>
                     <th className="px-4 py-2 text-center w-28">포장중량(g)</th>
+                    <th className="px-4 py-2 text-center w-32">완바트 수량</th>
                     <th className="px-4 py-2 text-center w-64">구분</th>
                     <th className="px-4 py-2 text-right w-20"></th>
                   </tr>
@@ -179,6 +189,9 @@ export default function ProductSettings() {
                       <td className="px-4 py-2 text-gray-700">{s.name || <span className="text-gray-300">-</span>}</td>
                       <td className="px-4 py-2 text-center">
                         <WeightCell value={s.packWeight} onSave={(v) => setWeight(s.code, v)} />
+                      </td>
+                      <td className="px-4 py-2 text-center">
+                        <VatCell value={s.vatMaxQty} onSave={(v) => setVatMaxQty(s.code, v)} />
                       </td>
                       <td className="px-4 py-2">
                         <div className="flex items-center justify-center gap-1.5">
@@ -317,6 +330,125 @@ export default function ProductSettings() {
       {showWeightBulk && (
         <WeightBulkModal onClose={() => setShowWeightBulk(false)} existing={settings} />
       )}
+      {showVatBulk && (
+        <VatBulkModal onClose={() => setShowVatBulk(false)} existing={settings} />
+      )}
+    </div>
+  );
+}
+
+function VatCell({ value, onSave }: { value?: number; onSave: (v: number | null) => void }) {
+  const [local, setLocal] = useState(value !== undefined && value !== null ? String(value) : '');
+  useEffect(() => { setLocal(value !== undefined && value !== null ? String(value) : ''); }, [value]);
+  const isPot = value === 999;
+  return (
+    <div className="flex items-center justify-center gap-1">
+      <input
+        type="number" inputMode="numeric"
+        value={local}
+        onChange={(e) => setLocal(e.target.value)}
+        onBlur={() => {
+          const t = local.trim();
+          if (t === '') { onSave(null); return; }
+          const n = Number(t);
+          if (!isNaN(n) && n !== value) onSave(n);
+        }}
+        placeholder="-"
+        className="w-20 border rounded px-2 py-1 text-sm text-center focus:outline-none focus:ring-2 focus:ring-blue-300"
+      />
+      {isPot && (
+        <span className="text-[10px] font-bold text-orange-600">냄비</span>
+      )}
+    </div>
+  );
+}
+
+function VatBulkModal({ onClose, existing }: { onClose: () => void; existing: ProductSetting[] }) {
+  const [text, setText] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  // 기존 제품: 표준코드 → 실제 docId 매핑
+  const lookup = useMemo(() => {
+    const m = new Map<string, string>();
+    existing.forEach((s) => m.set(canonicalShort(s.code), s.code));
+    return m;
+  }, [existing]);
+
+  const lines = text.trim().split('\n').map((l) => l.trim()).filter(Boolean);
+  const parsed = lines.map((line) => {
+    const parts = line.split(/[,\t]/).map((s) => s.trim());
+    const rawCode = parts[0] || '';
+    const canon = canonicalShort(rawCode);
+    const matchedDoc = lookup.get(canon);
+    let qty: number | null = null;
+    for (let i = parts.length - 1; i >= 1; i--) {
+      const n = Number((parts[i] || '').replace(/[^0-9.]/g, ''));
+      if (!isNaN(n) && n > 0) { qty = n; break; }
+    }
+    return { rawCode, canon, matchedDoc, qty, valid: !!matchedDoc && qty !== null };
+  });
+  const validRows = parsed.filter((p) => p.valid);
+  const unmatched = parsed.filter((p) => p.qty !== null && !p.matchedDoc);
+
+  const save = async () => {
+    if (validRows.length === 0) return;
+    setSaving(true);
+    try {
+      const batch = writeBatch(db);
+      validRows.forEach((row) => {
+        batch.set(doc(db, 'productSettings', row.matchedDoc!), { vatMaxQty: row.qty }, { merge: true });
+      });
+      await batch.commit();
+      alert(`${validRows.length}개 기존 제품에 완바트 수량 반영 완료`);
+      onClose();
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl h-[85vh] overflow-hidden flex flex-col">
+        <div className="px-5 py-4 border-b bg-gradient-to-r from-amber-50 to-orange-50 flex items-center justify-between">
+          <div>
+            <h3 className="font-bold text-gray-800">완바트 수량 일괄 입력</h3>
+            <div className="text-xs text-gray-500 mt-0.5">한 바트당 최대 수량. <b>999 = 냄비</b> 로 자동 인식됩니다.</div>
+          </div>
+          <button onClick={onClose} className="w-7 h-7 rounded-full hover:bg-gray-200 text-gray-500">×</button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          <div className="bg-amber-50 border border-amber-200 rounded p-3 text-xs text-amber-800 leading-relaxed">
+            <b>형식:</b> 코드, 수량 — 콤마 또는 탭 구분. 마지막 숫자를 완바트 수량으로 인식.<br />
+            예: <code className="bg-white px-1 rounded">PB-A-001, 999</code> (냄비) · <code className="bg-white px-1 rounded">A-002, 20</code> (바트당 20개)<br />
+            코드는 <code className="bg-white px-1 rounded">PB-A-001</code>, <code className="bg-white px-1 rounded">A-001-01</code>, <code className="bg-white px-1 rounded">A01</code> 어느 형식이든 기존 제품과 자동 매칭됩니다.
+          </div>
+          <textarea
+            value={text}
+            onChange={(e) => setText(e.target.value)}
+            placeholder={"PB-A-001, 999\nPB-A-002, 20\nPB-B-001, 50"}
+            className="w-full h-60 border rounded-md p-3 text-sm font-mono"
+          />
+          {parsed.length > 0 && (
+            <div className="space-y-1 text-sm">
+              <div className="text-gray-600">
+                매칭 성공 <b className="text-amber-700">{validRows.length}</b> / 전체 {parsed.length}줄
+                {validRows.filter((r) => r.qty === 999).length > 0 && (
+                  <span className="ml-2 text-orange-700">· 냄비 {validRows.filter((r) => r.qty === 999).length}개</span>
+                )}
+              </div>
+              {unmatched.length > 0 && (
+                <div className="text-red-600 text-xs">
+                  ⚠ 제품DB에 없어 매칭 실패 {unmatched.length}개: {unmatched.slice(0, 10).map((u) => u.rawCode).join(', ')}{unmatched.length > 10 ? ' …' : ''}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+        <div className="px-5 py-3 border-t bg-slate-50 flex items-center gap-2">
+          <button onClick={onClose} className="px-3 py-2 border rounded text-sm font-medium hover:bg-gray-100">닫기</button>
+          <button onClick={save} disabled={validRows.length === 0 || saving} className="ml-auto px-5 py-2 bg-amber-600 text-white rounded font-medium hover:bg-amber-700 disabled:bg-gray-300">
+            {saving ? '저장중...' : `${validRows.length}개 반영`}
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
