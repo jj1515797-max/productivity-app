@@ -17,9 +17,10 @@ function normalize(code: string): string {
   return code.toLowerCase().replace(/[-\s]/g, '');
 }
 
-type DayRemainMap = Map<string, { code: string; name: string; remain: number }>;
+interface CellData { remain: number; target: number; }   // 잔여량 + 그날 목표(총주문)
+type DayRemainMap = Map<string, { code: string; name: string; remain: number; target: number }>;
 
-// 하루치 잔여량 맵: normalize(code) → { code, name, remain }
+// 하루치 잔여량 맵: normalize(code) → { code, name, remain, target }
 async function fetchDayRemainMap(date: string): Promise<DayRemainMap> {
   const result: DayRemainMap = new Map();
   const snaps = await Promise.all([
@@ -49,14 +50,15 @@ async function fetchDayRemainMap(date: string): Promise<DayRemainMap> {
   itemsSnap.forEach((d) => {
     const it = d.data() as Item;
     const norm = normalize(it.code);
+    const target = it.totalQty || 0;
     if (hasLog) {
       const lq = logMap[norm];
       if (lq === undefined) return;            // 물류 모드: 등록 안 된 품목은 제외
-      result.set(norm, { code: it.code, name: it.name || '', remain: lq });
+      result.set(norm, { code: it.code, name: it.name || '', remain: lq, target });
     } else {
       const act = actual[it.code.toLowerCase()] || 0;
       if (act <= 0) return;                    // 생산 안 한 품목 제외
-      result.set(norm, { code: it.code, name: it.name || '', remain: act - (it.totalQty || 0) });
+      result.set(norm, { code: it.code, name: it.name || '', remain: act - target, target });
     }
   });
 
@@ -65,7 +67,7 @@ async function fetchDayRemainMap(date: string): Promise<DayRemainMap> {
     logSnap.forEach((d) => {
       const norm = normalize(d.id);
       if (!result.has(norm)) {
-        result.set(norm, { code: d.id, name: '', remain: (d.data().qty as number) || 0 });
+        result.set(norm, { code: d.id, name: '', remain: (d.data().qty as number) || 0, target: 0 });
       }
     });
   }
@@ -75,7 +77,7 @@ async function fetchDayRemainMap(date: string): Promise<DayRemainMap> {
 interface AnalysisRow {
   code: string;
   name: string;
-  cells: (number | null)[];   // 날짜별 잔여량 (없는 날 = null)
+  cells: (CellData | null)[]; // 날짜별 잔여량+목표 (없는 날 = null)
   overDays: number;           // 임계 이상 일수
   streak: number;             // 최근(마지막 등장일 기준) 연속 임계 이상
   maxStreak: number;          // 등장일 중 최대 연속 임계 이상
@@ -89,6 +91,8 @@ export default function RemainAnalysis() {
   const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [dayData, setDayData] = useState<DayRemainMap[]>([]);
+  // 칸 탭 시 상세 (목표·생산·잔여)
+  const [detail, setDetail] = useState<{ name: string; code: string; date: string; remain: number; target: number } | null>(null);
 
   useEffect(() => { saveViewDate(endDate); }, [endDate]);
   const today = todayKey();
@@ -115,22 +119,22 @@ export default function RemainAnalysis() {
   }, [dates]);
 
   const rows = useMemo<AnalysisRow[]>(() => {
-    const byCode = new Map<string, { code: string; name: string; cells: (number | null)[] }>();
+    const byCode = new Map<string, { code: string; name: string; cells: (CellData | null)[] }>();
     dayData.forEach((map, di) => {
       map.forEach((v, norm) => {
         if (!byCode.has(norm)) {
           byCode.set(norm, { code: v.code, name: v.name, cells: Array(dates.length).fill(null) });
         }
         const row = byCode.get(norm)!;
-        row.cells[di] = v.remain;
+        row.cells[di] = { remain: v.remain, target: v.target };
         row.code = v.code;
         if (v.name) row.name = v.name;   // 최신 이름 유지
       });
     });
 
     const arr: AnalysisRow[] = Array.from(byCode.values()).map((r) => {
-      const overDays = r.cells.filter((c) => c !== null && c >= threshold).length;
-      const appear = r.cells.filter((c) => c !== null) as number[];   // 등장일만 (시간순)
+      const overDays = r.cells.filter((c) => c !== null && c.remain >= threshold).length;
+      const appear = (r.cells.filter((c) => c !== null) as CellData[]).map((c) => c.remain);   // 등장일 잔여 (시간순)
       let streak = 0;
       for (let k = appear.length - 1; k >= 0; k--) {
         if (appear[k] >= threshold) streak++; else break;
@@ -235,9 +239,9 @@ export default function RemainAnalysis() {
           </div>
         ) : (
           <table className="w-full border-collapse table-fixed">
-            <thead className="sticky top-0 z-10">
+            <thead className="sticky top-0 z-20">
               <tr className="bg-gray-100 text-sm text-gray-600">
-                <th className="px-3 py-2.5 text-left sticky left-0 bg-gray-100 z-20 w-[200px]">품목</th>
+                <th className="px-3 py-2.5 text-left sticky left-0 bg-gray-100 z-30 w-[200px]">품목</th>
                 <th className="px-2 py-2.5 text-center bg-gray-100 w-[70px]">연속</th>
                 <th className="px-2 py-2.5 text-center bg-gray-100 w-[64px]">{threshold}↑일</th>
                 {dates.map((d) => (
@@ -266,16 +270,18 @@ export default function RemainAnalysis() {
                     if (c === null) {
                       return <td key={i} className="px-1 py-2.5 text-center text-gray-300 bg-gray-50/60 text-lg">·</td>;
                     }
-                    const over = c >= threshold;
+                    const over = c.remain >= threshold;
                     return (
                       <td key={i}
-                        className={`px-1 py-2.5 text-center font-bold tabular-nums text-base ${
-                          over ? 'bg-red-300 text-red-900'
-                          : c > 0 ? 'text-green-700'
-                          : c < 0 ? 'text-gray-500'
-                          : 'text-blue-500'
+                        onClick={() => setDetail({ name: r.name || r.code, code: r.code, date: dates[i], remain: c.remain, target: c.target })}
+                        title={`목표 ${c.target} · 생산 ${c.target + c.remain} · 잔여 ${c.remain > 0 ? '+' : ''}${c.remain}`}
+                        className={`px-1 py-2.5 text-center font-bold tabular-nums text-base cursor-pointer ${
+                          over ? 'bg-red-300 text-red-900 hover:bg-red-400'
+                          : c.remain > 0 ? 'text-green-700 hover:bg-slate-100'
+                          : c.remain < 0 ? 'text-gray-500 hover:bg-slate-100'
+                          : 'text-blue-500 hover:bg-slate-100'
                         }`}>
-                        {c}
+                        {c.remain}
                       </td>
                     );
                   })}
@@ -291,8 +297,45 @@ export default function RemainAnalysis() {
         <span className="flex items-center gap-1"><span className="inline-block w-4 h-4 rounded bg-red-300" /> 잔여 {threshold}개 이상</span>
         <span className="flex items-center gap-1"><span className="text-green-600 font-bold">＋</span> 잔여 있음(임계 미만)</span>
         <span className="flex items-center gap-1"><span className="text-gray-300">·</span> 그날 생산 없음</span>
+        <span className="text-blue-600">👆 칸을 누르면 목표·생산 수량 상세</span>
         <span className="ml-auto">정렬: 최근 연속 → 임계초과 일수 순</span>
       </div>
+
+      {/* 칸 탭 상세 (목표·생산·잔여) */}
+      {detail && (
+        <div className="fixed inset-0 bg-black/40 z-50 flex items-center justify-center p-4" onClick={() => setDetail(null)}>
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-xs overflow-hidden" onClick={(e) => e.stopPropagation()}>
+            <div className="px-5 py-3 border-b bg-slate-50 flex items-center justify-between">
+              <div>
+                <div className="font-bold text-gray-800">{detail.name}</div>
+                <div className="font-mono text-[11px] text-gray-400">{detail.code} · {detail.date}</div>
+              </div>
+              <button onClick={() => setDetail(null)} className="w-7 h-7 rounded-full hover:bg-gray-200 text-gray-500">×</button>
+            </div>
+            <div className="p-5 space-y-2.5">
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-500">목표 (총주문)</span>
+                <span className="text-lg font-bold text-gray-800 tabular-nums">{detail.target.toLocaleString()}</span>
+              </div>
+              <div className="flex items-center justify-between">
+                <span className="text-sm text-gray-500">생산</span>
+                <span className="text-lg font-bold text-gray-800 tabular-nums">{(detail.target + detail.remain).toLocaleString()}</span>
+              </div>
+              <div className="flex items-center justify-between border-t pt-2.5">
+                <span className="text-sm text-gray-500">잔여</span>
+                <span className={`text-2xl font-extrabold tabular-nums ${detail.remain >= threshold ? 'text-red-600' : detail.remain > 0 ? 'text-green-700' : detail.remain < 0 ? 'text-gray-500' : 'text-blue-600'}`}>
+                  {detail.remain > 0 ? `+${detail.remain}` : detail.remain}
+                </span>
+              </div>
+              {detail.target > 0 && (
+                <div className="text-center text-xs text-gray-400 pt-1">
+                  잔여율 {((detail.remain / detail.target) * 100).toFixed(1)}%
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
