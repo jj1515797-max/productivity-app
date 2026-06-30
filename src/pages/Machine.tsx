@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { collection, doc, onSnapshot, addDoc, deleteDoc } from 'firebase/firestore';
+import { collection, doc, onSnapshot, addDoc, deleteDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { todayKey, formatTime, effectiveTodayKey } from '../lib/dateUtil';
 import { loadViewDate, saveViewDate } from '../lib/viewDate';
@@ -114,6 +114,11 @@ export default function Machine() {
   const remove = async (docId: string, code: string) => {
     if (!confirm(`${code} 기록을 삭제할까요?`)) return;
     await deleteDoc(doc(db, 'days', date, 'machines', machine, 'entries', docId));
+  };
+
+  // 실제 생산량만 그 자리에서 수정 — 작업시간(workTime)은 건드리지 않아 순서가 안 바뀜
+  const updateActual = async (docId: string, v: number) => {
+    await updateDoc(doc(db, 'days', date, 'machines', machine, 'entries', docId), { actualProduction: v });
   };
 
   return (
@@ -238,7 +243,9 @@ export default function Machine() {
               return (
                 <tr key={e.docId} className="border-t">
                   <td className="p-2 font-mono text-2xl font-bold">{e.code}</td>
-                  <td className="p-2 text-right font-bold text-lg">{actual || '-'}</td>
+                  <td className="p-2 text-right">
+                    <ActualCell value={actual} onSave={(v) => updateActual(e.docId, v)} />
+                  </td>
                   <td className={`p-2 text-right font-bold text-lg ${add > 0 ? 'bg-green-50 text-green-700' : ''}`}>
                     {add > 0 ? `+${add}` : '-'}
                   </td>
@@ -259,5 +266,45 @@ export default function Machine() {
         </table>
       </div>
     </div>
+  );
+}
+
+// 실제 생산량 인라인 수정: 숫자 누르면 입력칸으로 → 저장하면 그 값이 진짜 값(이전 값 덮어씀)
+function ActualCell({ value, onSave }: { value: number; onSave: (v: number) => void }) {
+  const [editing, setEditing] = useState(false);
+  const [local, setLocal] = useState(String(value || ''));
+  useEffect(() => { setLocal(String(value || '')); }, [value]);
+
+  const commit = () => {
+    setEditing(false);
+    const n = Number(local);
+    if (!isNaN(n) && n >= 0 && n !== value) onSave(n);
+    else setLocal(String(value || ''));
+  };
+  const cancel = () => { setEditing(false); setLocal(String(value || '')); };
+
+  if (!editing) {
+    return (
+      <button
+        onClick={() => setEditing(true)}
+        title="눌러서 실제 생산량 수정 (작업시간·순서는 그대로)"
+        className="inline-flex items-center gap-1 px-2 py-1 rounded font-bold text-lg hover:bg-amber-50 hover:ring-1 hover:ring-amber-300 transition"
+      >
+        {value || '-'}
+        <span className="text-[11px] text-gray-300">✎</span>
+      </button>
+    );
+  }
+  return (
+    <input
+      autoFocus
+      type="number"
+      inputMode="numeric"
+      value={local}
+      onChange={(e) => setLocal(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') cancel(); }}
+      className="w-24 border-2 border-amber-400 rounded px-2 py-1 text-right text-lg font-bold focus:outline-none focus:ring-2 focus:ring-amber-300"
+    />
   );
 }
