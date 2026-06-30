@@ -328,8 +328,11 @@ export default function RemainAnalysis() {
                 </span>
               </div>
               {detail.target > 0 && (
-                <div className="text-center text-xs text-gray-400 pt-1">
-                  잔여율 {((detail.remain / detail.target) * 100).toFixed(1)}%
+                <div className="flex items-center justify-between border-t pt-2.5">
+                  <span className="text-sm text-gray-500">잔여율</span>
+                  <span className={`text-xl font-bold tabular-nums ${detail.remain >= threshold ? 'text-red-600' : detail.remain > 0 ? 'text-green-700' : 'text-gray-600'}`}>
+                    {((detail.remain / detail.target) * 100).toFixed(1)}%
+                  </span>
                 </div>
               )}
             </div>
