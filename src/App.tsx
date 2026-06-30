@@ -3,6 +3,7 @@ import Dashboard from './pages/Dashboard';
 import Machine from './pages/Machine';
 import ExternalPack from './pages/ExternalPack';
 import Remaining from './pages/Remaining';
+import RemainAnalysis from './pages/RemainAnalysis';
 import Report from './pages/Report';
 import Import from './pages/Import';
 import Analytics from './pages/Analytics';
@@ -35,7 +36,7 @@ export default function App() {
 
 function MainContainer() {
   const path = useLocation().pathname;
-  const wide = path.startsWith('/analytics/monthly') || path.startsWith('/analytics/remix') || path.startsWith('/analytics/productivity') || path.startsWith('/analytics/material') || path.startsWith('/attendance') || path.startsWith('/inventory');
+  const wide = path.startsWith('/analytics/monthly') || path.startsWith('/analytics/remix') || path.startsWith('/analytics/productivity') || path.startsWith('/analytics/material') || path.startsWith('/analytics/remain-analysis') || path.startsWith('/attendance') || path.startsWith('/inventory');
   return (
     <main className={`flex-1 ${wide ? 'max-w-screen-2xl' : 'max-w-screen-xl'} w-full mx-auto px-4 py-5`}>
       <Routes>
@@ -51,6 +52,7 @@ function MainContainer() {
           <Route path="/analytics" element={<Analytics />} />
           <Route path="/analytics/monthly" element={<AnalyticsMonthly />} />
           <Route path="/analytics/remaining" element={<Remaining />} />
+          <Route path="/analytics/remain-analysis" element={<RemainAnalysis />} />
           <Route path="/analytics/remix" element={<Remix />} />
           <Route path="/analytics/productivity" element={<Productivity />} />
           <Route path="/analytics/under10" element={<Under10 />} />
@@ -94,6 +96,7 @@ const SUB_TABS: Record<Section, { label: string; to: string; exact?: boolean }[]
     { label: '일별요약', to: '/analytics', exact: true },
     { label: '월별현황', to: '/analytics/monthly' },
     { label: '잔여량', to: '/analytics/remaining' },
+    { label: '잔여량분석', to: '/analytics/remain-analysis' },
     { label: '잔여량/재배합', to: '/analytics/remix' },
     { label: '생산성', to: '/analytics/productivity' },
     { label: '10ea미만', to: '/analytics/under10' },
