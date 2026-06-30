@@ -86,6 +86,7 @@ export default function RemainAnalysis() {
   const [rangeDays, setRangeDays] = useState(14);
   const [threshold, setThreshold] = useState(10);
   const [minOverDays, setMinOverDays] = useState(2);
+  const [search, setSearch] = useState('');
   const [loading, setLoading] = useState(true);
   const [dayData, setDayData] = useState<DayRemainMap[]>([]);
 
@@ -139,10 +140,15 @@ export default function RemainAnalysis() {
       return { ...r, overDays, streak, maxStreak };
     });
 
+    // 검색 중이면 임계 필터 무시하고 이름/코드 일치 품목 전부 (잔여 적게 나온 날까지 확인용)
+    const q = search.trim().toLowerCase();
     return arr
-      .filter((r) => r.overDays >= minOverDays)
+      .filter((r) => q
+        ? (r.code.toLowerCase().includes(q) || r.name.toLowerCase().includes(q))
+        : r.overDays >= minOverDays)
       .sort((a, b) => b.streak - a.streak || b.overDays - a.overDays || b.maxStreak - a.maxStreak);
-  }, [dayData, dates.length, threshold, minOverDays]);
+  }, [dayData, dates.length, threshold, minOverDays, search]);
+  const searching = search.trim().length > 0;
 
   const fmtHead = (key: string) => {
     const [, m, d] = key.split('-');
@@ -168,7 +174,7 @@ export default function RemainAnalysis() {
             >오늘로</button>
           )}
         </div>
-        <span className="text-sm text-gray-500">후보 <b className="text-rose-600">{rows.length}</b>품목</span>
+        <span className="text-sm text-gray-500">{searching ? '검색결과' : '후보'} <b className="text-rose-600">{rows.length}</b>품목</span>
       </div>
 
       <p className="text-xs text-gray-500">
@@ -177,6 +183,17 @@ export default function RemainAnalysis() {
 
       {/* 컨트롤 */}
       <div className="bg-white border rounded-lg px-4 py-3 flex items-center gap-4 flex-wrap text-sm">
+        <div className="relative flex-1 min-w-[220px]">
+          <input
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            placeholder="🔍 품목명·코드 검색 (검색하면 임계와 무관하게 매일 잔여량 표시)"
+            className="w-full border rounded-md px-3 py-1.5 text-sm"
+          />
+          {search && (
+            <button onClick={() => setSearch('')} className="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-gray-600">×</button>
+          )}
+        </div>
         <label className="flex items-center gap-1.5">
           <span className="text-gray-600">기간</span>
           <select value={rangeDays} onChange={(e) => setRangeDays(Number(e.target.value))}
@@ -212,18 +229,20 @@ export default function RemainAnalysis() {
           <div className="p-16 text-center text-gray-400 text-sm">최근 {rangeDays}일 데이터 불러오는 중…</div>
         ) : rows.length === 0 ? (
           <div className="p-16 text-center text-gray-400 text-sm">
-            조건에 맞는 품목이 없습니다 — 최근 {rangeDays}일간 잔여량 {threshold}개 이상이 {minOverDays}일 이상인 품목이 없어요.
+            {searching
+              ? `'${search}' 와 일치하는 품목이 최근 ${rangeDays}일간 생산 기록이 없습니다.`
+              : `조건에 맞는 품목이 없습니다 — 최근 ${rangeDays}일간 잔여량 ${threshold}개 이상이 ${minOverDays}일 이상인 품목이 없어요.`}
           </div>
         ) : (
-          <table className="text-sm border-collapse">
+          <table className="w-full border-collapse table-fixed">
             <thead className="sticky top-0 z-10">
-              <tr className="bg-gray-100 text-xs text-gray-600">
-                <th className="px-3 py-2 text-left sticky left-0 bg-gray-100 z-20 min-w-[180px]">품목</th>
-                <th className="px-2 py-2 text-center bg-gray-100">연속</th>
-                <th className="px-2 py-2 text-center bg-gray-100">{threshold}↑일수</th>
+              <tr className="bg-gray-100 text-sm text-gray-600">
+                <th className="px-3 py-2.5 text-left sticky left-0 bg-gray-100 z-20 w-[200px]">품목</th>
+                <th className="px-2 py-2.5 text-center bg-gray-100 w-[70px]">연속</th>
+                <th className="px-2 py-2.5 text-center bg-gray-100 w-[64px]">{threshold}↑일</th>
                 {dates.map((d) => (
-                  <th key={d} className={`px-1.5 py-2 text-center font-medium whitespace-nowrap ${d === today ? 'bg-rose-100 text-rose-700' : 'bg-gray-100'}`}>
-                    {fmtHead(d)}{d === today ? <div className="text-[9px] font-bold">오늘</div> : null}
+                  <th key={d} className={`px-1 py-2.5 text-center font-semibold whitespace-nowrap ${d === today ? 'bg-rose-100 text-rose-700' : 'bg-gray-100'}`}>
+                    {fmtHead(d)}{d === today ? <div className="text-[10px] font-bold">오늘</div> : null}
                   </th>
                 ))}
               </tr>
@@ -231,29 +250,29 @@ export default function RemainAnalysis() {
             <tbody>
               {rows.map((r) => (
                 <tr key={r.code} className="border-t border-gray-100 hover:bg-slate-50/60">
-                  <td className="px-3 py-1.5 sticky left-0 bg-white z-10">
-                    <div className="font-medium text-gray-800 truncate max-w-[170px]">{r.name || r.code}</div>
-                    <div className="font-mono text-[10px] text-gray-400">{r.code}</div>
+                  <td className="px-3 py-2.5 sticky left-0 bg-white z-10">
+                    <div className="font-semibold text-gray-800 truncate max-w-[190px]">{r.name || r.code}</div>
+                    <div className="font-mono text-[11px] text-gray-400">{r.code}</div>
                   </td>
-                  <td className="px-2 py-1.5 text-center">
+                  <td className="px-2 py-2.5 text-center">
                     {r.streak >= 2 ? (
-                      <span className="px-1.5 py-0.5 rounded-full bg-rose-600 text-white text-xs font-bold">{r.streak}연속</span>
+                      <span className="px-2 py-0.5 rounded-full bg-rose-600 text-white text-sm font-bold">{r.streak}연속</span>
                     ) : (
-                      <span className="text-gray-400 text-xs">{r.streak || '-'}</span>
+                      <span className="text-gray-400 text-sm">{r.streak || '-'}</span>
                     )}
                   </td>
-                  <td className="px-2 py-1.5 text-center text-xs font-bold text-rose-600">{r.overDays}</td>
+                  <td className="px-2 py-2.5 text-center text-base font-bold text-rose-600">{r.overDays}</td>
                   {r.cells.map((c, i) => {
                     if (c === null) {
-                      return <td key={i} className="px-1.5 py-1.5 text-center text-gray-300 bg-gray-50/60">·</td>;
+                      return <td key={i} className="px-1 py-2.5 text-center text-gray-300 bg-gray-50/60 text-lg">·</td>;
                     }
                     const over = c >= threshold;
                     return (
                       <td key={i}
-                        className={`px-1.5 py-1.5 text-center font-bold tabular-nums ${
+                        className={`px-1 py-2.5 text-center font-bold tabular-nums text-base ${
                           over ? 'bg-red-300 text-red-900'
-                          : c > 0 ? 'text-green-600'
-                          : c < 0 ? 'text-gray-400'
+                          : c > 0 ? 'text-green-700'
+                          : c < 0 ? 'text-gray-500'
                           : 'text-blue-500'
                         }`}>
                         {c}
