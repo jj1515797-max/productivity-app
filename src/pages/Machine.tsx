@@ -116,9 +116,12 @@ export default function Machine() {
     await deleteDoc(doc(db, 'days', date, 'machines', machine, 'entries', docId));
   };
 
-  // 실제 생산량만 그 자리에서 수정 — 작업시간(workTime)은 건드리지 않아 순서가 안 바뀜
+  // 실제/추가 생산량만 그 자리에서 수정 — 작업시간은 건드리지 않아 순서가 안 바뀜
   const updateActual = async (docId: string, v: number) => {
     await updateDoc(doc(db, 'days', date, 'machines', machine, 'entries', docId), { actualProduction: v });
+  };
+  const updateAdditional = async (docId: string, v: number) => {
+    await updateDoc(doc(db, 'days', date, 'machines', machine, 'entries', docId), { additionalProduction: v });
   };
 
   return (
@@ -244,10 +247,10 @@ export default function Machine() {
                 <tr key={e.docId} className="border-t">
                   <td className="p-2 font-mono text-2xl font-bold">{e.code}</td>
                   <td className="p-2 text-right">
-                    <ActualCell value={actual} onSave={(v) => updateActual(e.docId, v)} />
+                    <QtyCell value={actual} onSave={(v) => updateActual(e.docId, v)} />
                   </td>
-                  <td className={`p-2 text-right font-bold text-lg ${add > 0 ? 'bg-green-50 text-green-700' : ''}`}>
-                    {add > 0 ? `+${add}` : '-'}
+                  <td className={`p-2 text-right ${add > 0 ? 'bg-green-50' : ''}`}>
+                    <QtyCell value={add} onSave={(v) => updateAdditional(e.docId, v)} prefix="+" green />
                   </td>
                   <td className="p-2 text-center text-lg">{e.workTime || '-'}</td>
                   <td className={`p-2 text-center text-lg ${e.additionalWorkTime ? 'bg-green-50 text-green-700' : ''}`}>
@@ -269,8 +272,11 @@ export default function Machine() {
   );
 }
 
-// 실제 생산량 인라인 수정: 숫자 누르면 입력칸으로 → 저장하면 그 값이 진짜 값(이전 값 덮어씀)
-function ActualCell({ value, onSave }: { value: number; onSave: (v: number) => void }) {
+// 생산량 인라인 수정: 숫자 누르면 입력칸으로 → 저장하면 그 값이 진짜 값(이전 값 덮어씀)
+// 작업시간은 안 건드려서 순서가 안 바뀜
+function QtyCell({ value, onSave, prefix = '', green = false }: {
+  value: number; onSave: (v: number) => void; prefix?: string; green?: boolean;
+}) {
   const [editing, setEditing] = useState(false);
   const [local, setLocal] = useState(String(value || ''));
   useEffect(() => { setLocal(String(value || '')); }, [value]);
@@ -287,11 +293,10 @@ function ActualCell({ value, onSave }: { value: number; onSave: (v: number) => v
     return (
       <button
         onClick={() => setEditing(true)}
-        title="눌러서 실제 생산량 수정 (작업시간·순서는 그대로)"
-        className="inline-flex items-center gap-1 px-2 py-1 rounded font-bold text-lg hover:bg-amber-50 hover:ring-1 hover:ring-amber-300 transition"
+        title="눌러서 수정 (작업시간·순서는 그대로)"
+        className={`px-2 py-1 rounded font-bold text-lg hover:bg-amber-50 hover:ring-1 hover:ring-amber-300 transition ${green && value > 0 ? 'text-green-700' : ''}`}
       >
-        {value || '-'}
-        <span className="text-[11px] text-gray-300">✎</span>
+        {value > 0 ? `${prefix}${value}` : '-'}
       </button>
     );
   }
