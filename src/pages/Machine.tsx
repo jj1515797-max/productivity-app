@@ -247,10 +247,10 @@ export default function Machine() {
                 <tr key={e.docId} className="border-t">
                   <td className="p-2 font-mono text-2xl font-bold">{e.code}</td>
                   <td className="p-2 text-right">
-                    <QtyCell value={actual} onSave={(v) => updateActual(e.docId, v)} />
+                    <QtyCell value={actual} editable={!!e.workTime} onSave={(v) => updateActual(e.docId, v)} />
                   </td>
                   <td className={`p-2 text-right ${add > 0 ? 'bg-green-50' : ''}`}>
-                    <QtyCell value={add} onSave={(v) => updateAdditional(e.docId, v)} prefix="+" green />
+                    <QtyCell value={add} editable={!!e.additionalWorkTime} onSave={(v) => updateAdditional(e.docId, v)} prefix="+" green />
                   </td>
                   <td className="p-2 text-center text-lg">{e.workTime || '-'}</td>
                   <td className={`p-2 text-center text-lg ${e.additionalWorkTime ? 'bg-green-50 text-green-700' : ''}`}>
@@ -274,8 +274,8 @@ export default function Machine() {
 
 // 생산량 인라인 수정: 숫자 누르면 입력칸으로 → 저장하면 그 값이 진짜 값(이전 값 덮어씀)
 // 작업시간은 안 건드려서 순서가 안 바뀜
-function QtyCell({ value, onSave, prefix = '', green = false }: {
-  value: number; onSave: (v: number) => void; prefix?: string; green?: boolean;
+function QtyCell({ value, onSave, editable = true, prefix = '', green = false }: {
+  value: number; onSave: (v: number) => void; editable?: boolean; prefix?: string; green?: boolean;
 }) {
   const [editing, setEditing] = useState(false);
   const [local, setLocal] = useState(String(value || ''));
@@ -288,6 +288,11 @@ function QtyCell({ value, onSave, prefix = '', green = false }: {
     else setLocal(String(value || ''));
   };
   const cancel = () => { setEditing(false); setLocal(String(value || '')); };
+
+  // 이 행이 소유하지 않은 칸(예: 실제 생산 행의 추가 생산량)은 수정 불가, '-' 고정
+  if (!editable) {
+    return <span className="px-2 py-1 text-lg text-gray-300">-</span>;
+  }
 
   if (!editing) {
     return (
