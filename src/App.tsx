@@ -139,7 +139,7 @@ function Header() {
             <Logo height={28} />
           </div>
           <div className="leading-tight">
-            <div className="font-bold text-xs sm:text-sm">순수본 1공장</div>
+            <div className="font-bold text-xs sm:text-sm">순수본 1공장 MES</div>
             <div className="text-blue-100 text-[10px] sm:text-xs">{dateLabel}</div>
           </div>
         </div>
