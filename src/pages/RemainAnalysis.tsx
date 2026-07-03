@@ -350,10 +350,9 @@ export default function RemainAnalysis() {
                 </div>
               )}
 
-              {/* 완바트 구성 — 몇 개짜리 바트 × 몇 바트 + 마지막 바트 잔량 */}
+              {/* 완바트 구성 — 목표(총주문) 기준으로 몇 바트 + 마지막 바트에 몇 개 필요한지 */}
               {(() => {
                 const vat = vatMap.get(canonicalShort(detail.code));
-                const produced = detail.target + detail.remain;
                 if (vat === 999) {
                   return (
                     <div className="border-t pt-2.5 text-center">
@@ -368,8 +367,9 @@ export default function RemainAnalysis() {
                     </div>
                   );
                 }
-                const fullVats = Math.floor(produced / vat);
-                const partial = produced - fullVats * vat;
+                const base = detail.target;            // 목표(총주문) 기준
+                const fullVats = Math.floor(base / vat);
+                const partial = base - fullVats * vat;  // 마지막 바트에 필요한 수량
                 return (
                   <div className="border-t pt-3 -mx-5 px-5 pb-1 bg-cyan-50/70 space-y-1.5">
                     <div className="flex items-center justify-between pt-1">
@@ -377,13 +377,13 @@ export default function RemainAnalysis() {
                       <span className="text-base font-bold text-cyan-700 tabular-nums">{vat}개 / 바트</span>
                     </div>
                     <div className="flex items-center justify-between">
-                      <span className="text-sm text-gray-500">생산 구성</span>
+                      <span className="text-sm text-gray-500">목표 바트 구성</span>
                       <span className="text-lg font-bold text-gray-800 tabular-nums">
                         {fullVats}바트{partial > 0 ? ` + ${partial}개` : ''}
                       </span>
                     </div>
                     <div className="text-center text-xs text-gray-500 pt-0.5">
-                      {vat} × {fullVats}바트 = {(vat * fullVats).toLocaleString()}{partial > 0 ? ` + 마지막 ${partial}개` : ''} = 총 {produced.toLocaleString()}개
+                      목표 {base.toLocaleString()} = {vat} × {fullVats}바트{partial > 0 ? ` + 마지막 바트 ${partial}개` : ' (딱 떨어짐)'}
                     </div>
                   </div>
                 );
