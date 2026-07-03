@@ -284,7 +284,7 @@ function TabletView({
             </div>
             <div className="p-3 border-b space-y-2">
               <input value={search} onChange={(e) => setSearch(e.target.value)}
-                placeholder="🔍 코드 또는 품목명…" autoFocus
+                placeholder="🔍 코드 또는 품목명…"
                 className="w-full border rounded-lg px-4 py-3 text-lg" />
               {/* 단계 탭 */}
               <div className="flex flex-wrap gap-1.5">
