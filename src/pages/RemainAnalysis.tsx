@@ -8,7 +8,8 @@ import { collection, getDocs } from 'firebase/firestore';
 import { db } from '../firebase';
 import { shiftDateKey, todayKey } from '../lib/dateUtil';
 import { loadViewDate, saveViewDate } from '../lib/viewDate';
-import type { Item, MachineEntry } from '../types';
+import { canonicalShort } from '../lib/codeUtil';
+import type { Item, MachineEntry, ProductSetting } from '../types';
 
 const MACHINES: MachineEntry['machine'][] = ['1호기', '2호기', '3호기'];
 
@@ -93,6 +94,19 @@ export default function RemainAnalysis() {
   const [dayData, setDayData] = useState<DayRemainMap[]>([]);
   // 칸 탭 시 상세 (목표·생산·잔여)
   const [detail, setDetail] = useState<{ name: string; code: string; date: string; remain: number; target: number } | null>(null);
+  // 완바트 수량: productSettings 1회 로드 → canonicalShort(code) → vatMaxQty
+  const [vatMap, setVatMap] = useState<Map<string, number>>(new Map());
+
+  useEffect(() => {
+    getDocs(collection(db, 'productSettings')).then((snap) => {
+      const m = new Map<string, number>();
+      snap.forEach((d) => {
+        const v = (d.data() as ProductSetting).vatMaxQty;
+        if (v !== undefined && v !== null) m.set(canonicalShort(d.id), v);
+      });
+      setVatMap(m);
+    }).catch(() => {});
+  }, []);
 
   useEffect(() => { saveViewDate(endDate); }, [endDate]);
   const today = todayKey();
@@ -335,6 +349,45 @@ export default function RemainAnalysis() {
                   </span>
                 </div>
               )}
+
+              {/* 완바트 구성 — 몇 개짜리 바트 × 몇 바트 + 마지막 바트 잔량 */}
+              {(() => {
+                const vat = vatMap.get(canonicalShort(detail.code));
+                const produced = detail.target + detail.remain;
+                if (vat === 999) {
+                  return (
+                    <div className="border-t pt-2.5 text-center">
+                      <span className="px-2.5 py-1 bg-orange-100 text-orange-700 border border-orange-300 rounded-full text-sm font-bold">냄비 제품</span>
+                    </div>
+                  );
+                }
+                if (!vat || vat <= 0) {
+                  return (
+                    <div className="border-t pt-2.5 text-center text-xs text-gray-400">
+                      완바트 수량 미설정 — 제품 DB에서 등록하면 바트 구성이 표시됩니다
+                    </div>
+                  );
+                }
+                const fullVats = Math.floor(produced / vat);
+                const partial = produced - fullVats * vat;
+                return (
+                  <div className="border-t pt-3 -mx-5 px-5 pb-1 bg-cyan-50/70 space-y-1.5">
+                    <div className="flex items-center justify-between pt-1">
+                      <span className="text-sm text-gray-500">완바트 수량</span>
+                      <span className="text-base font-bold text-cyan-700 tabular-nums">{vat}개 / 바트</span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span className="text-sm text-gray-500">생산 구성</span>
+                      <span className="text-lg font-bold text-gray-800 tabular-nums">
+                        {fullVats}바트{partial > 0 ? ` + ${partial}개` : ''}
+                      </span>
+                    </div>
+                    <div className="text-center text-xs text-gray-500 pt-0.5">
+                      {vat} × {fullVats}바트 = {(vat * fullVats).toLocaleString()}{partial > 0 ? ` + 마지막 ${partial}개` : ''} = 총 {produced.toLocaleString()}개
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           </div>
         </div>
