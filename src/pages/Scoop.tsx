@@ -532,30 +532,6 @@ function BoardView({
           </div>
         )}
       </div>
-
-      {/* 작업자별 합계 (당일) */}
-      <WorkerSummary byCode={byCode} />
-    </div>
-  );
-}
-
-function WorkerSummary({ byCode }: { byCode: Map<string, { total: number; byWorker: Map<string, number>; events: ScoopEvent[] }> }) {
-  const totals = new Map<string, number>();
-  byCode.forEach((c) => { c.byWorker.forEach((q, w) => { totals.set(w, (totals.get(w) || 0) + q); }); });
-  const arr = Array.from(totals.entries()).sort((a, b) => b[1] - a[1]);
-  if (arr.length === 0) return null;
-  return (
-    <div className="bg-white border rounded-xl overflow-hidden">
-      <div className="px-4 py-2 bg-slate-50 border-b font-bold text-gray-700 text-sm">작업자별 오늘 누적</div>
-      <div className="p-3 flex flex-wrap gap-2">
-        {arr.map(([w, q]) => (
-          <div key={w} className="px-3 py-2 rounded-lg bg-violet-50 border border-violet-200">
-            <span className="text-xs text-violet-700">{w}</span>
-            <span className="ml-2 font-bold text-violet-800">{q.toLocaleString()}</span>
-            <span className="text-xs text-gray-400 ml-1">개</span>
-          </div>
-        ))}
-      </div>
     </div>
   );
 }

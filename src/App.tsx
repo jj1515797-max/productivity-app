@@ -19,6 +19,7 @@ import ProductSettings from './pages/ProductSettings';
 import Inventory from './pages/Inventory';
 import Remix from './pages/Remix';
 import Scoop from './pages/Scoop';
+import ScoopAnalysis from './pages/ScoopAnalysis';
 import Logo from './components/Logo';
 import AnalyticsGate from './components/AnalyticsGate';
 import { useTrackVisit } from './lib/presence';
@@ -60,6 +61,7 @@ function MainContainer() {
           <Route path="/analytics/report" element={<Report />} />
           <Route path="/analytics/material" element={<MaterialAnalysis />} />
           <Route path="/analytics/material2" element={<MaterialAnalysis2 />} />
+          <Route path="/analytics/scoop" element={<ScoopAnalysis />} />
           <Route path="/analytics/settings" element={<ProductSettings />} />
         </Route>
         <Route path="/attendance" element={<Attendance />} />
@@ -104,6 +106,7 @@ const SUB_TABS: Record<Section, { label: string; to: string; exact?: boolean }[]
     { label: '금속CCP', to: '/analytics/report' },
     { label: '원재료분석', to: '/analytics/material' },
     { label: '원재료분석2', to: '/analytics/material2' },
+    { label: '내포장분석', to: '/analytics/scoop' },
     { label: '설정', to: '/analytics/settings' },
   ],
   attendance: [
