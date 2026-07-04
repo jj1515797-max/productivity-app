@@ -341,7 +341,7 @@ function TabletView({
                         <button onClick={() => { setPicked(it.code); setShowPicker(false); setSearch(''); }}
                           className="w-full text-left px-4 py-3 hover:bg-violet-50 flex items-center gap-3">
                           <div className="flex-1 min-w-0">
-                            <div className="text-xs text-gray-400 font-mono">{it.code}</div>
+                            <div className="text-base font-bold text-violet-600 font-mono">{it.code}</div>
                             <div className="font-semibold truncate">{it.name}</div>
                             <div className="mt-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
                               <div className={`h-full ${bar}`} style={{ width: `${pct}%` }} />
