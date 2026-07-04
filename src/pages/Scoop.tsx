@@ -188,7 +188,7 @@ function TabletView({
                   }
                   return (
                     <span className="px-2.5 py-1 bg-cyan-100 text-cyan-700 border border-cyan-300 rounded-full text-sm font-bold whitespace-nowrap">
-                      완바트 {v.toLocaleString()}개
+                      1바트 = {v.toLocaleString()}개
                     </span>
                   );
                 })()}
@@ -199,6 +199,26 @@ function TabletView({
               🔄 품목 변경
             </button>
           </div>
+
+          {/* 목표 바트 구성 — 작업자용: 오늘 몇 바트 + 나머지 몇 개 만들면 되는지 */}
+          {(() => {
+            const v = prodMap.get(canonicalShort(cur.code))?.vatMaxQty;
+            if (!v || v === 999) return null;
+            const fullVats = Math.floor(target / v);
+            const partial = target - fullVats * v;
+            return (
+              <div className="mt-3 bg-amber-50 border-2 border-amber-300 rounded-xl px-4 py-3 flex items-center justify-center gap-2 flex-wrap">
+                <span className="text-sm font-bold text-amber-700">오늘 목표 {target.toLocaleString()}개 =</span>
+                <span className="text-3xl font-extrabold text-amber-800 tabular-nums">{fullVats}<span className="text-xl ml-0.5">바트</span></span>
+                {partial > 0 && (
+                  <>
+                    <span className="text-2xl font-bold text-amber-500">+</span>
+                    <span className="text-3xl font-extrabold text-amber-800 tabular-nums">{partial}<span className="text-xl ml-0.5">개</span></span>
+                  </>
+                )}
+              </div>
+            );
+          })()}
 
           {/* 진행률 큰 표시 */}
           <div className="mt-4 grid grid-cols-3 gap-3 text-center">
