@@ -192,6 +192,15 @@ function TabletView({
                     </span>
                   );
                 })()}
+                {(() => {
+                  const w = prodMap.get(canonicalShort(cur.code))?.packWeight;
+                  if (!w) return null;
+                  return (
+                    <span className="px-2.5 py-1 bg-emerald-100 text-emerald-700 border border-emerald-300 rounded-full text-sm font-bold whitespace-nowrap">
+                      포장중량 {w.toLocaleString()}g
+                    </span>
+                  );
+                })()}
               </div>
             </div>
             <button onClick={() => setShowPicker(true)}
