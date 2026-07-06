@@ -5,7 +5,7 @@
  *  - 작업자 이름은 기기별 localStorage 에 저장
  */
 import { useEffect, useMemo, useState } from 'react';
-import { addDoc, collection, deleteDoc, doc, getDocs, onSnapshot } from 'firebase/firestore';
+import { addDoc, collection, deleteDoc, doc, getDocs, onSnapshot, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import type { Item, ProductSetting } from '../types';
 import { todayKey } from '../lib/dateUtil';
@@ -41,6 +41,17 @@ export default function Scoop({ board }: { board?: boolean }) {
     setEvents(list);
   }), [date]);
 
+  // 재배합 플래그 (날짜별, 실시간 공유): days/{date}/scoopFlags/{code} = { remix: bool }
+  const [remixSet, setRemixSet] = useState<Set<string>>(new Set());
+  useEffect(() => onSnapshot(collection(db, 'days', date, 'scoopFlags'), (s) => {
+    const set = new Set<string>();
+    s.forEach((d) => { if ((d.data() as any).remix) set.add(d.id); });
+    setRemixSet(set);
+  }), [date]);
+  const toggleRemix = async (code: string, on: boolean) => {
+    await setDoc(doc(db, 'days', date, 'scoopFlags', code), { code, remix: on, ts: Date.now() }, { merge: true });
+  };
+
   // 품목별 합계 + 작업자별 합계 집계
   const byCode = useMemo(() => {
     const m = new Map<string, { total: number; byWorker: Map<string, number>; events: ScoopEvent[] }>();
@@ -54,19 +65,21 @@ export default function Scoop({ board }: { board?: boolean }) {
     return m;
   }, [events]);
 
-  if (board) return <BoardView date={date} setDate={setDate} items={items} byCode={byCode} />;
-  return <TabletView date={date} setDate={setDate} items={items} byCode={byCode} events={events} />;
+  if (board) return <BoardView date={date} setDate={setDate} items={items} byCode={byCode} remixSet={remixSet} />;
+  return <TabletView date={date} setDate={setDate} items={items} byCode={byCode} events={events} remixSet={remixSet} toggleRemix={toggleRemix} />;
 }
 
 /* ============================= 자리 태블릿 ============================= */
 function TabletView({
-  date, setDate, items, byCode, events,
+  date, setDate, items, byCode, events, remixSet, toggleRemix,
 }: {
   date: string;
   setDate: (d: string) => void;
   items: Item[];
   byCode: Map<string, { total: number; byWorker: Map<string, number>; events: ScoopEvent[] }>;
   events: ScoopEvent[];
+  remixSet: Set<string>;
+  toggleRemix: (code: string, on: boolean) => void;
 }) {
   const [worker, setWorker] = useState<string>(() => localStorage.getItem(WORKER_KEY) || '');
   const [picked, setPicked] = useState<string>(() => localStorage.getItem(PICKED_KEY) || '');
@@ -203,10 +216,20 @@ function TabletView({
                 })()}
               </div>
             </div>
-            <button onClick={() => setShowPicker(true)}
-              className="px-5 py-3 bg-violet-100 text-violet-700 border-2 border-violet-300 rounded-xl text-base font-bold hover:bg-violet-200 active:scale-95 transition whitespace-nowrap shadow-sm">
-              🔄 품목 변경
-            </button>
+            <div className="flex items-center gap-3">
+              <button onClick={() => toggleRemix(cur.code, !remixSet.has(cur.code))}
+                className={`px-4 py-3 rounded-xl text-base font-bold border-2 whitespace-nowrap transition active:scale-95 ${
+                  remixSet.has(cur.code)
+                    ? 'bg-rose-500 text-white border-rose-500 shadow'
+                    : 'bg-white text-gray-500 border-gray-300 hover:bg-gray-50'
+                }`}>
+                {remixSet.has(cur.code) ? '☑ 재배합' : '☐ 재배합'}
+              </button>
+              <button onClick={() => setShowPicker(true)}
+                className="px-5 py-3 bg-violet-100 text-violet-700 border-2 border-violet-300 rounded-xl text-base font-bold hover:bg-violet-200 active:scale-95 transition whitespace-nowrap shadow-sm">
+                🔄 품목 변경
+              </button>
+            </div>
           </div>
 
           {/* 목표 바트 구성 — 작업자용: 오늘 몇 바트 + 나머지 몇 개 만들면 되는지 */}
@@ -394,12 +417,13 @@ function WorkerSetup({ onSet }: { onSet: (w: string) => void }) {
 
 /* =============================== 현황판 ============================== */
 function BoardView({
-  date, setDate, items, byCode,
+  date, setDate, items, byCode, remixSet,
 }: {
   date: string;
   setDate: (d: string) => void;
   items: Item[];
   byCode: Map<string, { total: number; byWorker: Map<string, number>; events: ScoopEvent[] }>;
+  remixSet: Set<string>;
 }) {
   const rows = items.map((it) => {
     const s = byCode.get(it.code);
@@ -408,6 +432,7 @@ function BoardView({
     const remain = tg - done;
     return { it, s, done, tg, remain, pct: tg > 0 ? Math.min(100, (done / tg) * 100) : 0 };
   });
+  const remixItems = rows.filter((r) => remixSet.has(r.it.code));
   const active = rows.filter((r) => r.s && r.s.total > 0);
   // 정렬: 남음(remain>0) → 완료(remain=0) → 초과(remain<0)
   //  현장 직책자가 부족한 품목을 즉시 보도록.
@@ -446,6 +471,32 @@ function BoardView({
           className="border rounded px-2 py-1 text-sm font-bold" />
         <span className="ml-auto text-sm text-gray-500">실시간 자동 갱신</span>
       </div>
+
+      {/* 재배합 필요 — 최우선 표시 */}
+      {remixItems.length > 0 && (
+        <div className="bg-rose-50 border-2 border-rose-400 rounded-xl overflow-hidden shadow-sm">
+          <div className="px-4 py-2.5 bg-rose-500 text-white font-bold flex items-center gap-2">
+            <span className="text-lg">🔄</span> 재배합 필요 ({remixItems.length})
+          </div>
+          <div className="divide-y divide-rose-100">
+            {remixItems.map(({ it, done, tg, remain }) => (
+              <div key={it.code} className="px-4 py-3 flex items-center justify-between gap-3">
+                <div className="flex-1 min-w-0">
+                  <div className="text-[11px] text-rose-400 font-mono">{it.code}</div>
+                  <div className="font-bold text-rose-900 truncate">{it.name}</div>
+                </div>
+                <div className="text-right whitespace-nowrap">
+                  <div className="text-lg">
+                    <span className="font-bold text-rose-700">{done.toLocaleString()}</span>
+                    <span className="text-gray-400 text-base"> / {tg.toLocaleString()}</span>
+                  </div>
+                  {remain > 0 && <div className="text-xs text-rose-600 font-bold">부족 {remain.toLocaleString()}</div>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
 
       {/* KPI */}
       <div className="grid grid-cols-3 gap-3">
