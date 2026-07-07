@@ -4,7 +4,7 @@
  *  - 데이터: days/{date}/scoop/{auto}  =  { code, name, worker, qty, ts }
  *  - 작업자 이름은 기기별 localStorage 에 저장
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { addDoc, collection, deleteDoc, doc, getDocs, onSnapshot, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import type { Item, ProductSetting } from '../types';
@@ -64,6 +64,52 @@ export default function Scoop({ board }: { board?: boolean }) {
     });
     return m;
   }, [events]);
+
+  // 알림 설정 구독 (수신자·웹앱URL). onSnapshot 캐시로 값이 남아 읽기 없이도 마지막 값 사용 가능.
+  const [notifyCfg, setNotifyCfg] = useState<{ enabled: boolean; emails: string; webAppUrl: string }>({ enabled: false, emails: '', webAppUrl: '' });
+  useEffect(() => onSnapshot(doc(db, 'appMeta', 'notifySettings'), (s) => {
+    const d = (s.data() || {}) as any;
+    setNotifyCfg({ enabled: !!d.enabled, emails: d.emails || '', webAppUrl: d.webAppUrl || '' });
+  }), []);
+
+  // 내포장 진행률: (1) 요약문서 저장(폴링 백업) + (2) 100% 되면 Apps Script 로 직접 푸시(읽기 0, 즉시).
+  const lastProgressRef = useRef('');
+  useEffect(() => {
+    if (date !== todayKey()) return;
+    let totalTarget = 0, done = 0, completed = 0, itemCount = 0;
+    items.forEach((it) => {
+      const tg = it.totalQty || 0;
+      if (tg <= 0) return;
+      itemCount++;
+      const d = byCode.get(it.code)?.total || 0;
+      totalTarget += tg;
+      done += Math.min(d, tg);
+      if (d >= tg) completed++;
+    });
+    if (itemCount === 0) return;   // 오늘 품목 아직 없음
+    const pct = totalTarget ? Math.round((done / totalTarget) * 100) : 0;
+
+    // (1) 요약문서 저장 (값 바뀔 때만)
+    const sig = `${pct}|${completed}|${itemCount}`;
+    if (lastProgressRef.current !== sig) {
+      lastProgressRef.current = sig;
+      setDoc(doc(db, 'appMeta', 'scoopProgress'), {
+        date, pct, completedItems: completed, itemCount, updatedAt: new Date().toISOString(),
+      }, { merge: true }).catch(() => {});
+    }
+
+    // (2) 100% 푸시 — Firestore 읽기 없이 Apps Script 웹앱으로 직접 신호. 기기별 하루 1회.
+    if (pct >= 100 && notifyCfg.enabled && notifyCfg.emails.trim() && notifyCfg.webAppUrl) {
+      const key = 'scoopNotified:' + date;
+      if (!localStorage.getItem(key)) {
+        localStorage.setItem(key, '1');
+        fetch(notifyCfg.webAppUrl, {
+          method: 'POST', mode: 'no-cors', headers: { 'Content-Type': 'text/plain' },
+          body: JSON.stringify({ type: 'scoopDone', date, completedItems: completed, itemCount, emails: notifyCfg.emails }),
+        }).catch(() => {});
+      }
+    }
+  }, [items, byCode, date, notifyCfg]);
 
   if (board) return <BoardView date={date} setDate={setDate} items={items} byCode={byCode} remixSet={remixSet} />;
   return <TabletView date={date} setDate={setDate} items={items} byCode={byCode} events={events} remixSet={remixSet} toggleRemix={toggleRemix} />;
