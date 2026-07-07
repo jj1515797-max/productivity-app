@@ -70,7 +70,7 @@ export default function Report() {
       fitToPage: true,
       fitToWidth: 1,
       fitToHeight: 0,
-      margins: { left: 0.3, right: 0.3, top: 0.4, bottom: 0.4, header: 0.2, footer: 0.2 },
+      margins: { left: 0.3, right: 0.3, top: 0.79, bottom: 0.4, header: 0.2, footer: 0.2 }, // 위쪽 약 2cm — 펀치 구멍 여유
     };
     ws.properties.defaultRowHeight = 16;
 
