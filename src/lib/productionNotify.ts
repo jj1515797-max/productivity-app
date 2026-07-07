@@ -7,5 +7,6 @@
 export interface NotifySettings {
   enabled?: boolean;
   emails?: string;   // 콤마 구분 — Apps Script(시간트리거)가 appMeta/notifySettings 에서 읽어 발송
+  webAppUrl?: string;   // Apps Script 웹앱 배포 URL — 100% 시 앱이 이 주소로 직접 신호 발송(읽기 0)
   updatedAt?: string;
 }
