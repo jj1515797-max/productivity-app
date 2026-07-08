@@ -213,31 +213,99 @@ export default function Remix() {
     await setDoc(doc(db, 'analyticsGraphs', which), { points });
   };
 
-  // 엑셀 다운로드
+  // 엑셀 다운로드 — 날짜 병합 헤더 + 단계별 그룹/빈줄 + 테두리·틀고정
   const downloadExcel = async () => {
     if (weekDates.length === 0) return;
     const wb = new ExcelJS.Workbook();
     const ws = wb.addWorksheet(`${year}-${pad(month)}-${weekIdx}주`);
-    const header1 = ['단계', '코드', '품목명'];
-    weekDateStrs.forEach((d) => {
-      header1.push(`${d.slice(5)} 지시량`, '잔여량', '재배합');
+
+    const DC = 3;              // 날짜당 컬럼 수 (지시량/잔여량/재배합)
+    const C0 = 4;              // 데이터 시작 열 (D)
+    const nDates = weekDateStrs.length;
+    const lastCol = C0 + nDates * DC - 1;
+
+    const thin = { style: 'thin', color: { argb: 'FFCBD5E1' } } as const;
+    const med = { style: 'medium', color: { argb: 'FF94A3B8' } } as const;
+    const allThin = { top: thin, left: thin, bottom: thin, right: thin };
+    const groupStartCol = (c: number) => c >= C0 && (c - C0) % DC === 0;
+
+    // 열 너비
+    ws.getColumn(1).width = 8;   // 단계
+    ws.getColumn(2).width = 8;   // 코드
+    ws.getColumn(3).width = 20;  // 품목명
+    for (let i = 0; i < nDates * DC; i++) ws.getColumn(C0 + i).width = 8;
+
+    // 헤더 2줄
+    const r1 = ws.getRow(1), r2 = ws.getRow(2);
+    r1.getCell(1).value = '단계'; r1.getCell(2).value = '코드'; r1.getCell(3).value = '품목명';
+    ws.mergeCells(1, 1, 2, 1); ws.mergeCells(1, 2, 2, 2); ws.mergeCells(1, 3, 2, 3);
+    weekDateStrs.forEach((d, i) => {
+      const c = C0 + i * DC;
+      r1.getCell(c).value = d.slice(5);       // MM-DD
+      ws.mergeCells(1, c, 1, c + 2);
+      r2.getCell(c).value = '지시량';
+      r2.getCell(c + 1).value = '잔여량';
+      r2.getCell(c + 2).value = '재배합';
     });
-    ws.addRow(header1);
+    [r1, r2].forEach((r) => {
+      r.height = 18;
+      for (let c = 1; c <= lastCol; c++) {
+        const cell = r.getCell(c);
+        cell.font = { bold: true, size: 10 };
+        cell.alignment = { horizontal: 'center', vertical: 'middle' };
+        cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEEF2F7' } };
+        cell.border = { ...allThin, left: groupStartCol(c) ? med : thin };
+      }
+    });
+
+    let rowIdx = 3;
     STAGES.forEach((s) => {
       const items = grouped.get(s.key) || [];
+      if (items.length === 0) return;
+
+      // 단계 그룹 헤더
+      ws.mergeCells(rowIdx, 1, rowIdx, lastCol);
+      const hr = ws.getRow(rowIdx);
+      hr.height = 18;
+      const hc = hr.getCell(1);
+      hc.value = `■ ${s.label}`;
+      hc.font = { bold: true, size: 11, color: { argb: 'FF1E3A5F' } };
+      hc.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFDCE6F5' } };
+      hc.alignment = { vertical: 'middle', horizontal: 'left', indent: 1 };
+      rowIdx++;
+
       items.forEach((it) => {
-        const row: (string | number)[] = [s.label, it.code, it.name];
-        weekDateStrs.forEach((d) => {
-          const dayItems = itemsByDate[d] || {};
-          const totalQty = dayItems[it.norm]?.totalQty || 0;
+        const row = ws.getRow(rowIdx);
+        row.getCell(2).value = it.code;
+        row.getCell(3).value = it.name;
+        weekDateStrs.forEach((d, i) => {
+          const c = C0 + i * DC;
+          const totalQty = (itemsByDate[d] || {})[it.norm]?.totalQty || 0;
           const log = (logisticsByDate[d] || {})[it.norm];
           const r = (remixByDate[d] || {})[it.norm];
           const remixQty = r?.qty ?? r?.count ?? 0;
-          row.push(totalQty || '', log ?? '', remixQty || '');
+          row.getCell(c).value = totalQty || null;
+          row.getCell(c + 1).value = log ?? null;
+          row.getCell(c + 2).value = remixQty || null;
         });
-        ws.addRow(row);
+        for (let c = 1; c <= lastCol; c++) {
+          const cell = row.getCell(c);
+          cell.border = { ...allThin, left: groupStartCol(c) ? med : thin };
+          cell.alignment = { horizontal: c === 3 ? 'left' : 'center', vertical: 'middle' };
+          if (c === 2) cell.font = { bold: true };
+          // 재배합 열 강조 (그룹의 3번째 = 재배합)
+          if (c >= C0 && (c - C0) % DC === 2 && cell.value) {
+            cell.font = { bold: true, color: { argb: 'FFB45309' } };
+            cell.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF6E5' } };
+          }
+        }
+        rowIdx++;
       });
+      rowIdx++;   // 단계 사이 빈 줄
     });
+
+    ws.views = [{ state: 'frozen', xSplit: 3, ySplit: 2 }];
+
     const buf = await wb.xlsx.writeBuffer();
     const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
     const url = URL.createObjectURL(blob);
