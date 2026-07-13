@@ -134,6 +134,25 @@ function TabletView({
   const [showPicker, setShowPicker] = useState(false);
   const [manualQty, setManualQty] = useState<number>(0);
   const [saving, setSaving] = useState(false);
+  // 글씨 크기 단계 (0=보통,1=크게,2=아주크게) — 기기별 저장. 텍스트 크기만 키워 레이아웃 유지.
+  const [textScale, setTextScale] = useState<number>(() => Number(localStorage.getItem('scoop:textScale')) || 0);
+  useEffect(() => { localStorage.setItem('scoop:textScale', String(textScale)); }, [textScale]);
+  const SZ: Record<string, string[]> = {
+    code:        ['text-lg',  'text-xl',  'text-2xl'],
+    name:        ['text-2xl', 'text-3xl', 'text-4xl'],
+    chip:        ['text-sm',  'text-base', 'text-lg'],
+    bannerLabel: ['text-sm',  'text-base', 'text-xl'],
+    bannerBig:   ['text-3xl', 'text-4xl', 'text-5xl'],
+    bannerUnit:  ['text-xl',  'text-2xl', 'text-3xl'],
+    kpiLabel:    ['text-xs',  'text-sm',  'text-lg'],
+    kpiNum:      ['text-2xl', 'text-3xl', 'text-4xl'],
+    bigBtn:      ['text-3xl', 'text-4xl', 'text-5xl'],
+    subBtn:      ['text-xl',  'text-2xl', 'text-3xl'],
+    manualLabel: ['text-sm',  'text-base', 'text-lg'],
+    manualInput: ['text-lg',  'text-xl',  'text-2xl'],
+    mine:        ['text-sm',  'text-base', 'text-lg'],
+  };
+  const sz = (k: string) => SZ[k][textScale] || SZ[k][0];
   // 완바트 수량 표시용: productSettings 1회 로드 → canonicalShort 기준 맵
   const [prodMap, setProdMap] = useState<Map<string, ProductSetting>>(new Map());
 
@@ -232,21 +251,21 @@ function TabletView({
         <div className="bg-white border-2 border-violet-300 rounded-2xl p-5 shadow-sm">
           <div className="flex items-start justify-between gap-3">
             <div className="flex-1 min-w-0">
-              <div className="text-lg text-violet-600 font-mono font-bold">{cur.code}</div>
+              <div className={`${sz('code')} text-violet-600 font-mono font-bold`}>{cur.code}</div>
               <div className="flex items-center gap-2 flex-wrap">
-                <div className="text-2xl font-bold text-gray-800 truncate">{cur.name || cur.code}</div>
+                <div className={`${sz('name')} font-bold text-gray-800 truncate`}>{cur.name || cur.code}</div>
                 {(() => {
                   const v = prodMap.get(canonicalShort(cur.code))?.vatMaxQty;
                   if (v === undefined || v === null) return null;
                   if (v === 999) {
                     return (
-                      <span className="px-2.5 py-1 bg-orange-100 text-orange-700 border border-orange-300 rounded-full text-sm font-bold whitespace-nowrap">
+                      <span className={`px-2.5 py-1 bg-orange-100 text-orange-700 border border-orange-300 rounded-full ${sz('chip')} font-bold whitespace-nowrap`}>
                         냄비
                       </span>
                     );
                   }
                   return (
-                    <span className="px-2.5 py-1 bg-cyan-100 text-cyan-700 border border-cyan-300 rounded-full text-sm font-bold whitespace-nowrap">
+                    <span className={`px-2.5 py-1 bg-cyan-100 text-cyan-700 border border-cyan-300 rounded-full ${sz('chip')} font-bold whitespace-nowrap`}>
                       1바트 = {v.toLocaleString()}개
                     </span>
                   );
@@ -255,7 +274,7 @@ function TabletView({
                   const w = prodMap.get(canonicalShort(cur.code))?.packWeight;
                   if (!w) return null;
                   return (
-                    <span className="px-2.5 py-1 bg-emerald-100 text-emerald-700 border border-emerald-300 rounded-full text-sm font-bold whitespace-nowrap">
+                    <span className={`px-2.5 py-1 bg-emerald-100 text-emerald-700 border border-emerald-300 rounded-full ${sz('chip')} font-bold whitespace-nowrap`}>
                       포장중량 {w.toLocaleString()}g
                     </span>
                   );
@@ -263,6 +282,11 @@ function TabletView({
               </div>
             </div>
             <div className="flex items-center gap-3">
+              <button onClick={() => setTextScale((textScale + 1) % 3)}
+                title="글씨 크기 조정 (보통 → 크게 → 아주크게)"
+                className="px-4 py-3 rounded-xl text-base font-bold border-2 border-gray-300 bg-white text-gray-600 hover:bg-gray-50 whitespace-nowrap active:scale-95 transition">
+                🔍 글씨 {['보통', '크게', '아주크게'][textScale]}
+              </button>
               <button onClick={() => toggleRemix(cur.code, !remixSet.has(cur.code))}
                 className={`px-4 py-3 rounded-xl text-base font-bold border-2 whitespace-nowrap transition active:scale-95 ${
                   remixSet.has(cur.code)
@@ -286,12 +310,12 @@ function TabletView({
             const partial = target - fullVats * v;
             return (
               <div className="mt-3 bg-amber-50 border-2 border-amber-300 rounded-xl px-4 py-3 flex items-center justify-center gap-2 flex-wrap">
-                <span className="text-sm font-bold text-amber-700">오늘 목표 {target.toLocaleString()}개 =</span>
-                <span className="text-3xl font-extrabold text-amber-800 tabular-nums">{fullVats}<span className="text-xl ml-0.5">바트</span></span>
+                <span className={`${sz('bannerLabel')} font-bold text-amber-700`}>오늘 목표 {target.toLocaleString()}개 =</span>
+                <span className={`${sz('bannerBig')} font-extrabold text-amber-800 tabular-nums`}>{fullVats}<span className={`${sz('bannerUnit')} ml-0.5`}>바트</span></span>
                 {partial > 0 && (
                   <>
-                    <span className="text-2xl font-bold text-amber-500">+</span>
-                    <span className="text-3xl font-extrabold text-amber-800 tabular-nums">{partial}<span className="text-xl ml-0.5">개</span></span>
+                    <span className={`${sz('bannerUnit')} font-bold text-amber-500`}>+</span>
+                    <span className={`${sz('bannerBig')} font-extrabold text-amber-800 tabular-nums`}>{partial}<span className={`${sz('bannerUnit')} ml-0.5`}>개</span></span>
                   </>
                 )}
               </div>
@@ -301,16 +325,16 @@ function TabletView({
           {/* 진행률 큰 표시 */}
           <div className="mt-4 grid grid-cols-3 gap-3 text-center">
             <div className="bg-slate-50 rounded-lg p-3">
-              <div className="text-xs text-gray-500">목표</div>
-              <div className="text-2xl font-bold text-gray-800">{target.toLocaleString()}</div>
+              <div className={`${sz('kpiLabel')} text-gray-500`}>목표</div>
+              <div className={`${sz('kpiNum')} font-bold text-gray-800`}>{target.toLocaleString()}</div>
             </div>
             <div className="bg-emerald-50 rounded-lg p-3">
-              <div className="text-xs text-emerald-700">현재</div>
-              <div className="text-2xl font-bold text-emerald-700">{total.toLocaleString()}</div>
+              <div className={`${sz('kpiLabel')} text-emerald-700`}>현재</div>
+              <div className={`${sz('kpiNum')} font-bold text-emerald-700`}>{total.toLocaleString()}</div>
             </div>
             <div className={`rounded-lg p-3 ${remain > 0 ? 'bg-rose-50' : remain === 0 && total > 0 ? 'bg-emerald-50' : remain < 0 ? 'bg-violet-50' : 'bg-slate-50'}`}>
-              <div className={`text-xs ${remain > 0 ? 'text-rose-700' : remain === 0 && total > 0 ? 'text-emerald-700' : remain < 0 ? 'text-violet-700' : 'text-gray-500'}`}>{remain > 0 ? '부족' : remain < 0 ? '초과' : (total > 0 ? '완료' : '부족')}</div>
-              <div className={`text-2xl font-bold ${remain > 0 ? 'text-rose-700' : remain === 0 && total > 0 ? 'text-emerald-700' : remain < 0 ? 'text-violet-700' : 'text-gray-700'}`}>{Math.abs(remain).toLocaleString()}</div>
+              <div className={`${sz('kpiLabel')} ${remain > 0 ? 'text-rose-700' : remain === 0 && total > 0 ? 'text-emerald-700' : remain < 0 ? 'text-violet-700' : 'text-gray-500'}`}>{remain > 0 ? '부족' : remain < 0 ? '초과' : (total > 0 ? '완료' : '부족')}</div>
+              <div className={`${sz('kpiNum')} font-bold ${remain > 0 ? 'text-rose-700' : remain === 0 && total > 0 ? 'text-emerald-700' : remain < 0 ? 'text-violet-700' : 'text-gray-700'}`}>{Math.abs(remain).toLocaleString()}</div>
             </div>
           </div>
 
@@ -344,20 +368,20 @@ function TabletView({
           {/* 큰 버튼들 */}
           <div className="mt-5 grid grid-cols-2 gap-3">
             <button onClick={() => addQty(20)} disabled={saving}
-              className="py-8 bg-violet-600 text-white rounded-2xl text-3xl font-bold hover:bg-violet-700 active:scale-95 disabled:opacity-50 transition shadow">
+              className={`py-8 bg-violet-600 text-white rounded-2xl ${sz('bigBtn')} font-bold hover:bg-violet-700 active:scale-95 disabled:opacity-50 transition shadow`}>
               + 20
             </button>
             <button onClick={undoLast}
-              className="py-8 bg-white border-2 border-rose-300 text-rose-600 rounded-2xl text-xl font-bold hover:bg-rose-50 active:scale-95 transition">
+              className={`py-8 bg-white border-2 border-rose-300 text-rose-600 rounded-2xl ${sz('subBtn')} font-bold hover:bg-rose-50 active:scale-95 transition`}>
               ↶ 직전 취소
             </button>
           </div>
 
           {/* 낱개 입력 */}
           <div className="mt-3 bg-slate-50 border rounded-lg p-3 flex items-center gap-2">
-            <span className="text-sm text-gray-600">낱개</span>
+            <span className={`${sz('manualLabel')} text-gray-600`}>낱개</span>
             <input type="number" inputMode="numeric" value={manualQty || ''} onChange={(e) => setManualQty(Number(e.target.value) || 0)}
-              className="flex-1 border rounded px-3 py-2 text-center font-bold text-lg" placeholder="예: 6" />
+              className={`flex-1 border rounded px-3 py-2 text-center font-bold ${sz('manualInput')}`} placeholder="예: 6" />
             <button onClick={async () => { if (manualQty > 0) { await addQty(manualQty); setManualQty(0); } }}
               disabled={saving || manualQty <= 0}
               className="px-5 py-2 bg-emerald-600 text-white rounded font-bold hover:bg-emerald-700 disabled:bg-gray-300">
@@ -366,7 +390,7 @@ function TabletView({
           </div>
 
           {/* 내 합계 */}
-          <div className="mt-3 text-center text-sm text-gray-600">
+          <div className={`mt-3 text-center ${sz('mine')} text-gray-600`}>
             내 합계 (<span className="font-bold text-violet-700">{worker}</span>): <span className="font-bold text-violet-700">{myCount.toLocaleString()}</span> 개
           </div>
         </div>
