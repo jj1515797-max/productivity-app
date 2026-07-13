@@ -138,19 +138,19 @@ function TabletView({
   const [textScale, setTextScale] = useState<number>(() => Number(localStorage.getItem('scoop:textScale')) || 0);
   useEffect(() => { localStorage.setItem('scoop:textScale', String(textScale)); }, [textScale]);
   const SZ: Record<string, string[]> = {
-    code:        ['text-lg',  'text-xl',  'text-2xl'],
-    name:        ['text-2xl', 'text-3xl', 'text-4xl'],
-    chip:        ['text-sm',  'text-base', 'text-lg'],
-    bannerLabel: ['text-sm',  'text-base', 'text-xl'],
-    bannerBig:   ['text-3xl', 'text-4xl', 'text-5xl'],
-    bannerUnit:  ['text-xl',  'text-2xl', 'text-3xl'],
-    kpiLabel:    ['text-xs',  'text-sm',  'text-lg'],
-    kpiNum:      ['text-2xl', 'text-3xl', 'text-4xl'],
-    bigBtn:      ['text-3xl', 'text-4xl', 'text-5xl'],
-    subBtn:      ['text-xl',  'text-2xl', 'text-3xl'],
-    manualLabel: ['text-sm',  'text-base', 'text-lg'],
-    manualInput: ['text-lg',  'text-xl',  'text-2xl'],
-    mine:        ['text-sm',  'text-base', 'text-lg'],
+    code:        ['text-lg',  'text-xl',  'text-2xl', 'text-3xl'],
+    name:        ['text-2xl', 'text-3xl', 'text-4xl', 'text-5xl'],
+    chip:        ['text-sm',  'text-base', 'text-lg', 'text-xl'],
+    bannerLabel: ['text-sm',  'text-base', 'text-xl', 'text-2xl'],
+    bannerBig:   ['text-3xl', 'text-4xl', 'text-5xl', 'text-6xl'],
+    bannerUnit:  ['text-xl',  'text-2xl', 'text-3xl', 'text-4xl'],
+    kpiLabel:    ['text-xs',  'text-sm',  'text-lg', 'text-xl'],
+    kpiNum:      ['text-2xl', 'text-3xl', 'text-4xl', 'text-5xl'],
+    bigBtn:      ['text-3xl', 'text-4xl', 'text-5xl', 'text-6xl'],
+    subBtn:      ['text-xl',  'text-2xl', 'text-3xl', 'text-4xl'],
+    manualLabel: ['text-sm',  'text-base', 'text-lg', 'text-xl'],
+    manualInput: ['text-lg',  'text-xl',  'text-2xl', 'text-3xl'],
+    mine:        ['text-sm',  'text-base', 'text-lg', 'text-xl'],
   };
   const sz = (k: string) => SZ[k][textScale] || SZ[k][0];
   // 완바트 수량 표시용: productSettings 1회 로드 → canonicalShort 기준 맵
@@ -234,7 +234,10 @@ function TabletView({
         <span className="text-gray-300">|</span>
         <span className="text-sm text-gray-500">작업자</span>
         <span className="font-bold text-violet-700">{worker}</span>
-        <button onClick={() => setWorker('')} className="text-xs text-gray-400 hover:underline">변경</button>
+        <button onClick={() => setWorker('')}
+          className="px-4 py-2 rounded-lg bg-violet-600 text-white text-sm font-bold hover:bg-violet-700 active:scale-95 transition shadow-sm whitespace-nowrap">
+          🔄 작업자 변경
+        </button>
         <span className="ml-auto text-xs text-gray-400">실시간 공유 · 여러 명 동시 작업 가능</span>
       </div>
 
@@ -282,10 +285,10 @@ function TabletView({
               </div>
             </div>
             <div className="flex items-center gap-3">
-              <button onClick={() => setTextScale((textScale + 1) % 3)}
-                title="글씨 크기 조정 (보통 → 크게 → 아주크게)"
+              <button onClick={() => setTextScale((textScale + 1) % 4)}
+                title="글씨 크기 조정 (보통 → 크게 → 아주크게 → 최대)"
                 className="px-4 py-3 rounded-xl text-base font-bold border-2 border-gray-300 bg-white text-gray-600 hover:bg-gray-50 whitespace-nowrap active:scale-95 transition">
-                🔍 글씨 {['보통', '크게', '아주크게'][textScale]}
+                🔍 글씨 {['보통', '크게', '아주크게', '최대'][textScale]}
               </button>
               <button onClick={() => toggleRemix(cur.code, !remixSet.has(cur.code))}
                 className={`px-4 py-3 rounded-xl text-base font-bold border-2 whitespace-nowrap transition active:scale-95 ${
