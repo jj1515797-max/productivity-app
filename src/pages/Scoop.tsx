@@ -28,19 +28,19 @@ export default function Scoop({ board }: { board?: boolean }) {
   const [items, setItems] = useState<Item[]>([]);
   const [events, setEvents] = useState<ScoopEvent[]>([]);
 
-  // 날짜 자동 롤오버 — 새벽 2시 기준. 태블릿을 켜둔 채 다음날이 되면 당일 생산일자로 갱신.
-  //  (과거 날짜를 수동으로 보고 있으면 강제로 바꾸지 않음)
+  // 날짜 자동 롤오버 — 새벽 2시 기준. 태블릿을 켜둔 채 다음날이 되면 당일 생산일자로 무조건 갱신.
+  //  (낮에 과거 날짜 조회 중엔 날짜가 안 바뀌므로 방해 없음. 새벽 2시 넘어갈 때만 당일로 이동)
   const effTodayRef = useRef(effectiveTodayKey());
   useEffect(() => {
     const id = setInterval(() => {
       const eff = effectiveTodayKey();
       if (eff !== effTodayRef.current) {
-        if (date === effTodayRef.current) setDate(eff);   // '오늘'을 보고 있던 경우에만 이동
         effTodayRef.current = eff;
+        setDate(eff);
       }
     }, 60_000);
     return () => clearInterval(id);
-  }, [date]);
+  }, []);
 
   useEffect(() => onSnapshot(collection(db, 'days', date, 'items'), (s) => {
     const list: Item[] = [];
