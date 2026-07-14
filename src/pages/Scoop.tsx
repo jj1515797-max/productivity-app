@@ -8,7 +8,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { addDoc, collection, deleteDoc, doc, getDocs, onSnapshot, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import type { Item, ProductSetting } from '../types';
-import { todayKey } from '../lib/dateUtil';
+import { todayKey, effectiveTodayKey } from '../lib/dateUtil';
 import { getStage, STAGE_LETTERS } from '../lib/monthlyProduction';
 import { canonicalShort } from '../lib/codeUtil';
 
@@ -24,9 +24,23 @@ const WORKER_KEY = 'scoop:worker';
 const PICKED_KEY = 'scoop:picked';   // 마지막 선택 품목코드 (기기 새로고침해도 유지)
 
 export default function Scoop({ board }: { board?: boolean }) {
-  const [date, setDate] = useState(todayKey());
+  const [date, setDate] = useState(effectiveTodayKey());
   const [items, setItems] = useState<Item[]>([]);
   const [events, setEvents] = useState<ScoopEvent[]>([]);
+
+  // 날짜 자동 롤오버 — 새벽 2시 기준. 태블릿을 켜둔 채 다음날이 되면 당일 생산일자로 갱신.
+  //  (과거 날짜를 수동으로 보고 있으면 강제로 바꾸지 않음)
+  const effTodayRef = useRef(effectiveTodayKey());
+  useEffect(() => {
+    const id = setInterval(() => {
+      const eff = effectiveTodayKey();
+      if (eff !== effTodayRef.current) {
+        if (date === effTodayRef.current) setDate(eff);   // '오늘'을 보고 있던 경우에만 이동
+        effTodayRef.current = eff;
+      }
+    }, 60_000);
+    return () => clearInterval(id);
+  }, [date]);
 
   useEffect(() => onSnapshot(collection(db, 'days', date, 'items'), (s) => {
     const list: Item[] = [];
@@ -151,6 +165,10 @@ function TabletView({
     manualLabel: ['text-sm',  'text-base', 'text-lg', 'text-xl'],
     manualInput: ['text-lg',  'text-xl',  'text-2xl', 'text-3xl'],
     mine:        ['text-sm',  'text-base', 'text-lg', 'text-xl'],
+    pickerTab:   ['text-sm',  'text-base', 'text-lg', 'text-xl'],
+    pickerCode:  ['text-base', 'text-lg', 'text-xl', 'text-2xl'],
+    pickerName:  ['text-base', 'text-lg', 'text-xl', 'text-2xl'],
+    pickerQty:   ['text-sm',  'text-base', 'text-lg', 'text-xl'],
   };
   const sz = (k: string) => SZ[k][textScale] || SZ[k][0];
   // 완바트 수량 표시용: productSettings 1회 로드 → canonicalShort 기준 맵
@@ -404,7 +422,7 @@ function TabletView({
         <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
           <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl h-[80vh] flex flex-col overflow-hidden">
             <div className="px-5 py-3 border-b flex items-center justify-between bg-violet-50">
-              <h3 className="font-bold">품목 선택</h3>
+              <h3 className="font-bold text-lg">품목 선택</h3>
               <button onClick={() => setShowPicker(false)} className="w-8 h-8 rounded-full hover:bg-gray-200 text-gray-500">×</button>
             </div>
             <div className="p-3 border-b space-y-2">
@@ -412,14 +430,14 @@ function TabletView({
                 placeholder="🔍 코드 또는 품목명…"
                 className="w-full border rounded-lg px-4 py-3 text-lg" />
               {/* 단계 탭 */}
-              <div className="flex flex-wrap gap-1.5">
+              <div className="flex flex-wrap gap-2">
                 <button onClick={() => setStageFilter('')}
-                  className={`px-3 py-1.5 rounded-lg text-sm font-bold ${stageFilter === '' ? 'bg-violet-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                  className={`px-4 py-2.5 rounded-lg ${sz('pickerTab')} font-bold active:scale-95 transition ${stageFilter === '' ? 'bg-violet-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
                   전체
                 </button>
                 {presentStages.map((s) => (
                   <button key={s} onClick={() => setStageFilter(s)}
-                    className={`px-3 py-1.5 rounded-lg text-sm font-bold ${stageFilter === s ? 'bg-violet-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                    className={`px-4 py-2.5 rounded-lg ${sz('pickerTab')} font-bold active:scale-95 transition ${stageFilter === s ? 'bg-violet-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
                     {s === 'F500' ? 'F-500' : s}
                   </button>
                 ))}
@@ -444,20 +462,20 @@ function TabletView({
                     return (
                       <li key={it.code}>
                         <button onClick={() => { setPicked(it.code); setShowPicker(false); setSearch(''); }}
-                          className="w-full text-left px-4 py-3 hover:bg-violet-50 flex items-center gap-3">
+                          className="w-full text-left px-4 py-4 hover:bg-violet-50 active:bg-violet-100 flex items-center gap-3">
                           <div className="flex-1 min-w-0">
-                            <div className="text-base font-bold text-violet-600 font-mono">{it.code}</div>
-                            <div className="font-semibold truncate">{it.name}</div>
-                            <div className="mt-1 h-1.5 bg-gray-100 rounded-full overflow-hidden">
+                            <div className={`${sz('pickerCode')} font-bold text-violet-600 font-mono`}>{it.code}</div>
+                            <div className={`${sz('pickerName')} font-semibold truncate`}>{it.name}</div>
+                            <div className="mt-1.5 h-2 bg-gray-100 rounded-full overflow-hidden">
                               <div className={`h-full ${bar}`} style={{ width: `${pct}%` }} />
                             </div>
                           </div>
                           <div className="text-right whitespace-nowrap">
-                            <div className="text-sm">
+                            <div className={sz('pickerQty')}>
                               <span className={`font-bold ${numCls}`}>{done.toLocaleString()}</span>
                               <span className="text-gray-400"> / {tg.toLocaleString()}</span>
                             </div>
-                            {workerCount > 0 && <div className="text-[10px] text-gray-500">{workerCount}명 작업중</div>}
+                            {workerCount > 0 && <div className="text-xs text-gray-500">{workerCount}명 작업중</div>}
                           </div>
                         </button>
                       </li>
