@@ -155,6 +155,7 @@ function TabletView({
     code:        ['text-lg',  'text-xl',  'text-2xl', 'text-3xl'],
     name:        ['text-2xl', 'text-3xl', 'text-4xl', 'text-5xl'],
     chip:        ['text-sm',  'text-base', 'text-lg', 'text-xl'],
+    packChip:    ['text-base', 'text-lg', 'text-xl', 'text-2xl'],
     bannerLabel: ['text-sm',  'text-base', 'text-xl', 'text-2xl'],
     bannerBig:   ['text-3xl', 'text-4xl', 'text-5xl', 'text-6xl'],
     bannerUnit:  ['text-xl',  'text-2xl', 'text-3xl', 'text-4xl'],
@@ -273,8 +274,10 @@ function TabletView({
           <div className="flex items-start justify-between gap-3">
             <div className="flex-1 min-w-0">
               <div className={`${sz('code')} text-violet-600 font-mono font-bold`}>{cur.code}</div>
-              <div className="flex items-center gap-2 flex-wrap">
-                <div className={`${sz('name')} font-bold text-gray-800 truncate`}>{cur.name || cur.code}</div>
+              {/* 품목명 — 긴 이름은 말줄임(…) 처리해 칩과 충돌 방지 */}
+              <div className={`${sz('name')} font-bold text-gray-800 truncate`}>{cur.name || cur.code}</div>
+              {/* 칩 줄 — 이름과 분리해서 항상 아래에 깔끔히 배치 */}
+              <div className="flex items-center gap-2 flex-wrap mt-1.5">
                 {(() => {
                   const v = prodMap.get(canonicalShort(cur.code))?.vatMaxQty;
                   if (v === undefined || v === null) return null;
@@ -295,7 +298,7 @@ function TabletView({
                   const w = prodMap.get(canonicalShort(cur.code))?.packWeight;
                   if (!w) return null;
                   return (
-                    <span className={`px-2.5 py-1 bg-emerald-100 text-emerald-700 border border-emerald-300 rounded-full ${sz('chip')} font-bold whitespace-nowrap`}>
+                    <span className={`px-4 py-2 bg-emerald-100 text-emerald-800 border-2 border-emerald-400 rounded-xl ${sz('packChip')} font-extrabold whitespace-nowrap shadow-sm`}>
                       포장중량 {w.toLocaleString()}g
                     </span>
                   );
