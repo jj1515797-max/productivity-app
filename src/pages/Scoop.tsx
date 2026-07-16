@@ -156,6 +156,7 @@ function TabletView({
     name:        ['text-2xl', 'text-3xl', 'text-4xl', 'text-5xl'],
     chip:        ['text-sm',  'text-base', 'text-lg', 'text-xl'],
     packChip:    ['text-base', 'text-lg', 'text-xl', 'text-2xl'],
+    packBig:     ['text-xl',  'text-2xl', 'text-3xl', 'text-4xl'],
     bannerLabel: ['text-sm',  'text-base', 'text-xl', 'text-2xl'],
     bannerBig:   ['text-3xl', 'text-4xl', 'text-5xl', 'text-6xl'],
     bannerUnit:  ['text-xl',  'text-2xl', 'text-3xl', 'text-4xl'],
@@ -294,15 +295,6 @@ function TabletView({
                     </span>
                   );
                 })()}
-                {(() => {
-                  const w = prodMap.get(canonicalShort(cur.code))?.packWeight;
-                  if (!w) return null;
-                  return (
-                    <span className={`px-4 py-2 bg-emerald-100 text-emerald-800 border-2 border-emerald-400 rounded-xl ${sz('packChip')} font-extrabold whitespace-nowrap shadow-sm`}>
-                      포장중량 {w.toLocaleString()}g
-                    </span>
-                  );
-                })()}
               </div>
             </div>
             <div className="flex items-center gap-3">
@@ -326,21 +318,33 @@ function TabletView({
             </div>
           </div>
 
-          {/* 목표 바트 구성 — 작업자용: 오늘 몇 바트 + 나머지 몇 개 만들면 되는지 */}
+          {/* 가운데 정보 배너 — 포장중량(크게) + 오늘 목표 바트 구성 */}
           {(() => {
-            const v = prodMap.get(canonicalShort(cur.code))?.vatMaxQty;
-            if (!v || v === 999) return null;
-            const fullVats = Math.floor(target / v);
-            const partial = target - fullVats * v;
+            const ps = prodMap.get(canonicalShort(cur.code));
+            const v = ps?.vatMaxQty;
+            const w = ps?.packWeight;
+            const hasBat = !!v && v !== 999;
+            if (!w && !hasBat) return null;
+            const fullVats = hasBat ? Math.floor(target / (v as number)) : 0;
+            const partial = hasBat ? target - fullVats * (v as number) : 0;
             return (
-              <div className="mt-3 bg-amber-50 border-2 border-amber-300 rounded-xl px-4 py-3 flex items-center justify-center gap-2 flex-wrap">
-                <span className={`${sz('bannerLabel')} font-bold text-amber-700`}>오늘 목표 {target.toLocaleString()}개 =</span>
-                <span className={`${sz('bannerBig')} font-extrabold text-amber-800 tabular-nums`}>{fullVats}<span className={`${sz('bannerUnit')} ml-0.5`}>바트</span></span>
-                {partial > 0 && (
-                  <>
-                    <span className={`${sz('bannerUnit')} font-bold text-amber-500`}>+</span>
-                    <span className={`${sz('bannerBig')} font-extrabold text-amber-800 tabular-nums`}>{partial}<span className={`${sz('bannerUnit')} ml-0.5`}>개</span></span>
-                  </>
+              <div className="mt-3 bg-amber-50 border-2 border-amber-300 rounded-xl px-4 py-3 flex items-center justify-center gap-x-6 gap-y-2 flex-wrap">
+                {w && (
+                  <span className={`inline-flex items-center px-4 py-2 bg-emerald-100 text-emerald-800 border-2 border-emerald-400 rounded-xl ${sz('packBig')} font-extrabold shadow-sm whitespace-nowrap`}>
+                    포장중량 {w.toLocaleString()}g
+                  </span>
+                )}
+                {hasBat && (
+                  <span className="flex items-center justify-center gap-2 flex-wrap">
+                    <span className={`${sz('bannerLabel')} font-bold text-amber-700`}>오늘 목표 {target.toLocaleString()}개 =</span>
+                    <span className={`${sz('bannerBig')} font-extrabold text-amber-800 tabular-nums`}>{fullVats}<span className={`${sz('bannerUnit')} ml-0.5`}>바트</span></span>
+                    {partial > 0 && (
+                      <>
+                        <span className={`${sz('bannerUnit')} font-bold text-amber-500`}>+</span>
+                        <span className={`${sz('bannerBig')} font-extrabold text-amber-800 tabular-nums`}>{partial}<span className={`${sz('bannerUnit')} ml-0.5`}>개</span></span>
+                      </>
+                    )}
+                  </span>
                 )}
               </div>
             );
