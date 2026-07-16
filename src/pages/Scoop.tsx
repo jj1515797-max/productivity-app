@@ -638,6 +638,39 @@ function BoardView({
         </div>
       )}
 
+      {/* 작업자별 오늘 누적 — 품목 상관없이 총 푼 개수 */}
+      {(() => {
+        const totals = new Map<string, number>();
+        byCode.forEach((c) => c.byWorker.forEach((q, w) => totals.set(w, (totals.get(w) || 0) + q)));
+        const arr = Array.from(totals.entries()).sort((a, b) => b[1] - a[1]);
+        if (arr.length === 0) return null;
+        const max = arr[0][1] || 1;
+        return (
+          <div className="bg-white border rounded-xl overflow-hidden">
+            <div className="px-4 py-2.5 bg-slate-50 border-b font-bold text-gray-700 text-sm flex items-center gap-2">
+              👥 작업자별 오늘 누적
+              <span className="text-xs font-normal text-gray-400">({arr.length}명)</span>
+            </div>
+            <div className="p-3 grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-2.5">
+              {arr.map(([w, q], i) => (
+                <div key={w} className={`rounded-xl px-3 py-2.5 border ${i === 0 ? 'bg-violet-600 border-violet-600 text-white shadow' : 'bg-violet-50 border-violet-200'}`}>
+                  <div className="flex items-center justify-between gap-1">
+                    <span className={`font-bold truncate ${i === 0 ? 'text-white' : 'text-violet-800'}`}>{w}</span>
+                    {i === 0 && <span className="text-[10px] bg-white/25 rounded px-1.5 py-0.5 whitespace-nowrap">1위</span>}
+                  </div>
+                  <div className={`text-2xl font-extrabold tabular-nums ${i === 0 ? 'text-white' : 'text-violet-700'}`}>
+                    {q.toLocaleString()}<span className={`text-xs font-normal ml-1 ${i === 0 ? 'text-white/70' : 'text-gray-400'}`}>개</span>
+                  </div>
+                  <div className={`mt-1.5 h-1.5 rounded-full overflow-hidden ${i === 0 ? 'bg-white/25' : 'bg-violet-100'}`}>
+                    <div className={`h-full ${i === 0 ? 'bg-white' : 'bg-violet-500'}`} style={{ width: `${(q / max) * 100}%` }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* 작업중인 품목 */}
       <div className="bg-white border-2 border-violet-200 rounded-xl overflow-hidden">
         <div className="px-4 py-2 bg-violet-50 font-bold text-violet-800 text-sm">진행중 ({active.length})</div>
