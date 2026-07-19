@@ -275,36 +275,34 @@ function TabletView({
           <div className="flex items-start justify-between gap-3">
             <div className="flex-1 min-w-0">
               <div className={`${sz('code')} text-violet-600 font-mono font-bold`}>{cur.code}</div>
-              {/* 품목명 — 긴 이름은 말줄임(…) 처리해 칩과 충돌 방지 */}
+              {/* 품목명 — 긴 이름은 말줄임(…) 처리 */}
               <div className={`${sz('name')} font-bold text-gray-800 truncate`}>{cur.name || cur.code}</div>
-              {/* 칩 줄 — 이름과 분리해서 항상 아래에 깔끔히 배치 */}
-              <div className="flex items-center gap-2 flex-wrap mt-1.5">
-                {(() => {
-                  const v = prodMap.get(canonicalShort(cur.code))?.vatMaxQty;
-                  if (v === undefined || v === null) return null;
-                  if (v === 999) {
-                    return (
-                      <span className={`px-2.5 py-1 bg-orange-100 text-orange-700 border border-orange-300 rounded-full ${sz('chip')} font-bold whitespace-nowrap`}>
+            </div>
+            {/* 제품 정보 블록 — 포장중량(크게) + 1바트 수량을 한 덩어리로 가운데 배치 */}
+            {(() => {
+              const ps = prodMap.get(canonicalShort(cur.code));
+              const w = ps?.packWeight;
+              const v = ps?.vatMaxQty;
+              if (!w && (v === undefined || v === null)) return null;
+              return (
+                <div className="shrink-0 self-center flex flex-col items-center gap-1.5">
+                  {w && (
+                    <span className={`px-5 py-2 bg-emerald-100 text-emerald-800 border-2 border-emerald-400 rounded-xl ${sz('packBig')} font-extrabold whitespace-nowrap shadow-sm`}>
+                      포장중량 {w.toLocaleString()}g
+                    </span>
+                  )}
+                  {v !== undefined && v !== null && (
+                    v === 999 ? (
+                      <span className={`px-3 py-0.5 bg-orange-100 text-orange-700 border border-orange-300 rounded-full ${sz('chip')} font-bold whitespace-nowrap`}>
                         냄비
                       </span>
-                    );
-                  }
-                  return (
-                    <span className={`px-2.5 py-1 bg-cyan-100 text-cyan-700 border border-cyan-300 rounded-full ${sz('chip')} font-bold whitespace-nowrap`}>
-                      1바트 = {v.toLocaleString()}개
-                    </span>
-                  );
-                })()}
-              </div>
-            </div>
-            {/* 포장중량 — 상단 빈 공간(품목명↔버튼 사이)에 크게. 이름이 길면 이름은 말줄임되고 배지는 유지 */}
-            {(() => {
-              const w = prodMap.get(canonicalShort(cur.code))?.packWeight;
-              if (!w) return null;
-              return (
-                <span className={`shrink-0 self-center px-5 py-2.5 bg-emerald-100 text-emerald-800 border-2 border-emerald-400 rounded-xl ${sz('packBig')} font-extrabold whitespace-nowrap shadow-sm`}>
-                  포장중량 {w.toLocaleString()}g
-                </span>
+                    ) : (
+                      <span className={`px-3 py-0.5 bg-cyan-100 text-cyan-700 border border-cyan-300 rounded-full ${sz('chip')} font-bold whitespace-nowrap`}>
+                        1바트 = {v.toLocaleString()}개
+                      </span>
+                    )
+                  )}
+                </div>
               );
             })()}
             <div className="flex items-center gap-3 shrink-0">
