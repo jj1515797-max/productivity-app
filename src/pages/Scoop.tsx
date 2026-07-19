@@ -297,7 +297,17 @@ function TabletView({
                 })()}
               </div>
             </div>
-            <div className="flex items-center gap-3">
+            {/* 포장중량 — 상단 빈 공간(품목명↔버튼 사이)에 크게. 이름이 길면 이름은 말줄임되고 배지는 유지 */}
+            {(() => {
+              const w = prodMap.get(canonicalShort(cur.code))?.packWeight;
+              if (!w) return null;
+              return (
+                <span className={`shrink-0 self-center px-5 py-2.5 bg-emerald-100 text-emerald-800 border-2 border-emerald-400 rounded-xl ${sz('packBig')} font-extrabold whitespace-nowrap shadow-sm`}>
+                  포장중량 {w.toLocaleString()}g
+                </span>
+              );
+            })()}
+            <div className="flex items-center gap-3 shrink-0">
               <button onClick={() => setTextScale((textScale + 1) % 4)}
                 title="글씨 크기 조정 (보통 → 크게 → 아주크게 → 최대)"
                 className="px-4 py-3 rounded-xl text-base font-bold border-2 border-gray-300 bg-white text-gray-600 hover:bg-gray-50 whitespace-nowrap active:scale-95 transition">
@@ -318,33 +328,21 @@ function TabletView({
             </div>
           </div>
 
-          {/* 가운데 정보 배너 — 포장중량(크게) + 오늘 목표 바트 구성 */}
+          {/* 목표 바트 구성 배너 — 오늘 몇 바트 + 나머지 몇 개 */}
           {(() => {
-            const ps = prodMap.get(canonicalShort(cur.code));
-            const v = ps?.vatMaxQty;
-            const w = ps?.packWeight;
-            const hasBat = !!v && v !== 999;
-            if (!w && !hasBat) return null;
-            const fullVats = hasBat ? Math.floor(target / (v as number)) : 0;
-            const partial = hasBat ? target - fullVats * (v as number) : 0;
+            const v = prodMap.get(canonicalShort(cur.code))?.vatMaxQty;
+            if (!v || v === 999) return null;
+            const fullVats = Math.floor(target / v);
+            const partial = target - fullVats * v;
             return (
-              <div className="mt-3 bg-amber-50 border-2 border-amber-300 rounded-xl px-4 py-3 flex items-center justify-center gap-x-6 gap-y-2 flex-wrap">
-                {w && (
-                  <span className={`inline-flex items-center px-4 py-2 bg-emerald-100 text-emerald-800 border-2 border-emerald-400 rounded-xl ${sz('packBig')} font-extrabold shadow-sm whitespace-nowrap`}>
-                    포장중량 {w.toLocaleString()}g
-                  </span>
-                )}
-                {hasBat && (
-                  <span className="flex items-center justify-center gap-2 flex-wrap">
-                    <span className={`${sz('bannerLabel')} font-bold text-amber-700`}>오늘 목표 {target.toLocaleString()}개 =</span>
-                    <span className={`${sz('bannerBig')} font-extrabold text-amber-800 tabular-nums`}>{fullVats}<span className={`${sz('bannerUnit')} ml-0.5`}>바트</span></span>
-                    {partial > 0 && (
-                      <>
-                        <span className={`${sz('bannerUnit')} font-bold text-amber-500`}>+</span>
-                        <span className={`${sz('bannerBig')} font-extrabold text-amber-800 tabular-nums`}>{partial}<span className={`${sz('bannerUnit')} ml-0.5`}>개</span></span>
-                      </>
-                    )}
-                  </span>
+              <div className="mt-3 bg-amber-50 border-2 border-amber-300 rounded-xl px-4 py-3 flex items-center justify-center gap-2 flex-wrap">
+                <span className={`${sz('bannerLabel')} font-bold text-amber-700`}>오늘 목표 {target.toLocaleString()}개 =</span>
+                <span className={`${sz('bannerBig')} font-extrabold text-amber-800 tabular-nums`}>{fullVats}<span className={`${sz('bannerUnit')} ml-0.5`}>바트</span></span>
+                {partial > 0 && (
+                  <>
+                    <span className={`${sz('bannerUnit')} font-bold text-amber-500`}>+</span>
+                    <span className={`${sz('bannerBig')} font-extrabold text-amber-800 tabular-nums`}>{partial}<span className={`${sz('bannerUnit')} ml-0.5`}>개</span></span>
+                  </>
                 )}
               </div>
             );
