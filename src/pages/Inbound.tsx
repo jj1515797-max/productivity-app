@@ -6,6 +6,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { collection, doc, getDoc, onSnapshot, setDoc } from 'firebase/firestore';
 import ExcelJS from 'exceljs';
+import * as XLSX from 'xlsx';
 import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
 import { normalizeMaterialName } from '../lib/wasteCompute';
@@ -180,29 +181,25 @@ export default function Inbound() {
     URL.revokeObjectURL(url);
   };
 
-  // ERP 일괄매입등록 업로드 양식 (CD_PARTNER … CD_EXCH). 1행 헤더 + 2행부터 데이터.
-  const erpDownload = async () => {
+  // ERP 일괄매입등록 업로드 양식 — ERP가 구형 .xls(BIFF8)만 받으므로 SheetJS로 .xls 생성.
+  // 1행 헤더 + 2행부터 데이터 (CD_PARTNER … CD_EXCH).
+  const erpDownload = () => {
     if (valid.length === 0) return;
-    const wb = new ExcelJS.Workbook();
-    const ws = wb.addWorksheet('발주');
-    ws.columns = [{ width: 14 }, { width: 10 }, { width: 12 }, { width: 8 }, { width: 10 }, { width: 14 }, { width: 10 }, { width: 10 }];
-    ws.addRow(['CD_PARTNER', 'CD_PLANT', 'CD_TPPO', 'FG_UM', 'CD_PJT', 'CD_ITEM', 'QT_PO', 'CD_EXCH']);
-    valid.forEach((r) => {
-      const sup = effSupplier(r);
-      ws.addRow([
-        supCodes[sup] || '',
-        erpCfg.plant || '', erpCfg.tppo || '', erpCfg.um || '', erpCfg.pjt || '',
-        r.matched!.code, r.qty, erpCfg.exch || '',
-      ]);
-    });
-    const buf = await wb.xlsx.writeBuffer();
-    const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = `ERP발주_${date}.xlsx`;
-    a.click();
-    URL.revokeObjectURL(url);
+    const aoa: (string | number)[][] = [
+      ['CD_PARTNER', 'CD_PLANT', 'CD_TPPO', 'FG_UM', 'CD_PJT', 'CD_ITEM', 'QT_PO', 'CD_EXCH'],
+      ...valid.map((r) => {
+        const sup = effSupplier(r);
+        return [
+          supCodes[sup] || '',
+          erpCfg.plant || '', erpCfg.tppo || '', erpCfg.um || '', erpCfg.pjt || '',
+          r.matched!.code, r.qty as number, erpCfg.exch || '',
+        ];
+      }),
+    ];
+    const ws = XLSX.utils.aoa_to_sheet(aoa);
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, ws, 'Sheet1');
+    XLSX.writeFile(wb, `ERP발주_${date}.xls`, { bookType: 'xls' });
   };
 
   const missingSupCodes = useMemo(() => {
