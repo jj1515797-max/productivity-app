@@ -28,6 +28,8 @@ export default function ProductSettings() {
   const [showBulk, setShowBulk] = useState(false);
   const [showWeightBulk, setShowWeightBulk] = useState(false);
   const [showVatBulk, setShowVatBulk] = useState(false);
+  const [showErpCode, setShowErpCode] = useState(false);
+  const [erpCodeCount, setErpCodeCount] = useState<number | null>(null);
   const [materials, setMaterials] = useState<Material[]>([]);
   // 헤더에 표시할 총개수만 가볍게 (count aggregation = 1읽기)
   const [productCount, setProductCount] = useState<number | null>(null);
@@ -42,6 +44,7 @@ export default function ProductSettings() {
     getCountFromServer(collection(db, 'subRecipes')).then((s) => setSubRecipeCount(s.data().count)).catch(() => {});
     getCountFromServer(collection(db, 'ambientRecipes')).then((s) => setAmbientRecipeCount(s.data().count)).catch(() => {});
     getCountFromServer(collection(db, 'materialPricesInventory')).then((s) => setInventoryPriceCount(s.data().count)).catch(() => {});
+    getCountFromServer(collection(db, 'materialErpCodes')).then((s) => setErpCodeCount(s.data().count)).catch(() => {});
   }, []);
 
   // 섹션이 펼쳐졌을 때만 구독 (읽기 부하 절감)
@@ -246,6 +249,17 @@ export default function ProductSettings() {
         onToggle={() => setShowMaterialDB(!showMaterialDB)}
       >
         <MaterialDB materials={materials} />
+      </Section>
+
+      {/* 원재료 ERP 코드 섹션 (구매 > 입고 발주용) */}
+      <Section
+        icon="🧾"
+        title="원재료 ERP 코드"
+        badge={erpCodeCount !== null ? `${erpCodeCount}개` : '...'}
+        open={showErpCode}
+        onToggle={() => setShowErpCode(!showErpCode)}
+      >
+        {showErpCode && <ErpCodeDB onCountChange={setErpCodeCount} />}
       </Section>
 
       {/* 레시피 DB 섹션 (폐기금액 계산용) */}
@@ -2383,6 +2397,167 @@ function AmbientRecipeImportModal({ onClose }: { onClose: () => void }) {
           <button onClick={save} disabled={saving || preview.recipes.length === 0}
             className="ml-auto px-5 py-2 bg-blue-600 text-white rounded font-medium hover:bg-blue-700 disabled:bg-gray-300">
             {saving ? '저장중...' : `${preview.recipes.length}개 저장`}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   원재료 ERP 코드 — 구매 > 입고 발주용 마스터
+   Firestore: materialErpCodes/{code} = { code, name, spec?, supplier? }
+   붙여넣기: 품목코드 [탭/콤마] 품목명 [규격] [업체]
+   ============================================================ */
+interface ErpMatDoc { code: string; name: string; spec?: string; supplier?: string; }
+
+function ErpCodeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
+  const [rows, setRows] = useState<ErpMatDoc[]>([]);
+  const [search, setSearch] = useState('');
+  const [showBulk, setShowBulk] = useState(false);
+
+  useEffect(() => {
+    return onSnapshot(collection(db, 'materialErpCodes'), (snap) => {
+      const list: ErpMatDoc[] = [];
+      snap.forEach((d) => list.push({ ...(d.data() as ErpMatDoc), code: d.id }));
+      list.sort((a, b) => a.name.localeCompare(b.name));
+      setRows(list);
+      onCountChange(list.length);
+    });
+  }, [onCountChange]);
+
+  const filtered = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    if (!q) return rows;
+    return rows.filter((r) => r.code.toLowerCase().includes(q) || (r.name || '').toLowerCase().includes(q) || (r.supplier || '').toLowerCase().includes(q));
+  }, [rows, search]);
+
+  const remove = async (code: string) => {
+    if (!confirm(`'${code}' 삭제할까요?`)) return;
+    await deleteDoc(doc(db, 'materialErpCodes', code));
+  };
+  const updateField = async (code: string, field: 'spec' | 'supplier', value: string) => {
+    await setDoc(doc(db, 'materialErpCodes', code), { code, [field]: value.trim() }, { merge: true });
+  };
+
+  return (
+    <div className="space-y-3">
+      <div className="bg-teal-50 border border-teal-200 rounded p-3 text-xs text-teal-800 leading-relaxed">
+        <b>구매 → 입고</b> 에서 원재료명으로 ERP 품목코드를 자동 매칭하는 데 씁니다.<br />
+        형식: <code className="bg-white px-1 rounded">품목코드 · 품목명 · 규격(선택) · 업체(선택)</code> — 콤마 또는 탭 구분. <b>업체</b>까지 넣으면 입고 엑셀이 업체별로 자동 분리됩니다.
+      </div>
+      <div className="flex items-center gap-3 flex-wrap">
+        <input value={search} onChange={(e) => setSearch(e.target.value)}
+          placeholder="🔍 코드·품목명·업체 검색..."
+          className="flex-1 min-w-[240px] border rounded-md px-3 py-2 text-sm" />
+        <span className="text-xs text-gray-500">{filtered.length}/{rows.length}개</span>
+        <button onClick={() => setShowBulk(true)} className="px-3 py-2 bg-teal-700 text-white rounded text-sm font-medium hover:bg-teal-800">📋 일괄 입력</button>
+      </div>
+
+      {rows.length === 0 ? (
+        <div className="p-10 text-center text-gray-400 text-sm border rounded-lg">등록된 ERP 코드가 없습니다 — 📋 일괄 입력으로 붙여넣으세요</div>
+      ) : (
+        <div className="border rounded-lg overflow-hidden">
+          <div className="max-h-[520px] overflow-y-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 text-xs text-gray-500 sticky top-0">
+                <tr>
+                  <th className="px-3 py-2 text-left w-32">품목코드</th>
+                  <th className="px-3 py-2 text-left">품목명</th>
+                  <th className="px-3 py-2 text-left w-28">규격</th>
+                  <th className="px-3 py-2 text-left w-36">업체</th>
+                  <th className="px-3 py-2 w-12"></th>
+                </tr>
+              </thead>
+              <tbody className="divide-y">
+                {filtered.map((r) => (
+                  <tr key={r.code} className="hover:bg-slate-50/60">
+                    <td className="px-3 py-1.5 font-mono font-bold text-teal-700">{r.code}</td>
+                    <td className="px-3 py-1.5 text-gray-800">{r.name}</td>
+                    <td className="px-3 py-1.5">
+                      <input defaultValue={r.spec || ''} key={`${r.code}-s-${r.spec || ''}`}
+                        onBlur={(e) => { if (e.target.value.trim() !== (r.spec || '')) updateField(r.code, 'spec', e.target.value); }}
+                        placeholder="-" className="w-24 border rounded px-2 py-0.5 text-xs" />
+                    </td>
+                    <td className="px-3 py-1.5">
+                      <input defaultValue={r.supplier || ''} key={`${r.code}-v-${r.supplier || ''}`}
+                        onBlur={(e) => { if (e.target.value.trim() !== (r.supplier || '')) updateField(r.code, 'supplier', e.target.value); }}
+                        placeholder="업체" className="w-32 border rounded px-2 py-0.5 text-xs" />
+                    </td>
+                    <td className="px-3 py-1.5 text-right">
+                      <button onClick={() => remove(r.code)} className="text-xs text-red-500 hover:underline">삭제</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {showBulk && <ErpCodeBulkModal onClose={() => setShowBulk(false)} />}
+    </div>
+  );
+}
+
+function ErpCodeBulkModal({ onClose }: { onClose: () => void }) {
+  const [text, setText] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  const lines = text.trim().split('\n').map((l) => l.trim()).filter(Boolean);
+  const parsed = lines.map((line) => {
+    const p = line.split(/[,\t]/).map((s) => s.trim());
+    const code = (p[0] || '').trim();
+    const name = (p[1] || '').trim();
+    const spec = (p[2] || '').trim();
+    const supplier = (p[3] || '').trim();
+    return { code, name, spec, supplier, valid: !!code && !!name };
+  });
+  const validRows = parsed.filter((p) => p.valid);
+
+  const save = async () => {
+    if (validRows.length === 0) return;
+    setSaving(true);
+    try {
+      const batch = writeBatch(db);
+      validRows.forEach((r) => {
+        const data: any = { code: r.code, name: r.name };
+        if (r.spec) data.spec = r.spec;
+        if (r.supplier) data.supplier = r.supplier;
+        batch.set(doc(db, 'materialErpCodes', r.code), data, { merge: true });
+      });
+      await batch.commit();
+      alert(`${validRows.length}개 저장 완료`);
+      onClose();
+    } finally { setSaving(false); }
+  };
+
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl h-[85vh] overflow-hidden flex flex-col">
+        <div className="px-5 py-4 border-b bg-gradient-to-r from-teal-50 to-emerald-50 flex items-center justify-between">
+          <div>
+            <h3 className="font-bold text-gray-800">원재료 ERP 코드 일괄 입력</h3>
+            <div className="text-xs text-gray-500 mt-0.5">품목코드 · 품목명 · 규격(선택) · 업체(선택) — 콤마/탭 구분</div>
+          </div>
+          <button onClick={onClose} className="w-7 h-7 rounded-full hover:bg-gray-200 text-gray-500">×</button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-5 space-y-4">
+          <div className="bg-teal-50 border border-teal-200 rounded p-3 text-xs text-teal-800 leading-relaxed">
+            엑셀에서 <b>품목코드 · 품목명</b> 두 열(또는 규격·업체까지 네 열)을 그대로 복사해 붙여넣으세요.<br />
+            예: <code className="bg-white px-1 rounded">10620044	당근	1kg	원예농협</code>
+          </div>
+          <textarea value={text} onChange={(e) => setText(e.target.value)}
+            placeholder={"10620044\t당근\t1kg\t원예농협\n10620017\t대파\t1kg\t해마\n10720002\t배\t1kg\t인터넷발주"}
+            className="w-full h-60 border rounded-md p-3 text-sm font-mono" />
+          {parsed.length > 0 && (
+            <div className="text-sm text-gray-600">유효 <b className="text-teal-700">{validRows.length}</b> / 전체 {parsed.length}줄</div>
+          )}
+        </div>
+        <div className="px-5 py-3 border-t bg-slate-50 flex items-center gap-2">
+          <button onClick={onClose} className="px-3 py-2 border rounded text-sm font-medium hover:bg-gray-100">닫기</button>
+          <button onClick={save} disabled={validRows.length === 0 || saving} className="ml-auto px-5 py-2 bg-teal-700 text-white rounded font-medium hover:bg-teal-800 disabled:bg-gray-300">
+            {saving ? '저장중...' : `${validRows.length}개 저장`}
           </button>
         </div>
       </div>

@@ -20,6 +20,7 @@ import Inventory from './pages/Inventory';
 import Remix from './pages/Remix';
 import Scoop from './pages/Scoop';
 import ScoopAnalysis from './pages/ScoopAnalysis';
+import Inbound from './pages/Inbound';
 import Logo from './components/Logo';
 import AnalyticsGate from './components/AnalyticsGate';
 import { useTrackVisit } from './lib/presence';
@@ -67,16 +68,18 @@ function MainContainer() {
         <Route path="/attendance" element={<Attendance />} />
         <Route path="/attendance/productivity" element={<ProductivityInput />} />
         <Route path="/inventory" element={<Inventory />} />
+        <Route path="/purchase/inbound" element={<Inbound />} />
       </Routes>
     </main>
   );
 }
 
-type Section = 'dashboard' | 'input' | 'analytics' | 'attendance' | 'inventory';
+type Section = 'dashboard' | 'input' | 'analytics' | 'purchase' | 'attendance' | 'inventory';
 
 function getSection(pathname: string): Section {
   if (pathname.startsWith('/machine') || pathname.startsWith('/external') || pathname.startsWith('/scoop')) return 'input';
   if (pathname.startsWith('/analytics') || pathname === '/report' || pathname === '/remaining') return 'analytics';
+  if (pathname.startsWith('/purchase')) return 'purchase';
   if (pathname.startsWith('/attendance')) return 'attendance';
   if (pathname.startsWith('/inventory')) return 'inventory';
   return 'dashboard';
@@ -109,6 +112,9 @@ const SUB_TABS: Record<Section, { label: string; to: string; exact?: boolean }[]
     { label: '내포장분석', to: '/analytics/scoop' },
     { label: '설정', to: '/analytics/settings' },
   ],
+  purchase: [
+    { label: '입고', to: '/purchase/inbound' },
+  ],
   attendance: [
     { label: '조직도', to: '/attendance', exact: true },
     { label: '생산성 입력', to: '/attendance/productivity' },
@@ -129,6 +135,7 @@ function Header() {
     { section: 'dashboard', to: '/', label: '현황' },
     { section: 'input', to: '/machine/1', label: '입력' },
     { section: 'analytics', to: '/analytics', label: '분석' },
+    { section: 'purchase', to: '/purchase/inbound', label: '구매', icon: '🛒' },
     { section: 'attendance', to: '/attendance', label: '조직도', icon: '📅' },
     { section: 'inventory', to: '/inventory', label: '재고관리', icon: '📦' },
   ];
@@ -182,7 +189,7 @@ function Header() {
       </div>
 
       {/* 모바일: 네비를 두번째 줄로 분리, 화면폭 꽉채워 5등분 */}
-      <nav className="sm:hidden grid grid-cols-5 gap-0.5 px-1.5 pb-1.5 bg-blue-700">
+      <nav className="sm:hidden grid grid-cols-6 gap-0.5 px-1.5 pb-1.5 bg-blue-700">
         {rightLinks.map((l) => {
           const active = section === l.section;
           return (
@@ -201,7 +208,7 @@ function Header() {
         {analyticsAuthed && (
           <button
             onClick={() => { localStorage.removeItem('analyticsAuthedAt'); window.location.reload(); }}
-            className="col-span-5 mt-1 py-1 text-[11px] rounded bg-blue-800 text-blue-100 font-medium"
+            className="col-span-6 mt-1 py-1 text-[11px] rounded bg-blue-800 text-blue-100 font-medium"
           >
             🔓 분석 로그아웃
           </button>
