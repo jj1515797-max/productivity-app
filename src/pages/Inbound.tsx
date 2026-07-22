@@ -60,11 +60,20 @@ export default function Inbound() {
   const [saved, setSaved] = useState<{ count: number; updatedAt?: string; items: any[] } | null>(null);
   const [saving, setSaving] = useState(false);
 
-  // 선택 날짜의 저장 데이터 조회
+  // 선택 날짜의 저장 데이터 → 자동으로 입력칸에 채움 (없으면 비움)
   useEffect(() => {
-    setSaved(null);
     getDoc(doc(db, 'purchaseInbound', date)).then((s) => {
-      if (s.exists()) { const d = s.data() as any; setSaved({ count: (d.items || []).length, updatedAt: d.updatedAt, items: d.items || [] }); }
+      if (s.exists()) {
+        const d = s.data() as any;
+        const items = (d.items || []) as any[];
+        setSaved({ count: items.length, updatedAt: d.updatedAt, items });
+        setText(items.map((it) => `${it.name}\t${it.qty}${it.unit || ''}`).join('\n'));
+        const ov: Record<string, string> = {};
+        items.forEach((it) => { if (it.supplier && it.supplier !== NO_SUPPLIER) ov[it.code] = it.supplier; });
+        setOverride(ov);
+      } else {
+        setSaved(null); setText(''); setOverride({});
+      }
     }).catch(() => {});
   }, [date]);
 
@@ -144,12 +153,10 @@ export default function Inbound() {
       alert(`${items.length}품목 저장 완료 (${date})`);
     } finally { setSaving(false); }
   };
-  const loadSaved = () => {
-    if (!saved) return;
-    setText(saved.items.map((it) => `${it.name}\t${it.qty}${it.unit || ''}`).join('\n'));
-    const ov: Record<string, string> = {};
-    saved.items.forEach((it) => { if (it.supplier && it.supplier !== NO_SUPPLIER) ov[it.code] = it.supplier; });
-    setOverride(ov);
+  const clearInput = () => {
+    if (text.trim() && !confirm('입력한 내용을 모두 비울까요?')) return;
+    setText('');
+    setOverride({});
   };
 
   const download = async () => {
@@ -232,8 +239,12 @@ export default function Inbound() {
         <span className="text-sm text-gray-500">
           ERP 코드 마스터 <b className="text-teal-700">{master.length}</b>개 등록됨
         </span>
+        <button onClick={clearInput} disabled={rows.length === 0}
+          className="ml-auto px-3 py-1.5 text-sm rounded-md border border-gray-300 text-gray-600 font-medium hover:bg-gray-50 disabled:opacity-40">
+          🗑️ 비우기
+        </button>
         <button onClick={save} disabled={valid.length === 0 || saving}
-          className="ml-auto px-4 py-1.5 text-sm rounded-md bg-blue-700 text-white font-medium hover:bg-blue-800 disabled:bg-gray-300">
+          className="px-4 py-1.5 text-sm rounded-md bg-blue-700 text-white font-medium hover:bg-blue-800 disabled:bg-gray-300">
           {saving ? '저장중...' : '💾 저장'}
         </button>
         <button onClick={erpDownload} disabled={valid.length === 0}
@@ -254,9 +265,9 @@ export default function Inbound() {
       )}
 
       {saved && (
-        <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-2.5 text-sm flex items-center gap-3 flex-wrap">
-          <span className="text-blue-800">📌 이 날짜 저장됨: <b>{saved.count}품목</b>{saved.updatedAt && <span className="text-blue-500 text-xs ml-1">({saved.updatedAt.slice(0, 16).replace('T', ' ')})</span>}</span>
-          <button onClick={loadSaved} className="px-3 py-1 text-xs rounded bg-blue-600 text-white font-medium hover:bg-blue-700">불러오기</button>
+        <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-2 text-sm text-blue-800">
+          📌 이 날짜 저장분 자동 표시됨: <b>{saved.count}품목</b>
+          {saved.updatedAt && <span className="text-blue-500 text-xs ml-1">(마지막 저장 {saved.updatedAt.slice(0, 16).replace('T', ' ')})</span>}
         </div>
       )}
 
