@@ -60,11 +60,20 @@ export default function Inbound() {
     }).catch(() => {});
   }, [date]);
 
+  const [supCodes, setSupCodes] = useState<Record<string, string>>({});  // 업체명 → 거래처코드
+  const [erpCfg, setErpCfg] = useState<{ plant?: string; tppo?: string; um?: string; exch?: string; pjt?: string }>({});
+
   useEffect(() => onSnapshot(collection(db, 'materialErpCodes'), (snap) => {
     const list: ErpMat[] = [];
     snap.forEach((d) => list.push(d.data() as ErpMat));
     setMaster(list);
   }), []);
+  useEffect(() => onSnapshot(collection(db, 'supplierCodes'), (snap) => {
+    const m: Record<string, string> = {};
+    snap.forEach((d) => { const v = d.data() as any; m[v.name || d.id] = v.code || ''; });
+    setSupCodes(m);
+  }), []);
+  useEffect(() => onSnapshot(doc(db, 'appMeta', 'purchaseErp'), (s) => setErpCfg((s.data() || {}) as any)), []);
 
   const maps = useMemo(() => {
     const exact = new Map<string, ErpMat>();
@@ -171,6 +180,37 @@ export default function Inbound() {
     URL.revokeObjectURL(url);
   };
 
+  // ERP 일괄매입등록 업로드 양식 (CD_PARTNER … CD_EXCH). 1행 헤더 + 2행부터 데이터.
+  const erpDownload = async () => {
+    if (valid.length === 0) return;
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('발주');
+    ws.columns = [{ width: 14 }, { width: 10 }, { width: 12 }, { width: 8 }, { width: 10 }, { width: 14 }, { width: 10 }, { width: 10 }];
+    ws.addRow(['CD_PARTNER', 'CD_PLANT', 'CD_TPPO', 'FG_UM', 'CD_PJT', 'CD_ITEM', 'QT_PO', 'CD_EXCH']);
+    valid.forEach((r) => {
+      const sup = effSupplier(r);
+      ws.addRow([
+        supCodes[sup] || '',
+        erpCfg.plant || '', erpCfg.tppo || '', erpCfg.um || '', erpCfg.pjt || '',
+        r.matched!.code, r.qty, erpCfg.exch || '',
+      ]);
+    });
+    const buf = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `ERP발주_${date}.xlsx`;
+    a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  const missingSupCodes = useMemo(() => {
+    const s = new Set<string>();
+    valid.forEach((r) => { const sup = effSupplier(r); if (sup !== NO_SUPPLIER && !supCodes[sup]) s.add(sup); });
+    return Array.from(s);
+  }, [valid, supCodes, override]);
+
   return (
     <div className="space-y-4">
       <datalist id="supplier-list">
@@ -188,11 +228,22 @@ export default function Inbound() {
           className="ml-auto px-4 py-1.5 text-sm rounded-md bg-blue-700 text-white font-medium hover:bg-blue-800 disabled:bg-gray-300">
           {saving ? '저장중...' : '💾 저장'}
         </button>
-        <button onClick={download} disabled={valid.length === 0}
+        <button onClick={erpDownload} disabled={valid.length === 0}
           className="px-4 py-1.5 text-sm rounded-md bg-teal-700 text-white font-medium hover:bg-teal-800 disabled:bg-gray-300">
-          📥 업체별 엑셀 다운로드
+          📤 ERP 업로드 엑셀
+        </button>
+        <button onClick={download} disabled={valid.length === 0}
+          className="px-3 py-1.5 text-sm rounded-md border border-gray-300 text-gray-600 font-medium hover:bg-gray-50 disabled:opacity-50">
+          업체별(읽기용)
         </button>
       </div>
+
+      {missingSupCodes.length > 0 && (
+        <div className="bg-orange-50 border border-orange-300 rounded-lg px-4 py-2.5 text-sm text-orange-800">
+          ⚠ 거래처코드 없는 업체 {missingSupCodes.length}개: <b>{missingSupCodes.join(', ')}</b>
+          <span className="text-orange-600"> → 설정 → 구매 ERP 설정에서 거래처코드 등록 (CD_PARTNER 빈칸으로 나감)</span>
+        </div>
+      )}
 
       {saved && (
         <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-2.5 text-sm flex items-center gap-3 flex-wrap">

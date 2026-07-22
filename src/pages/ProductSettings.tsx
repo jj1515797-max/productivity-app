@@ -30,6 +30,7 @@ export default function ProductSettings() {
   const [showVatBulk, setShowVatBulk] = useState(false);
   const [showErpCode, setShowErpCode] = useState(false);
   const [erpCodeCount, setErpCodeCount] = useState<number | null>(null);
+  const [showPurchaseErp, setShowPurchaseErp] = useState(false);
   const [materials, setMaterials] = useState<Material[]>([]);
   // 헤더에 표시할 총개수만 가볍게 (count aggregation = 1읽기)
   const [productCount, setProductCount] = useState<number | null>(null);
@@ -260,6 +261,17 @@ export default function ProductSettings() {
         onToggle={() => setShowErpCode(!showErpCode)}
       >
         {showErpCode && <ErpCodeDB onCountChange={setErpCodeCount} />}
+      </Section>
+
+      {/* 구매 ERP 설정 (거래처코드 + 발주 고정값) */}
+      <Section
+        icon="🛒"
+        title="구매 ERP 설정"
+        badge=""
+        open={showPurchaseErp}
+        onToggle={() => setShowPurchaseErp(!showPurchaseErp)}
+      >
+        {showPurchaseErp && <PurchaseErpPanel />}
       </Section>
 
       {/* 레시피 DB 섹션 (폐기금액 계산용) */}
@@ -2572,6 +2584,156 @@ function ErpCodeBulkModal({ onClose }: { onClose: () => void }) {
           <button onClick={save} disabled={validRows.length === 0 || saving} className="ml-auto px-5 py-2 bg-teal-700 text-white rounded font-medium hover:bg-teal-800 disabled:bg-gray-300">
             {saving ? '저장중...' : `${validRows.length}개 저장`}
           </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   구매 ERP 설정 — 거래처코드 매핑 + 발주 고정값
+   Firestore: appMeta/purchaseErp = { plant, tppo, um, exch, pjt }
+             supplierCodes/{name} = { name, code }  (업체명 → 거래처코드)
+   ============================================================ */
+interface PurchaseErpCfg { plant?: string; tppo?: string; um?: string; exch?: string; pjt?: string; }
+interface SupCode { name: string; code: string; }
+
+function PurchaseErpPanel() {
+  const [cfg, setCfg] = useState<PurchaseErpCfg>({});
+  const [sups, setSups] = useState<SupCode[]>([]);
+  const [showBulk, setShowBulk] = useState(false);
+
+  useEffect(() => onSnapshot(doc(db, 'appMeta', 'purchaseErp'), (s) => setCfg((s.data() || {}) as PurchaseErpCfg)), []);
+  useEffect(() => onSnapshot(collection(db, 'supplierCodes'), (snap) => {
+    const list: SupCode[] = [];
+    snap.forEach((d) => list.push({ ...(d.data() as SupCode), name: d.id }));
+    list.sort((a, b) => a.name.localeCompare(b.name));
+    setSups(list);
+  }), []);
+
+  const saveCfg = (patch: PurchaseErpCfg) => {
+    const next = { ...cfg, ...patch };
+    setCfg(next);
+    setDoc(doc(db, 'appMeta', 'purchaseErp'), next, { merge: true }).catch(() => {});
+  };
+  const removeSup = async (name: string) => {
+    if (!confirm(`'${name}' 삭제할까요?`)) return;
+    await deleteDoc(doc(db, 'supplierCodes', name));
+  };
+  const deleteAllSups = async () => {
+    if (sups.length === 0) return;
+    if (prompt(`⚠️ 거래처 ${sups.length}개 전체 삭제. "삭제" 입력:`) !== '삭제') return;
+    for (let i = 0; i < sups.length; i += 400) {
+      const batch = writeBatch(db);
+      sups.slice(i, i + 400).forEach((s) => batch.delete(doc(db, 'supplierCodes', s.name)));
+      await batch.commit();
+    }
+  };
+
+  const FIELDS: { key: keyof PurchaseErpCfg; label: string; col: string; ph: string }[] = [
+    { key: 'plant', label: '공장 (CD_PLANT)', col: 'B', ph: '예: 1100' },
+    { key: 'tppo', label: '발주형태 (CD_TPPO)', col: 'C', ph: '예: 정상발주 코드' },
+    { key: 'um', label: '부가세여부 (FG_UM)', col: 'D', ph: '예: 별도 코드' },
+    { key: 'exch', label: '환 (CD_EXCH)', col: 'H', ph: '예: KRW' },
+    { key: 'pjt', label: '프로젝트 (CD_PJT)', col: 'E', ph: '보통 비움' },
+  ];
+
+  return (
+    <div className="space-y-4">
+      <div className="bg-teal-50 border border-teal-200 rounded p-3 text-xs text-teal-800 leading-relaxed">
+        입고 화면에서 <b>ERP 업로드 엑셀</b>(CD_PARTNER/CD_ITEM/QT_PO…)을 만들 때 쓰는 값입니다.<br />
+        거래처코드는 업체명으로 자동 매칭되고, 아래 고정값은 모든 발주 줄에 공통으로 채워집니다. <b>정확한 코드값은 ERP 업로드가 될 때까지 조정</b>하세요.
+      </div>
+
+      {/* 발주 고정값 */}
+      <div>
+        <div className="text-sm font-bold text-gray-700 mb-2">발주 고정값</div>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
+          {FIELDS.map((f) => (
+            <div key={f.key}>
+              <label className="block text-xs font-medium text-gray-600 mb-1">{f.label}</label>
+              <input defaultValue={cfg[f.key] || ''} key={`${f.key}-${cfg[f.key] || ''}`}
+                onBlur={(e) => { if (e.target.value.trim() !== (cfg[f.key] || '')) saveCfg({ [f.key]: e.target.value.trim() }); }}
+                placeholder={f.ph} className="w-full border rounded px-3 py-2 text-sm" />
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* 거래처 코드 매핑 */}
+      <div>
+        <div className="flex items-center gap-2 mb-2 flex-wrap">
+          <div className="text-sm font-bold text-gray-700">거래처 코드 (업체명 → CD_PARTNER)</div>
+          <span className="text-xs text-gray-400">{sups.length}개</span>
+          <button onClick={() => setShowBulk(true)} className="ml-auto px-3 py-1.5 bg-teal-700 text-white rounded text-xs font-medium hover:bg-teal-800">📋 일괄 입력</button>
+          {sups.length > 0 && (
+            <button onClick={deleteAllSups} className="px-3 py-1.5 bg-red-600 text-white rounded text-xs font-medium hover:bg-red-700">🗑️ 전체삭제</button>
+          )}
+        </div>
+        {sups.length === 0 ? (
+          <div className="p-6 text-center text-gray-400 text-sm border rounded-lg">등록된 거래처 코드가 없습니다 — 📋 일괄 입력 (업체명 · 거래처코드)</div>
+        ) : (
+          <div className="border rounded-lg overflow-hidden max-h-80 overflow-y-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 text-xs text-gray-500 sticky top-0"><tr><th className="px-3 py-2 text-left">업체명</th><th className="px-3 py-2 text-left w-40">거래처코드</th><th className="px-3 py-2 w-12"></th></tr></thead>
+              <tbody className="divide-y">
+                {sups.map((s) => (
+                  <tr key={s.name} className="hover:bg-slate-50/60">
+                    <td className="px-3 py-1.5 font-medium text-gray-800">{s.name}</td>
+                    <td className="px-3 py-1.5 font-mono font-bold text-teal-700">{s.code}</td>
+                    <td className="px-3 py-1.5 text-right"><button onClick={() => removeSup(s.name)} className="text-xs text-red-500 hover:underline">삭제</button></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {showBulk && <SupplierCodeBulkModal onClose={() => setShowBulk(false)} />}
+    </div>
+  );
+}
+
+function SupplierCodeBulkModal({ onClose }: { onClose: () => void }) {
+  const [text, setText] = useState('');
+  const [saving, setSaving] = useState(false);
+  const lines = text.trim().split('\n').map((l) => l.trim()).filter(Boolean);
+  const parsed = lines.map((line) => {
+    const p = (line.includes('\t') ? line.split('\t') : line.split(',')).map((s) => s.trim());
+    const name = (p[0] || '').trim();
+    const code = (p[1] || '').trim();
+    return { name, code, valid: !!name && !!code };
+  });
+  const validRows = parsed.filter((p) => p.valid);
+  const save = async () => {
+    if (validRows.length === 0) return;
+    setSaving(true);
+    try {
+      const batch = writeBatch(db);
+      validRows.forEach((r) => batch.set(doc(db, 'supplierCodes', r.name), { name: r.name, code: r.code }, { merge: true }));
+      await batch.commit();
+      alert(`${validRows.length}개 저장 완료`);
+      onClose();
+    } finally { setSaving(false); }
+  };
+  return (
+    <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-xl shadow-2xl w-full max-w-lg h-[70vh] overflow-hidden flex flex-col">
+        <div className="px-5 py-4 border-b bg-teal-50 flex items-center justify-between">
+          <h3 className="font-bold text-gray-800">거래처 코드 일괄 입력</h3>
+          <button onClick={onClose} className="w-7 h-7 rounded-full hover:bg-gray-200 text-gray-500">×</button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-5 space-y-3">
+          <div className="text-xs text-teal-800 bg-teal-50 border border-teal-200 rounded p-2.5">형식: <b>업체명 · 거래처코드</b> (탭/콤마). 예: <code className="bg-white px-1 rounded">해마(주)	T000012</code></div>
+          <textarea value={text} onChange={(e) => setText(e.target.value)}
+            placeholder={"해마(주)\tT000012\n원예농협\tY002931"}
+            className="w-full h-56 border rounded-md p-3 text-sm font-mono" />
+          {parsed.length > 0 && <div className="text-sm text-gray-600">유효 <b className="text-teal-700">{validRows.length}</b> / {parsed.length}줄</div>}
+        </div>
+        <div className="px-5 py-3 border-t bg-slate-50 flex gap-2">
+          <button onClick={onClose} className="px-3 py-2 border rounded text-sm hover:bg-gray-100">닫기</button>
+          <button onClick={save} disabled={validRows.length === 0 || saving} className="ml-auto px-5 py-2 bg-teal-700 text-white rounded font-medium hover:bg-teal-800 disabled:bg-gray-300">{saving ? '저장중...' : `${validRows.length}개 저장`}</button>
         </div>
       </div>
     </div>
