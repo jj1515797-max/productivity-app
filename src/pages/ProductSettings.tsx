@@ -2415,6 +2415,7 @@ function ErpCodeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
   const [rows, setRows] = useState<ErpMatDoc[]>([]);
   const [search, setSearch] = useState('');
   const [showBulk, setShowBulk] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   useEffect(() => {
     return onSnapshot(collection(db, 'materialErpCodes'), (snap) => {
@@ -2436,15 +2437,28 @@ function ErpCodeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
     if (!confirm(`'${code}' 삭제할까요?`)) return;
     await deleteDoc(doc(db, 'materialErpCodes', code));
   };
-  const updateField = async (code: string, field: 'spec' | 'supplier', value: string) => {
+  const updateField = async (code: string, field: 'supplier', value: string) => {
     await setDoc(doc(db, 'materialErpCodes', code), { code, [field]: value.trim() }, { merge: true });
+  };
+  const deleteAll = async () => {
+    if (rows.length === 0) return;
+    if (prompt(`⚠️ 전체 ${rows.length}개를 모두 삭제합니다. 되돌릴 수 없습니다.\n진행하려면 "삭제" 를 입력하세요.`) !== '삭제') return;
+    setDeleting(true);
+    try {
+      for (let i = 0; i < rows.length; i += 400) {
+        const batch = writeBatch(db);
+        rows.slice(i, i + 400).forEach((r) => batch.delete(doc(db, 'materialErpCodes', r.code)));
+        await batch.commit();
+      }
+      alert(`${rows.length}개 삭제 완료`);
+    } finally { setDeleting(false); }
   };
 
   return (
     <div className="space-y-3">
       <div className="bg-teal-50 border border-teal-200 rounded p-3 text-xs text-teal-800 leading-relaxed">
         <b>구매 → 입고</b> 에서 원재료명으로 ERP 품목코드를 자동 매칭하는 데 씁니다.<br />
-        형식: <code className="bg-white px-1 rounded">품목코드 · 품목명 · 규격(선택) · 업체(선택)</code> — 콤마 또는 탭 구분. <b>업체</b>까지 넣으면 입고 엑셀이 업체별로 자동 분리됩니다.
+        형식: <code className="bg-white px-1 rounded">품목코드 · 품목명 · 업체</code> — 콤마 또는 탭 구분. 업체는 <b>기본값</b>이며, 입고 화면에서 그날그날 바꿀 수 있습니다.
       </div>
       <div className="flex items-center gap-3 flex-wrap">
         <input value={search} onChange={(e) => setSearch(e.target.value)}
@@ -2452,6 +2466,12 @@ function ErpCodeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
           className="flex-1 min-w-[240px] border rounded-md px-3 py-2 text-sm" />
         <span className="text-xs text-gray-500">{filtered.length}/{rows.length}개</span>
         <button onClick={() => setShowBulk(true)} className="px-3 py-2 bg-teal-700 text-white rounded text-sm font-medium hover:bg-teal-800">📋 일괄 입력</button>
+        {rows.length > 0 && (
+          <button onClick={deleteAll} disabled={deleting}
+            className="px-3 py-2 bg-red-600 text-white rounded text-sm font-medium hover:bg-red-700 disabled:bg-gray-300">
+            {deleting ? '삭제중...' : `🗑️ 전체 삭제 (${rows.length})`}
+          </button>
+        )}
       </div>
 
       {rows.length === 0 ? (
@@ -2464,8 +2484,7 @@ function ErpCodeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
                 <tr>
                   <th className="px-3 py-2 text-left w-32">품목코드</th>
                   <th className="px-3 py-2 text-left">품목명</th>
-                  <th className="px-3 py-2 text-left w-28">규격</th>
-                  <th className="px-3 py-2 text-left w-36">업체</th>
+                  <th className="px-3 py-2 text-left w-40">업체 (기본값)</th>
                   <th className="px-3 py-2 w-12"></th>
                 </tr>
               </thead>
@@ -2475,14 +2494,9 @@ function ErpCodeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
                     <td className="px-3 py-1.5 font-mono font-bold text-teal-700">{r.code}</td>
                     <td className="px-3 py-1.5 text-gray-800">{r.name}</td>
                     <td className="px-3 py-1.5">
-                      <input defaultValue={r.spec || ''} key={`${r.code}-s-${r.spec || ''}`}
-                        onBlur={(e) => { if (e.target.value.trim() !== (r.spec || '')) updateField(r.code, 'spec', e.target.value); }}
-                        placeholder="-" className="w-24 border rounded px-2 py-0.5 text-xs" />
-                    </td>
-                    <td className="px-3 py-1.5">
                       <input defaultValue={r.supplier || ''} key={`${r.code}-v-${r.supplier || ''}`}
                         onBlur={(e) => { if (e.target.value.trim() !== (r.supplier || '')) updateField(r.code, 'supplier', e.target.value); }}
-                        placeholder="업체" className="w-32 border rounded px-2 py-0.5 text-xs" />
+                        placeholder="업체" className="w-36 border rounded px-2 py-0.5 text-xs" />
                     </td>
                     <td className="px-3 py-1.5 text-right">
                       <button onClick={() => remove(r.code)} className="text-xs text-red-500 hover:underline">삭제</button>
@@ -2509,9 +2523,8 @@ function ErpCodeBulkModal({ onClose }: { onClose: () => void }) {
     const p = line.split(/[,\t]/).map((s) => s.trim());
     const code = (p[0] || '').trim();
     const name = (p[1] || '').trim();
-    const spec = (p[2] || '').trim();
-    const supplier = (p[3] || '').trim();
-    return { code, name, spec, supplier, valid: !!code && !!name };
+    const supplier = (p[2] || '').trim();
+    return { code, name, supplier, valid: !!code && !!name };
   });
   const validRows = parsed.filter((p) => p.valid);
 
@@ -2522,7 +2535,6 @@ function ErpCodeBulkModal({ onClose }: { onClose: () => void }) {
       const batch = writeBatch(db);
       validRows.forEach((r) => {
         const data: any = { code: r.code, name: r.name };
-        if (r.spec) data.spec = r.spec;
         if (r.supplier) data.supplier = r.supplier;
         batch.set(doc(db, 'materialErpCodes', r.code), data, { merge: true });
       });

@@ -10,10 +10,15 @@ import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
 import { normalizeMaterialName } from '../lib/wasteCompute';
 
-interface ErpMat { code: string; name: string; spec?: string; supplier?: string; }
-interface Row { name: string; qty: number | null; unit: string; matched?: ErpMat; }
+interface ErpMat { code: string; name: string; supplier?: string; }
+interface Row { name: string; qty: number | null; unit: string; matched?: ErpMat; ambiguous?: boolean; }
 
 const NO_SUPPLIER = '미지정 업체';
+
+// 핵심 이름: 괄호 안(예: (국내산)) 제거 + 공백 제거 + 소문자 → '단호박(국내산)' == '단호박'
+function coreName(s: string): string {
+  return (s || '').replace(/\(.*?\)/g, '').replace(/\s+/g, '').toLowerCase();
+}
 
 // '원재료명 320kg' / '원재료명\t320\tkg' 등에서 이름·수량·단위 추출
 function parseLine(line: string): Row | null {
@@ -41,6 +46,8 @@ export default function Inbound() {
   const [master, setMaster] = useState<ErpMat[]>([]);
   const [text, setText] = useState('');
   const [date, setDate] = useState(todayKey());
+  // 업체 그날그날 수정 (품목코드별 오버라이드). 마스터의 기본 업체를 덮어씀.
+  const [override, setOverride] = useState<Record<string, string>>({});
 
   useEffect(() => onSnapshot(collection(db, 'materialErpCodes'), (snap) => {
     const list: ErpMat[] = [];
@@ -48,35 +55,55 @@ export default function Inbound() {
     setMaster(list);
   }), []);
 
-  const lookup = useMemo(() => {
-    const m = new Map<string, ErpMat>();
-    master.forEach((x) => m.set(normalizeMaterialName(x.name), x));
-    return m;
+  const maps = useMemo(() => {
+    const exact = new Map<string, ErpMat>();
+    const core = new Map<string, ErpMat[]>();
+    master.forEach((x) => {
+      exact.set(normalizeMaterialName(x.name), x);
+      const c = coreName(x.name);
+      if (!core.has(c)) core.set(c, []);
+      core.get(c)!.push(x);
+    });
+    return { exact, core };
   }, [master]);
 
   const rows = useMemo<Row[]>(() => {
     return text.trim().split('\n').map((l) => parseLine(l.trim())).filter(Boolean).map((r) => {
       const row = r as Row;
-      row.matched = lookup.get(normalizeMaterialName(row.name));
+      // 1) 이름 완전일치 → 2) 괄호 뺀 핵심 이름 일치(단, 후보 1개일 때만)
+      const ex = maps.exact.get(normalizeMaterialName(row.name));
+      if (ex) { row.matched = ex; return row; }
+      const cand = maps.core.get(coreName(row.name));
+      if (cand && cand.length === 1) row.matched = cand[0];
+      else if (cand && cand.length > 1) row.ambiguous = true;
       return row;
     });
-  }, [text, lookup]);
+  }, [text, maps]);
 
   const valid = rows.filter((r) => r.matched && r.qty !== null);
-  const unmatched = rows.filter((r) => !r.matched);
+  const ambiguous = rows.filter((r) => r.ambiguous);
+  const unmatched = rows.filter((r) => !r.matched && !r.ambiguous);
   const noQty = rows.filter((r) => r.matched && r.qty === null);
   const hasSupplier = master.some((m) => m.supplier);
+  const effSupplier = (r: Row) => (override[r.matched!.code] ?? r.matched!.supplier ?? '').trim() || NO_SUPPLIER;
+  // 업체 자동완성 목록 (마스터 + 오버라이드에 쓰인 업체들)
+  const supplierList = useMemo(() => {
+    const s = new Set<string>();
+    master.forEach((m) => { if (m.supplier?.trim()) s.add(m.supplier.trim()); });
+    Object.values(override).forEach((v) => { if (v.trim()) s.add(v.trim()); });
+    return Array.from(s).sort();
+  }, [master, override]);
 
   // 업체별 그룹
   const groups = useMemo(() => {
     const g = new Map<string, Row[]>();
     valid.forEach((r) => {
-      const sup = r.matched!.supplier?.trim() || NO_SUPPLIER;
+      const sup = (override[r.matched!.code] ?? r.matched!.supplier ?? '').trim() || NO_SUPPLIER;
       if (!g.has(sup)) g.set(sup, []);
       g.get(sup)!.push(r);
     });
     return Array.from(g.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-  }, [valid]);
+  }, [valid, override]);
 
   const download = async () => {
     if (valid.length === 0) return;
@@ -86,8 +113,8 @@ export default function Inbound() {
     groups.forEach(([supplier, list]) => {
       const safe = supplier.replace(/[\\/*?:[\]]/g, ' ').slice(0, 28) || '업체';
       const ws = wb.addWorksheet(safe);
-      ws.columns = [{ width: 16 }, { width: 26 }, { width: 12 }, { width: 12 }, { width: 8 }];
-      const head = ws.addRow(['품목코드', '품목명', '규격', '수량', '단위']);
+      ws.columns = [{ width: 16 }, { width: 28 }, { width: 12 }, { width: 8 }];
+      const head = ws.addRow(['품목코드', '품목명', '수량', '단위']);
       head.eachCell((c) => {
         c.font = { bold: true, size: 11 };
         c.alignment = { horizontal: 'center', vertical: 'middle' };
@@ -96,11 +123,10 @@ export default function Inbound() {
       });
       head.height = 20;
       list.forEach((r) => {
-        const row = ws.addRow([r.matched!.code, r.matched!.name, r.matched!.spec || '', r.qty, r.unit || 'g']);
+        const row = ws.addRow([r.matched!.code, r.matched!.name, r.qty, r.unit || 'g']);
         row.eachCell((c, i) => {
           c.border = border;
-          c.alignment = { horizontal: i === 2 ? 'left' : (i >= 4 ? 'center' : (i === 1 ? 'left' : 'center')), vertical: 'middle' };
-          if (i === 1) c.alignment = { horizontal: 'left', vertical: 'middle' };
+          c.alignment = { horizontal: i === 1 ? 'left' : 'center', vertical: 'middle' };
           if (i === 4) c.font = { bold: true };
         });
       });
@@ -117,6 +143,9 @@ export default function Inbound() {
 
   return (
     <div className="space-y-4">
+      <datalist id="supplier-list">
+        {supplierList.map((s) => <option key={s} value={s} />)}
+      </datalist>
       {/* 헤더 */}
       <div className="flex items-center gap-3 flex-wrap">
         <h2 className="text-lg font-bold text-gray-800">🛒 입고 발주</h2>
@@ -150,22 +179,29 @@ export default function Inbound() {
           <div className="text-sm text-gray-600">
             매칭 <b className="text-teal-700">{valid.length}</b> / 전체 {rows.length}줄
             {unmatched.length > 0 && <span className="text-red-600 ml-2">· 미매칭 {unmatched.length}</span>}
+            {ambiguous.length > 0 && <span className="text-orange-600 ml-2">· 후보중복 {ambiguous.length}</span>}
             {noQty.length > 0 && <span className="text-orange-600 ml-2">· 수량없음 {noQty.length}</span>}
           </div>
         )}
       </div>
 
-      {/* 미매칭 경고 */}
-      {(unmatched.length > 0 || noQty.length > 0) && (
-        <div className="bg-red-50 border border-red-300 rounded-lg p-3 text-sm">
+      {/* 경고 */}
+      {(unmatched.length > 0 || ambiguous.length > 0 || noQty.length > 0) && (
+        <div className="bg-red-50 border border-red-300 rounded-lg p-3 text-sm space-y-1">
           {unmatched.length > 0 && (
             <div className="text-red-700">
               ⚠ ERP 코드 미등록 {unmatched.length}개: <b>{unmatched.map((u) => u.name).join(', ')}</b>
               <span className="text-red-500"> → 설정에 코드 추가 필요 (엑셀에서 제외됨)</span>
             </div>
           )}
+          {ambiguous.length > 0 && (
+            <div className="text-orange-700">
+              ⚠ 이름이 여러 품목과 겹쳐 자동매칭 불가 {ambiguous.length}개: <b>{ambiguous.map((u) => u.name).join(', ')}</b>
+              <span className="text-orange-600"> → 괄호까지 정확히 입력하세요 (예: 단호박(국내산))</span>
+            </div>
+          )}
           {noQty.length > 0 && (
-            <div className="text-orange-700 mt-1">⚠ 수량 인식 실패 {noQty.length}개: {noQty.map((u) => u.name).join(', ')}</div>
+            <div className="text-orange-700">⚠ 수량 인식 실패 {noQty.length}개: {noQty.map((u) => u.name).join(', ')}</div>
           )}
         </div>
       )}
@@ -182,8 +218,8 @@ export default function Inbound() {
               <tr>
                 <th className="px-4 py-2 text-left w-32">품목코드</th>
                 <th className="px-4 py-2 text-left">품목명</th>
-                <th className="px-4 py-2 text-left w-24">규격</th>
                 <th className="px-4 py-2 text-right w-28">수량</th>
+                <th className="px-4 py-2 text-left w-40">업체 (변경 가능)</th>
               </tr>
             </thead>
             <tbody className="divide-y">
@@ -191,8 +227,13 @@ export default function Inbound() {
                 <tr key={i} className="hover:bg-slate-50/60">
                   <td className="px-4 py-2 font-mono font-bold text-teal-700">{r.matched!.code}</td>
                   <td className="px-4 py-2 text-gray-800">{r.matched!.name}</td>
-                  <td className="px-4 py-2 text-gray-500">{r.matched!.spec || '-'}</td>
                   <td className="px-4 py-2 text-right font-bold tabular-nums">{r.qty!.toLocaleString()}<span className="text-xs text-gray-400 ml-1">{r.unit || 'g'}</span></td>
+                  <td className="px-4 py-2">
+                    <input list="supplier-list" defaultValue={effSupplier(r) === NO_SUPPLIER ? '' : effSupplier(r)}
+                      key={`${r.matched!.code}-${override[r.matched!.code] ?? ''}`}
+                      onBlur={(e) => setOverride((o) => ({ ...o, [r.matched!.code]: e.target.value }))}
+                      placeholder="업체" className="w-36 border rounded px-2 py-1 text-xs" />
+                  </td>
                 </tr>
               ))}
             </tbody>
