@@ -2421,7 +2421,7 @@ function AmbientRecipeImportModal({ onClose }: { onClose: () => void }) {
    Firestore: materialErpCodes/{code} = { code, name, spec?, supplier? }
    붙여넣기: 품목코드 [탭/콤마] 품목명 [규격] [업체]
    ============================================================ */
-interface ErpMatDoc { code: string; name: string; spec?: string; supplier?: string; }
+interface ErpMatDoc { code: string; name: string; spec?: string; supplier?: string; vat?: string; }
 
 function ErpCodeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
   const [rows, setRows] = useState<ErpMatDoc[]>([]);
@@ -2449,7 +2449,7 @@ function ErpCodeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
     if (!confirm(`'${code}' 삭제할까요?`)) return;
     await deleteDoc(doc(db, 'materialErpCodes', code));
   };
-  const updateField = async (code: string, field: 'supplier', value: string) => {
+  const updateField = async (code: string, field: 'supplier' | 'vat', value: string) => {
     await setDoc(doc(db, 'materialErpCodes', code), { code, [field]: value.trim() }, { merge: true });
   };
   const deleteAll = async () => {
@@ -2470,7 +2470,7 @@ function ErpCodeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
     <div className="space-y-3">
       <div className="bg-teal-50 border border-teal-200 rounded p-3 text-xs text-teal-800 leading-relaxed">
         <b>구매 → 입고</b> 에서 원재료명으로 ERP 품목코드를 자동 매칭하는 데 씁니다.<br />
-        형식: <code className="bg-white px-1 rounded">품목코드 · 품목명 · 업체</code> — 콤마 또는 탭 구분. 업체는 <b>기본값</b>이며, 입고 화면에서 그날그날 바꿀 수 있습니다.
+        형식: <code className="bg-white px-1 rounded">품목코드 · 품목명 · 업체 · 부가세여부</code> — 콤마 또는 탭 구분. 업체는 <b>기본값</b>(입고에서 그날 변경 가능), <b>부가세여부(FG_UM)</b>는 제품별로 001(별도)/002(포함) 등을 넣으면 ERP 엑셀에 그대로 들어갑니다.
       </div>
       <div className="flex items-center gap-3 flex-wrap">
         <input value={search} onChange={(e) => setSearch(e.target.value)}
@@ -2496,7 +2496,8 @@ function ErpCodeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
                 <tr>
                   <th className="px-3 py-2 text-left w-32">품목코드</th>
                   <th className="px-3 py-2 text-left">품목명</th>
-                  <th className="px-3 py-2 text-left w-40">업체 (기본값)</th>
+                  <th className="px-3 py-2 text-left w-36">업체 (기본값)</th>
+                  <th className="px-3 py-2 text-left w-28">부가세여부</th>
                   <th className="px-3 py-2 w-12"></th>
                 </tr>
               </thead>
@@ -2508,7 +2509,12 @@ function ErpCodeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
                     <td className="px-3 py-1.5">
                       <input defaultValue={r.supplier || ''} key={`${r.code}-v-${r.supplier || ''}`}
                         onBlur={(e) => { if (e.target.value.trim() !== (r.supplier || '')) updateField(r.code, 'supplier', e.target.value); }}
-                        placeholder="업체" className="w-36 border rounded px-2 py-0.5 text-xs" />
+                        placeholder="업체" className="w-32 border rounded px-2 py-0.5 text-xs" />
+                    </td>
+                    <td className="px-3 py-1.5">
+                      <input defaultValue={r.vat || ''} key={`${r.code}-fg-${r.vat || ''}`}
+                        onBlur={(e) => { if (e.target.value.trim() !== (r.vat || '')) updateField(r.code, 'vat', e.target.value); }}
+                        placeholder="001" className="w-20 border rounded px-2 py-0.5 text-xs text-center" />
                     </td>
                     <td className="px-3 py-1.5 text-right">
                       <button onClick={() => remove(r.code)} className="text-xs text-red-500 hover:underline">삭제</button>
@@ -2537,7 +2543,8 @@ function ErpCodeBulkModal({ onClose }: { onClose: () => void }) {
     const code = (p[0] || '').trim();
     const name = (p[1] || '').trim();
     const supplier = (p[2] || '').trim();
-    return { code, name, supplier, valid: !!code && !!name };
+    const vat = (p[3] || '').trim();
+    return { code, name, supplier, vat, valid: !!code && !!name };
   });
   const validRows = parsed.filter((p) => p.valid);
 
@@ -2549,6 +2556,7 @@ function ErpCodeBulkModal({ onClose }: { onClose: () => void }) {
       validRows.forEach((r) => {
         const data: any = { code: r.code, name: r.name };
         if (r.supplier) data.supplier = r.supplier;
+        if (r.vat) data.vat = r.vat;
         batch.set(doc(db, 'materialErpCodes', r.code), data, { merge: true });
       });
       await batch.commit();
@@ -2563,17 +2571,17 @@ function ErpCodeBulkModal({ onClose }: { onClose: () => void }) {
         <div className="px-5 py-4 border-b bg-gradient-to-r from-teal-50 to-emerald-50 flex items-center justify-between">
           <div>
             <h3 className="font-bold text-gray-800">원재료 ERP 코드 일괄 입력</h3>
-            <div className="text-xs text-gray-500 mt-0.5">품목코드 · 품목명 · 규격(선택) · 업체(선택) — 콤마/탭 구분</div>
+            <div className="text-xs text-gray-500 mt-0.5">품목코드 · 품목명 · 업체(선택) · 부가세여부(선택) — 콤마/탭 구분</div>
           </div>
           <button onClick={onClose} className="w-7 h-7 rounded-full hover:bg-gray-200 text-gray-500">×</button>
         </div>
         <div className="flex-1 overflow-y-auto p-5 space-y-4">
           <div className="bg-teal-50 border border-teal-200 rounded p-3 text-xs text-teal-800 leading-relaxed">
-            엑셀에서 <b>품목코드 · 품목명</b> 두 열(또는 규격·업체까지 네 열)을 그대로 복사해 붙여넣으세요.<br />
-            예: <code className="bg-white px-1 rounded">10620044	당근	1kg	원예농협</code>
+            엑셀에서 <b>품목코드 · 품목명</b> (또는 업체·부가세여부까지 네 열)을 그대로 복사해 붙여넣으세요.<br />
+            예: <code className="bg-white px-1 rounded">10620044	당근	원예농협	001</code> (부가세여부 001=별도 / 002=포함)
           </div>
           <textarea value={text} onChange={(e) => setText(e.target.value)}
-            placeholder={"10620044\t당근\t1kg\t원예농협\n10620017\t대파\t1kg\t해마\n10720002\t배\t1kg\t인터넷발주"}
+            placeholder={"10620044\t당근\t원예농협\t001\n10620017\t대파\t해마\t001\n10720002\t배\t인터넷발주\t002"}
             className="w-full h-60 border rounded-md p-3 text-sm font-mono" />
           {parsed.length > 0 && (
             <div className="text-sm text-gray-600">유효 <b className="text-teal-700">{validRows.length}</b> / 전체 {parsed.length}줄</div>

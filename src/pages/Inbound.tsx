@@ -11,7 +11,7 @@ import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
 import { normalizeMaterialName } from '../lib/wasteCompute';
 
-interface ErpMat { code: string; name: string; supplier?: string; }
+interface ErpMat { code: string; name: string; supplier?: string; vat?: string; }
 interface Row { name: string; qty: number | null; unit: string; matched?: ErpMat; ambiguous?: boolean; }
 
 const NO_SUPPLIER = '미지정 업체';
@@ -198,7 +198,9 @@ export default function Inbound() {
         const sup = effSupplier(r);
         return [
           supCodes[sup] || '',
-          erpCfg.plant || '', erpCfg.tppo || '', erpCfg.um || '', erpCfg.pjt || '',
+          erpCfg.plant || '', erpCfg.tppo || '',
+          r.matched!.vat || erpCfg.um || '',   // 부가세여부: 제품별 우선, 없으면 기본값
+          erpCfg.pjt || '',
           r.matched!.code, toGrams(r.qty as number, r.unit), erpCfg.exch || '',
         ];
       }),
