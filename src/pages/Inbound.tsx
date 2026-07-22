@@ -192,8 +192,10 @@ export default function Inbound() {
   // 1행 헤더 + 2행부터 데이터 (CD_PARTNER … CD_EXCH).
   const erpDownload = () => {
     if (valid.length === 0) return;
+    const header = ['CD_PARTNER', 'CD_PLANT', 'CD_TPPO', 'FG_UM', 'CD_PJT', 'CD_ITEM', 'QT_PO', 'CD_EXCH'];
     const aoa: (string | number)[][] = [
-      ['CD_PARTNER', 'CD_PLANT', 'CD_TPPO', 'FG_UM', 'CD_PJT', 'CD_ITEM', 'QT_PO', 'CD_EXCH'],
+      header,
+      header.map(() => ''),   // 2번째 줄은 비움 (ERP가 2행은 입력 안 받음) → 데이터는 3행부터
       ...valid.map((r) => {
         const sup = effSupplier(r);
         return [
