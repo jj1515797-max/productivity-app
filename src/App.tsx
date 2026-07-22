@@ -21,6 +21,7 @@ import Remix from './pages/Remix';
 import Scoop from './pages/Scoop';
 import ScoopAnalysis from './pages/ScoopAnalysis';
 import Inbound from './pages/Inbound';
+import InboundHistory from './pages/InboundHistory';
 import Logo from './components/Logo';
 import AnalyticsGate from './components/AnalyticsGate';
 import { useTrackVisit } from './lib/presence';
@@ -69,6 +70,7 @@ function MainContainer() {
         <Route path="/attendance/productivity" element={<ProductivityInput />} />
         <Route path="/inventory" element={<Inventory />} />
         <Route path="/purchase/inbound" element={<Inbound />} />
+        <Route path="/purchase/history" element={<InboundHistory />} />
       </Routes>
     </main>
   );
@@ -114,6 +116,7 @@ const SUB_TABS: Record<Section, { label: string; to: string; exact?: boolean }[]
   ],
   purchase: [
     { label: '입고', to: '/purchase/inbound' },
+    { label: '입고이력', to: '/purchase/history' },
   ],
   attendance: [
     { label: '조직도', to: '/attendance', exact: true },

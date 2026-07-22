@@ -4,7 +4,7 @@
  *  - 입고 붙여넣기: '원재료명 [탭/콤마] 수량' (수량 단위는 그대로 유지: kg/g/box 등)
  */
 import { useEffect, useMemo, useState } from 'react';
-import { collection, onSnapshot } from 'firebase/firestore';
+import { collection, doc, getDoc, onSnapshot, setDoc } from 'firebase/firestore';
 import ExcelJS from 'exceljs';
 import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
@@ -49,6 +49,16 @@ export default function Inbound() {
   const [date, setDate] = useState(todayKey());
   // 업체 그날그날 수정 (품목코드별 오버라이드). 마스터의 기본 업체를 덮어씀.
   const [override, setOverride] = useState<Record<string, string>>({});
+  const [saved, setSaved] = useState<{ count: number; updatedAt?: string; items: any[] } | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  // 선택 날짜의 저장 데이터 조회
+  useEffect(() => {
+    setSaved(null);
+    getDoc(doc(db, 'purchaseInbound', date)).then((s) => {
+      if (s.exists()) { const d = s.data() as any; setSaved({ count: (d.items || []).length, updatedAt: d.updatedAt, items: d.items || [] }); }
+    }).catch(() => {});
+  }, [date]);
 
   useEffect(() => onSnapshot(collection(db, 'materialErpCodes'), (snap) => {
     const list: ErpMat[] = [];
@@ -106,6 +116,25 @@ export default function Inbound() {
     return Array.from(g.entries()).sort((a, b) => a[0].localeCompare(b[0]));
   }, [valid, override]);
 
+  const save = async () => {
+    if (valid.length === 0) return;
+    setSaving(true);
+    try {
+      const items = valid.map((r) => ({ code: r.matched!.code, name: r.matched!.name, qty: r.qty, unit: r.unit || 'g', supplier: effSupplier(r) }));
+      const updatedAt = new Date().toISOString();
+      await setDoc(doc(db, 'purchaseInbound', date), { date, items, updatedAt }, { merge: false });
+      setSaved({ count: items.length, updatedAt, items });
+      alert(`${items.length}품목 저장 완료 (${date})`);
+    } finally { setSaving(false); }
+  };
+  const loadSaved = () => {
+    if (!saved) return;
+    setText(saved.items.map((it) => `${it.name}\t${it.qty}${it.unit || ''}`).join('\n'));
+    const ov: Record<string, string> = {};
+    saved.items.forEach((it) => { if (it.supplier && it.supplier !== NO_SUPPLIER) ov[it.code] = it.supplier; });
+    setOverride(ov);
+  };
+
   const download = async () => {
     if (valid.length === 0) return;
     const wb = new ExcelJS.Workbook();
@@ -155,11 +184,22 @@ export default function Inbound() {
         <span className="text-sm text-gray-500">
           ERP 코드 마스터 <b className="text-teal-700">{master.length}</b>개 등록됨
         </span>
+        <button onClick={save} disabled={valid.length === 0 || saving}
+          className="ml-auto px-4 py-1.5 text-sm rounded-md bg-blue-700 text-white font-medium hover:bg-blue-800 disabled:bg-gray-300">
+          {saving ? '저장중...' : '💾 저장'}
+        </button>
         <button onClick={download} disabled={valid.length === 0}
-          className="ml-auto px-4 py-1.5 text-sm rounded-md bg-teal-700 text-white font-medium hover:bg-teal-800 disabled:bg-gray-300">
+          className="px-4 py-1.5 text-sm rounded-md bg-teal-700 text-white font-medium hover:bg-teal-800 disabled:bg-gray-300">
           📥 업체별 엑셀 다운로드
         </button>
       </div>
+
+      {saved && (
+        <div className="bg-blue-50 border border-blue-200 rounded-lg px-4 py-2.5 text-sm flex items-center gap-3 flex-wrap">
+          <span className="text-blue-800">📌 이 날짜 저장됨: <b>{saved.count}품목</b>{saved.updatedAt && <span className="text-blue-500 text-xs ml-1">({saved.updatedAt.slice(0, 16).replace('T', ' ')})</span>}</span>
+          <button onClick={loadSaved} className="px-3 py-1 text-xs rounded bg-blue-600 text-white font-medium hover:bg-blue-700">불러오기</button>
+        </div>
+      )}
 
       {master.length === 0 && (
         <div className="bg-amber-50 border border-amber-300 rounded-lg p-3 text-sm text-amber-800">
