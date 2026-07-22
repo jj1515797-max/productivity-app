@@ -216,7 +216,7 @@ export default function Inbound() {
         return [
           supCodes[sup] || '',
           erpCfg.plant || '', erpCfg.tppo || '',
-          r.matched!.vat || erpCfg.um || '',   // 부가세여부: 제품별 우선, 없으면 기본값
+          erpCfg.um || '',   // FG_UM = 단가유형 (설정 고정값, 예: 001 정상가)
           erpCfg.pjt || '',
           r.matched!.code, toGrams(r.qty as number, r.unit), erpCfg.exch || '',
         ];
