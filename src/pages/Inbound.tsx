@@ -22,7 +22,8 @@ function coreName(s: string): string {
 
 // '원재료명 320kg' / '원재료명\t320\tkg' 등에서 이름·수량·단위 추출
 function parseLine(line: string): Row | null {
-  const parts = line.split(/[\t,]/).map((s) => s.trim()).filter(Boolean);
+  // 엑셀 붙여넣기는 탭 구분 → 탭이 있으면 탭으로만 자름(이름 속 콤마 보존)
+  const parts = (line.includes('\t') ? line.split('\t') : line.split(',')).map((s) => s.trim()).filter(Boolean);
   if (parts.length === 0) return null;
   let qtyIdx = -1;
   for (let i = parts.length - 1; i >= 0; i--) { if (/\d/.test(parts[i])) { qtyIdx = i; break; } }

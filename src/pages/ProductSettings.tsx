@@ -2520,7 +2520,8 @@ function ErpCodeBulkModal({ onClose }: { onClose: () => void }) {
 
   const lines = text.trim().split('\n').map((l) => l.trim()).filter(Boolean);
   const parsed = lines.map((line) => {
-    const p = line.split(/[,\t]/).map((s) => s.trim());
+    // 엑셀 붙여넣기는 탭 구분 → 탭이 있으면 탭으로만 자름(품목명 속 콤마 보존)
+    const p = (line.includes('\t') ? line.split('\t') : line.split(',')).map((s) => s.trim());
     const code = (p[0] || '').trim();
     const name = (p[1] || '').trim();
     const supplier = (p[2] || '').trim();
