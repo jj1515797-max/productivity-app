@@ -4,7 +4,7 @@
  *  - 입고 붙여넣기: '원재료명 [탭/콤마] 수량' (수량 단위는 그대로 유지: kg/g/box 등)
  */
 import { useEffect, useMemo, useState } from 'react';
-import { collection, doc, getDoc, onSnapshot, setDoc } from 'firebase/firestore';
+import { collection, deleteDoc, doc, getDoc, onSnapshot, setDoc } from 'firebase/firestore';
 import ExcelJS from 'exceljs';
 import * as XLSX from 'xlsx';
 import { db } from '../firebase';
@@ -153,10 +153,18 @@ export default function Inbound() {
       alert(`${items.length}품목 저장 완료 (${date})`);
     } finally { setSaving(false); }
   };
-  const clearInput = () => {
-    if (text.trim() && !confirm('입력한 내용을 모두 비울까요?')) return;
+  const clearInput = async () => {
+    const hasSaved = !!saved;
+    const msg = hasSaved
+      ? `이 날짜(${date}) 입력과 저장분을 모두 삭제할까요?`
+      : '입력한 내용을 비울까요?';
+    if (!confirm(msg)) return;
     setText('');
     setOverride({});
+    if (hasSaved) {
+      await deleteDoc(doc(db, 'purchaseInbound', date)).catch(() => {});
+      setSaved(null);
+    }
   };
 
   const download = async () => {
