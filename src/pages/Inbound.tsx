@@ -21,6 +21,13 @@ function coreName(s: string): string {
   return (s || '').replace(/\(.*?\)/g, '').replace(/\s+/g, '').toLowerCase();
 }
 
+// ERP 발주수량은 g 기준 → kg면 ×1000, g/그 외는 그대로
+function toGrams(qty: number, unit: string): number {
+  const u = (unit || '').toLowerCase();
+  if (u.includes('kg')) return Math.round(qty * 1000);
+  return qty;
+}
+
 // '원재료명 320kg' / '원재료명\t320\tkg' 등에서 이름·수량·단위 추출
 function parseLine(line: string): Row | null {
   // 엑셀 붙여넣기는 탭 구분 → 탭이 있으면 탭으로만 자름(이름 속 콤마 보존)
@@ -192,7 +199,7 @@ export default function Inbound() {
         return [
           supCodes[sup] || '',
           erpCfg.plant || '', erpCfg.tppo || '', erpCfg.um || '', erpCfg.pjt || '',
-          r.matched!.code, r.qty as number, erpCfg.exch || '',
+          r.matched!.code, toGrams(r.qty as number, r.unit), erpCfg.exch || '',
         ];
       }),
     ];
