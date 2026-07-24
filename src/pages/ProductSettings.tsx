@@ -319,7 +319,7 @@ export default function ProductSettings() {
       {/* 원재료 단가 섹션 — 재고평가현황 (출고수량·출고금액 → 단가 자동산출. 분석1/2 + 폐기 공용) */}
       <Section
         icon="💾"
-        title="원재료단가 (재고평가현황)"
+        title="재고평가현황"
         badge={inventoryPriceCount !== null ? `${inventoryPriceCount}개` : '...'}
         open={showInventoryPriceDB}
         onToggle={() => setShowInventoryPriceDB(!showInventoryPriceDB)}
