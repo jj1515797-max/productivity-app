@@ -37,7 +37,7 @@ export default function App() {
 
 function MainContainer() {
   const path = useLocation().pathname;
-  const wide = path.startsWith('/analytics/monthly') || path.startsWith('/analytics/remix') || path.startsWith('/analytics/productivity') || path.startsWith('/analytics/material') || path.startsWith('/analytics/remain-analysis') || path.startsWith('/attendance') || path.startsWith('/inventory');
+  const wide = path.startsWith('/analytics/monthly') || path.startsWith('/analytics/remix') || path.startsWith('/analytics/productivity') || path.startsWith('/analytics/remain-analysis') || path.startsWith('/attendance') || path.startsWith('/inventory');
   return (
     <main className={`flex-1 ${wide ? 'max-w-screen-2xl' : 'max-w-screen-xl'} w-full mx-auto px-4 py-5`}>
       <Routes>
