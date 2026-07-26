@@ -4,3 +4,8 @@ dist
 *.local
 .vscode
 tsconfig.tsbuildinfo
+
+# Firestore 덤프용 서비스계정 키 (절대 커밋 금지)
+serviceAccount.json
+*serviceAccount*.json
+raw_ssbon_mes_export.sql
