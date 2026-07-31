@@ -568,6 +568,42 @@ function WasteInputModal({
   const [qty, setQty] = useState<number>(1);
   const [excluded, setExcluded] = useState<Set<string>>(new Set());
   const [saving, setSaving] = useState(false);
+  // 추가 원료 (레시피에 없는데 폐기에 포함)
+  const [extras, setExtras] = useState<{ name: string; code?: string; gPerPiece: number }[]>([]);
+  const [matSearch, setMatSearch] = useState('');
+  const [priceMats, setPriceMats] = useState<{ name: string; code?: string }[]>([]);
+
+  // 단가 등록된 원료 목록(재고평가현황) — 검색해서 추가 (코드/이름으로 단가 매칭)
+  useEffect(() => {
+    getDocs(collection(db, 'materialPricesInventory')).then((snap) => {
+      const seen = new Set<string>();
+      const list: { name: string; code?: string }[] = [];
+      snap.forEach((d) => {
+        const x = d.data() as any;
+        const name = (x.name || '').trim();
+        if (!name) return;
+        const code = (x.code || '').trim() || undefined;
+        const key = code || normalizeMaterialName(name);
+        if (seen.has(key)) return;
+        seen.add(key);
+        list.push({ name, code });
+      });
+      list.sort((a, b) => a.name.localeCompare(b.name));
+      setPriceMats(list);
+    }).catch(() => {});
+  }, []);
+
+  const matResults = useMemo(() => {
+    const q = matSearch.trim().toLowerCase();
+    if (!q) return [];
+    return priceMats.filter((m) => m.name.toLowerCase().includes(q) || (m.code || '').toLowerCase().includes(q)).slice(0, 20);
+  }, [priceMats, matSearch]);
+
+  const addExtra = (m: { name: string; code?: string }) => {
+    if (extras.some((e) => (e.code || e.name) === (m.code || m.name))) { setMatSearch(''); return; }
+    setExtras([...extras, { name: m.name, code: m.code, gPerPiece: 0 }]);
+    setMatSearch('');
+  };
 
   const recipes = useMemo(() => Array.from(recipeMap.values()), [recipeMap]);
   const filtered = useMemo(() => {
@@ -591,12 +627,16 @@ function WasteInputModal({
       const excludedNames = (selected.ingredients || [])
         .filter((ing) => excluded.has(normalizeMaterialName(ing.name)))
         .map((ing) => ing.name);
+      const extraIngredients = extras
+        .filter((e) => e.gPerPiece > 0)
+        .map((e) => { const o: any = { name: e.name, gPerPiece: e.gPerPiece }; if (e.code) o.code = e.code; return o; });
       await addDoc(collection(db, 'waste', date, 'entries'), {
         date,
         code: selected.code,
         name: selected.name,
         qty,
         excludedIngredients: excludedNames,
+        ...(extraIngredients.length ? { extraIngredients } : {}),
         createdAt: new Date().toISOString(),
       });
       onSaved();
@@ -645,7 +685,7 @@ function WasteInputModal({
                   <div className="font-mono text-xs text-gray-500">{selected.code}</div>
                   <div className="font-bold text-gray-800">{selected.name}</div>
                 </div>
-                <button onClick={() => { setSelected(null); setExcluded(new Set()); }} className="text-xs px-2 py-1 border rounded hover:bg-gray-100">다시 선택</button>
+                <button onClick={() => { setSelected(null); setExcluded(new Set()); setExtras([]); setMatSearch(''); }} className="text-xs px-2 py-1 border rounded hover:bg-gray-100">다시 선택</button>
               </div>
               <div className="text-xs text-gray-500 mb-1">계산에 포함할 원재료 (체크 해제 시 제외)</div>
               <div className="max-h-72 overflow-y-auto border rounded">
@@ -675,6 +715,58 @@ function WasteInputModal({
                     })}
                   </tbody>
                 </table>
+              </div>
+
+              {/* 추가 원료 — 레시피에 없는데 폐기에 포함(예: 잘못 투입한 한우) */}
+              <div className="mt-3">
+                <div className="text-xs text-gray-500 mb-1">추가 원료 (레시피에 없는 원료 검색해서 넣기 · 예: 잘못 투입)</div>
+                <div className="relative">
+                  <input type="text" value={matSearch} onChange={(e) => setMatSearch(e.target.value)}
+                    placeholder="🔍 원료명/코드 검색 (예: 한우)"
+                    className="w-full border rounded-md px-3 py-2 text-sm" />
+                  {matResults.length > 0 && (
+                    <div className="absolute z-10 left-0 right-0 mt-1 bg-white border rounded-md shadow-lg max-h-52 overflow-y-auto">
+                      {matResults.map((m) => (
+                        <button key={(m.code || '') + m.name} onClick={() => addExtra(m)}
+                          className="w-full text-left px-3 py-2 hover:bg-rose-50 flex items-center gap-2 text-sm border-b last:border-b-0">
+                          <span className="flex-1">{m.name}</span>
+                          {m.code && <span className="font-mono text-xs text-gray-400">{m.code}</span>}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
+                {extras.length > 0 && (
+                  <div className="mt-2 border rounded overflow-hidden">
+                    <table className="w-full text-xs">
+                      <thead className="bg-amber-50 text-amber-800">
+                        <tr>
+                          <th className="px-2 py-1.5 text-left">추가 원료</th>
+                          <th className="px-2 py-1.5 text-right w-28">g/개</th>
+                          <th className="px-2 py-1.5 w-10"></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {extras.map((e, i) => (
+                          <tr key={(e.code || '') + e.name} className="border-t">
+                            <td className="px-2 py-1">{e.name}{e.code && <span className="font-mono text-[10px] text-gray-400 ml-1">{e.code}</span>}</td>
+                            <td className="px-2 py-1 text-right">
+                              <input type="number" step="0.01" value={e.gPerPiece || ''} placeholder="0"
+                                onChange={(ev) => { const v = Number(ev.target.value) || 0; setExtras(extras.map((x, xi) => xi === i ? { ...x, gPerPiece: v } : x)); }}
+                                className="w-24 border rounded px-2 py-0.5 text-right" />
+                            </td>
+                            <td className="px-2 py-1 text-center">
+                              <button onClick={() => setExtras(extras.filter((_, xi) => xi !== i))} className="text-red-500 hover:text-red-700">✕</button>
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                )}
+                {extras.some((e) => e.gPerPiece <= 0) && (
+                  <div className="text-[11px] text-amber-600 mt-1">※ g/개를 입력해야 폐기금액에 반영됩니다.</div>
+                )}
               </div>
             </div>
           )}

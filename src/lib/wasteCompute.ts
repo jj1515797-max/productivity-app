@@ -46,6 +46,8 @@ export interface WasteEntry {
   name: string;
   qty: number;
   excludedIngredients?: string[];
+  /** 레시피에 없는데 폐기에 포함할 원료(예: 잘못 투입) — 레시피 원료와 동일하게 단가 계산 */
+  extraIngredients?: { name: string; gPerPiece: number; code?: string }[];
   createdAt?: string;
 }
 
@@ -93,35 +95,36 @@ export function expandWasteEntry(
   recipe: Recipe | undefined,
   priceMap: Map<string, number>,
 ): WasteRow[] {
-  if (!recipe) return [];
   const month = (entry.date || '').slice(0, 7); // YYYY-MM
   const excluded = new Set((entry.excludedIngredients || []).map(normalizeMaterialName));
-  return recipe.ingredients
-    .filter((ing) => !excluded.has(normalizeMaterialName(ing.name)))
-    .map((ing) => {
-      const weight = (ing.gPerPiece || 0) * (entry.qty || 0);
-      // 코드 우선 매칭 → 없으면 이름 매칭 (둘 다 해당 月 단가)
-      const codeKey = ing.code ? monthPriceKey(month, CODE_KEY_PREFIX + normalizeCode(ing.code)) : '';
-      const nameKey = monthPriceKey(month, normalizeMaterialName(ing.name));
-      const hasCode = !!codeKey && priceMap.has(codeKey);
-      const hasPrice = hasCode || priceMap.has(nameKey);
-      const price = hasCode ? (priceMap.get(codeKey) ?? 0) : (priceMap.get(nameKey) ?? 0);
-      const cost = weight * price;
-      return {
-        entryId: entry.id,
-        date: entry.date,
-        code: entry.code,
-        productName: entry.name,
-        qty: entry.qty,
-        seq: ing.seq,
-        ingredient: ing.name,
-        weight,
-        price,
-        cost,
-        hasPrice,
-      };
-    })
-    .sort((a, b) => a.seq - b.seq);
+
+  const mkRow = (name: string, code: string | undefined, gPerPiece: number, seq: number): WasteRow => {
+    const weight = (gPerPiece || 0) * (entry.qty || 0);
+    // 코드 우선 매칭 → 없으면 이름 매칭 (둘 다 해당 月 단가)
+    const codeKey = code ? monthPriceKey(month, CODE_KEY_PREFIX + normalizeCode(code)) : '';
+    const nameKey = monthPriceKey(month, normalizeMaterialName(name));
+    const hasCode = !!codeKey && priceMap.has(codeKey);
+    const hasPrice = hasCode || priceMap.has(nameKey);
+    const price = hasCode ? (priceMap.get(codeKey) ?? 0) : (priceMap.get(nameKey) ?? 0);
+    return {
+      entryId: entry.id, date: entry.date, code: entry.code, productName: entry.name, qty: entry.qty,
+      seq, ingredient: name, weight, price, cost: weight * price, hasPrice,
+    };
+  };
+
+  const rows: WasteRow[] = [];
+  // 레시피 원료 (제외 체크 뺀 것)
+  if (recipe) {
+    recipe.ingredients
+      .filter((ing) => !excluded.has(normalizeMaterialName(ing.name)))
+      .forEach((ing) => rows.push(mkRow(ing.name, ing.code, ing.gPerPiece, ing.seq)));
+  }
+  // 추가 원료 (레시피에 없지만 폐기에 포함) — seq 뒤로 (1000+)
+  (entry.extraIngredients || []).forEach((ing, i) => {
+    rows.push(mkRow(`${ing.name} (추가)`, ing.code, ing.gPerPiece, 1000 + i));
+  });
+
+  return rows.sort((a, b) => a.seq - b.seq);
 }
 
 /** 여러 entry 확장 + 일자별 그룹 */
