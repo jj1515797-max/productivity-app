@@ -742,7 +742,7 @@ function WasteInputModal({
                       <thead className="bg-amber-50 text-amber-800">
                         <tr>
                           <th className="px-2 py-1.5 text-left">추가 원료</th>
-                          <th className="px-2 py-1.5 text-right w-28">g/개</th>
+                          <th className="px-2 py-1.5 text-right w-28">중량(g)</th>
                           <th className="px-2 py-1.5 w-10"></th>
                         </tr>
                       </thead>
@@ -764,9 +764,7 @@ function WasteInputModal({
                     </table>
                   </div>
                 )}
-                {extras.some((e) => e.gPerPiece <= 0) && (
-                  <div className="text-[11px] text-amber-600 mt-1">※ g/개를 입력해야 폐기금액에 반영됩니다.</div>
-                )}
+                <div className="text-[11px] text-gray-400 mt-1">※ 추가 원료는 입력한 <b>중량(g)이 그대로</b> 폐기 중량으로 계산됩니다 (갯수 안 곱함).</div>
               </div>
             </div>
           )}

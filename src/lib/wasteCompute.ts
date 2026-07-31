@@ -98,8 +98,9 @@ export function expandWasteEntry(
   const month = (entry.date || '').slice(0, 7); // YYYY-MM
   const excluded = new Set((entry.excludedIngredients || []).map(normalizeMaterialName));
 
-  const mkRow = (name: string, code: string | undefined, gPerPiece: number, seq: number): WasteRow => {
-    const weight = (gPerPiece || 0) * (entry.qty || 0);
+  // rawWeight=true 면 입력값을 그대로 총중량(g)으로 사용(추가 원료), 아니면 g/개 × 갯수(레시피 원료)
+  const mkRow = (name: string, code: string | undefined, gValue: number, seq: number, rawWeight = false): WasteRow => {
+    const weight = rawWeight ? (gValue || 0) : (gValue || 0) * (entry.qty || 0);
     // 코드 우선 매칭 → 없으면 이름 매칭 (둘 다 해당 月 단가)
     const codeKey = code ? monthPriceKey(month, CODE_KEY_PREFIX + normalizeCode(code)) : '';
     const nameKey = monthPriceKey(month, normalizeMaterialName(name));
@@ -119,9 +120,9 @@ export function expandWasteEntry(
       .filter((ing) => !excluded.has(normalizeMaterialName(ing.name)))
       .forEach((ing) => rows.push(mkRow(ing.name, ing.code, ing.gPerPiece, ing.seq)));
   }
-  // 추가 원료 (레시피에 없지만 폐기에 포함) — seq 뒤로 (1000+)
+  // 추가 원료 (레시피에 없지만 폐기에 포함) — 입력한 중량(g)을 그대로 총중량으로. seq 뒤로 (1000+)
   (entry.extraIngredients || []).forEach((ing, i) => {
-    rows.push(mkRow(`${ing.name} (추가)`, ing.code, ing.gPerPiece, 1000 + i));
+    rows.push(mkRow(`${ing.name} (추가)`, ing.code, ing.gPerPiece, 1000 + i, true));
   });
 
   return rows.sort((a, b) => a.seq - b.seq);
