@@ -174,10 +174,22 @@ export default function Waste() {
     return map;
   }, [months13, entriesByMonth, recipeMap, priceMap]);
 
+  // 전월 단가로 임시 산출 — 이번 달 단가가 아직 없을 때 미리보기용
+  const [usePrevPrices, setUsePrevPrices] = useState(false);
+  const prevMonth = shiftMonthKey(selectedMonth, -1);
+  // 전월 단가 키(prevMonth|...)를 선택월 네임스페이스(selectedMonth|...)로 재매핑
+  const effPriceMap = useMemo(() => {
+    if (!usePrevPrices) return priceMap;
+    const remapped = new Map<string, number>();
+    const pfx = prevMonth + '|';
+    priceMap.forEach((v, k) => { if (k.startsWith(pfx)) remapped.set(selectedMonth + '|' + k.slice(pfx.length), v); });
+    return remapped;
+  }, [usePrevPrices, priceMap, selectedMonth, prevMonth]);
+
   const selEntries = entriesByMonth[selectedMonth] || [];
   const selRows = useMemo(
-    () => expandAll(selEntries, recipeMap, priceMap),
-    [selEntries, recipeMap, priceMap]
+    () => expandAll(selEntries, recipeMap, effPriceMap),
+    [selEntries, recipeMap, effPriceMap]
   );
   const selTotal = selRows.reduce((s, r) => s + r.cost, 0);
 
@@ -305,10 +317,22 @@ export default function Waste() {
         <div className="ml-auto flex gap-1.5">
           <button onClick={() => { clearAllCache(); setRefreshTick((t) => t + 1); }} className="px-2.5 py-1 text-xs rounded border hover:bg-gray-50" title="캐시 무시하고 다시 불러오기">🔄</button>
           <button onClick={() => setSelectedMonth(todayMonth >= DATA_START ? todayMonth : DATA_START)} className="px-2.5 py-1 text-xs rounded border hover:bg-gray-50">이번 달</button>
+          <button onClick={() => setUsePrevPrices((v) => !v)}
+            title="이번 달 단가가 아직 없을 때 전월 단가로 임시 산출해 봅니다"
+            className={`px-2.5 py-1 text-xs rounded border font-medium ${usePrevPrices ? 'bg-amber-500 text-white border-amber-500' : 'hover:bg-gray-50'}`}>
+            {usePrevPrices ? `✓ 전월(${monthShort(prevMonth)}) 단가` : '전월 단가로 보기'}
+          </button>
           <button onClick={downloadXlsx} className="px-3 py-1.5 text-xs rounded bg-emerald-600 text-white font-semibold hover:bg-emerald-700">📥 엑셀</button>
           <button onClick={() => setShowInput(true)} className="px-4 py-1.5 text-sm rounded bg-rose-600 text-white font-semibold hover:bg-rose-700 shadow-sm">+ 폐기 등록</button>
         </div>
       </div>
+
+      {/* 전월 단가 임시 산출 안내 */}
+      {usePrevPrices && (
+        <div className="bg-amber-50 border border-amber-300 rounded-lg px-4 py-2 text-sm text-amber-800">
+          ⚠ <b>전월({prevMonth}) 단가로 임시 산출</b> 중입니다. {selectedMonth} 실제 단가를 <b>설정 → 재고평가현황</b>에 입력하면 그 값으로 자동 전환됩니다. (KPI·상세만 적용, 월별 요약/추이는 실제 단가 기준)
+        </div>
+      )}
 
       {/* DB 상태 알림 */}
       {(recipeCount === 0 || priceCount === 0) && (
@@ -332,7 +356,7 @@ export default function Waste() {
           <span>📋 {selectedMonth} 폐기 상세</span>
           <span className="text-xs text-gray-500 font-normal">{selEntries.length}건 / 합계 <b className="text-rose-700">{Math.round(selTotal).toLocaleString()}원</b></span>
         </div>
-        <DetailTable entries={selEntries} recipeMap={recipeMap} priceMap={priceMap} onChanged={onSavedEntry} />
+        <DetailTable entries={selEntries} recipeMap={recipeMap} priceMap={effPriceMap} onChanged={onSavedEntry} />
       </div>
 
       {/* 월별 요약 표 */}
