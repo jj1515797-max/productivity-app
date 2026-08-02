@@ -685,8 +685,9 @@ type MonthlyOverride = {
   workDays?: number;
 };
 
-// localStorage 캐시 (월별 집계는 거의 안 바뀜)
-const AGG_CACHE_PREFIX = 'remixMonthAgg2:';  // v2: 일평균 품목수 + 건수 카운팅
+// localStorage 캐시 (월별 집계)
+//  v3: 지난달은 '월 마감 이후에 계산된' 캐시만 신뢰 → 진행중 부분 스냅샷이 얼어붙던 버그 수정
+const AGG_CACHE_PREFIX = 'remixMonthAgg3:';
 function isPastMonth(year: number, month: number): boolean {
   const now = new Date();
   const cy = now.getFullYear(), cm = now.getMonth() + 1;
@@ -697,8 +698,15 @@ function getAggCache(year: number, month: number): { totalQty: number; remaining
     const raw = localStorage.getItem(`${AGG_CACHE_PREFIX}${year}-${pad(month)}`);
     if (!raw) return null;
     const { ts, data } = JSON.parse(raw);
-    const ttl = isPastMonth(year, month) ? 30 * 24 * 3600 * 1000 : 30 * 60 * 1000;
-    if (Date.now() - ts > ttl) return null;
+    if (isPastMonth(year, month)) {
+      // 해당 월 마감(다음 달 1일) 이후에 계산된 캐시만 신뢰 (진행중 부분집계 무시)
+      const monthEndTs = new Date(year, month, 1).getTime();
+      if (ts < monthEndTs) return null;
+      if (Date.now() - ts > 90 * 24 * 3600 * 1000) return null;  // 90일 후 재검증
+      return data;
+    }
+    // 현재/미래 달: 진행중이라 자주 바뀜 → 5분만 캐시
+    if (Date.now() - ts > 5 * 60 * 1000) return null;
     return data;
   } catch { return null; }
 }
