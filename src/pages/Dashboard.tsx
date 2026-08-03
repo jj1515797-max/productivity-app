@@ -379,9 +379,11 @@ export default function Dashboard() {
                   // 잔여량 수정값(logistics) 우선, 없으면 actual - totalQty
                   const normCode = it.code.toLowerCase().replace(/[-\s]/g, '');
                   const logQty = hasLogistics ? logisticsByCode[normCode] : undefined;
+                  // 물류(잔여량) 입력 시 실제 생산량 = 목표 + 잔여 (물류 기준으로 재구성)
+                  const displayActual = logQty !== undefined ? it.totalQty + logQty : actual;
                   const diff = logQty !== undefined ? logQty : (actual - it.totalQty);
-                  const done = actual >= it.totalQty && it.totalQty > 0;
-                  const inProgress = actual > 0 && actual < it.totalQty;
+                  const done = logQty !== undefined ? true : (actual >= it.totalQty && it.totalQty > 0);
+                  const inProgress = logQty !== undefined ? false : (actual > 0 && actual < it.totalQty);
                   return (
                     <tr
                       key={it.code}
@@ -394,7 +396,7 @@ export default function Dashboard() {
                       {hasKurly && <td className="px-4 py-3 text-right text-blue-600 font-medium">{it.marketKurly || '-'}</td>}
                       {hasSampleCol && <td className="px-4 py-3 text-right text-amber-600 font-medium">{it.sample || '-'}</td>}
                       <td className="px-4 py-3 text-right font-semibold text-gray-800">{it.totalQty}</td>
-                      <td className="px-4 py-3 text-right text-gray-700 font-medium">{actual || '-'}</td>
+                      <td className="px-4 py-3 text-right text-gray-700 font-medium">{displayActual || '-'}</td>
                       <td className={`px-4 py-3 text-right font-bold ${diff >= 10 ? 'bg-red-300' : ''} ${diff > 0 ? 'text-green-600' : diff < 0 ? 'text-red-500' : 'text-gray-400'}`}>
                         {logQty !== undefined
                           ? (logQty > 0 ? `+${logQty}` : logQty === 0 ? '✓' : logQty)

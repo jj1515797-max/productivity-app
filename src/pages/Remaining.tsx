@@ -363,7 +363,7 @@ function Row({ item, mode }: { item: Item & { logQty?: number }; mode: 'producti
         <td className="px-4 py-2.5 font-mono text-xs text-gray-500">{item.code}</td>
         <td className="px-4 py-2.5 font-medium text-gray-800">{item.name}</td>
         <td className="px-4 py-2.5 text-right text-gray-600">{item.totalQty}</td>
-        <td className="px-4 py-2.5 text-right text-gray-700">{item.actualProduction}</td>
+        <td className="px-4 py-2.5 text-right text-gray-700">{item.totalQty + log}</td>
         <td className={`px-4 py-2.5 text-right font-bold ${log > 0 ? 'text-green-600' : 'text-blue-600'}`}>
           {log > 0 ? `+${log}` : '✓'}
         </td>
