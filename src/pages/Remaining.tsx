@@ -133,13 +133,21 @@ export default function Remaining() {
     : produced.filter((it) => it.actualProduction < it.totalQty);
 
   const saveLogistics = async () => {
+    // 헤더명은 사이트 개편에 따라 달라짐 → 후보를 넓게 인식 (공백 무시)
+    //   코드: '제품코드' | 'ERP 품목코드' | '품목코드' …   수량: '등록수량'
+    const norm = (s: string) => s.trim().replace(/\s+/g, '').toLowerCase();
+    const CODE_HEADERS = ['제품코드', 'erp품목코드', '품목코드', 'erp코드'];
+    const QTY_HEADERS = ['등록수량'];
+    const findCol = (header: string[], cands: string[]) =>
+      header.findIndex((h) => cands.includes(norm(h)));
+
     const lines = pasteText.trim().split('\n').map((r) => r.split('\t'));
-    const hIdx = lines.findIndex((r) => r.some((c) => c.trim() === '제품코드'));
-    if (hIdx < 0) return alert('제품코드 헤더를 찾을 수 없습니다');
+    const hIdx = lines.findIndex((r) => findCol(r, CODE_HEADERS) >= 0 && findCol(r, QTY_HEADERS) >= 0);
+    if (hIdx < 0) return alert('헤더(제품코드/ERP 품목코드 + 등록수량)를 찾을 수 없습니다');
     const header = lines[hIdx].map((c) => c.trim());
-    const codeCol = header.indexOf('제품코드');
-    const qtyCol  = header.indexOf('등록수량');
-    if (codeCol < 0 || qtyCol < 0) return alert('제품코드 또는 등록수량 열을 찾을 수 없습니다');
+    const codeCol = findCol(header, CODE_HEADERS);
+    const qtyCol  = findCol(header, QTY_HEADERS);
+    if (codeCol < 0 || qtyCol < 0) return alert('품목코드 또는 등록수량 열을 찾을 수 없습니다');
 
     // 같은 코드 합산 (ERP에서 동일 코드가 여러 행에 나뉘어 들어올 수 있음)
     const byCode = new Map<string, { qty: number; erpCode: string }>();
@@ -289,7 +297,7 @@ export default function Remaining() {
               <div>
                 <h3 className="font-bold text-gray-800 text-lg">물류 데이터 입력</h3>
                 <p className="text-xs text-gray-500 mt-0.5">
-                  ERP 재고 화면에서 복사 후 붙여넣기 · 제품코드·등록수량 열 자동 인식
+                  엑셀/재고 화면에서 복사 후 붙여넣기 · 품목코드(제품코드·ERP 품목코드)·등록수량 열 자동 인식
                 </p>
               </div>
               <button onClick={() => setShowModal(false)} className="text-gray-400 hover:text-gray-600 text-xl">✕</button>
