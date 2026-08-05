@@ -85,6 +85,13 @@ export default function Machine() {
     return r;
   }, [allMachineQty]);
 
+  // 코드별 목표수량 (부족/초과 표시용)
+  const targetByCode = useMemo(() => {
+    const r: Record<string, number> = {};
+    items.forEach((i) => { r[i.code.toLowerCase()] = i.totalQty || 0; });
+    return r;
+  }, [items]);
+
   const filtered = useMemo(() => {
     const q = search.trim().toLowerCase();
     // 잔여량 >= 0 (즉 합산 생산 >= 발주량) 이면 검색 리스트에서 제외
@@ -227,7 +234,13 @@ export default function Machine() {
       </div>
 
       <div className="bg-white border rounded-lg overflow-hidden">
-        <div className="p-3 border-b bg-slate-50 font-semibold">오늘 입력 내역 ({entries.length})</div>
+        <div className="p-3 border-b bg-slate-50 font-semibold flex items-center gap-3 flex-wrap">
+          <span>오늘 입력 내역 ({entries.length})</span>
+          <span className="text-xs font-normal text-gray-500 flex items-center gap-2">
+            <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-rose-100 border border-rose-200 inline-block" />목표 미달</span>
+            <span className="inline-flex items-center gap-1"><span className="w-3 h-3 rounded-sm bg-red-300 inline-block" />목표+100↑(오입력 의심)</span>
+          </span>
+        </div>
         <table className="w-full text-sm">
           <thead className="bg-slate-100 text-xs text-slate-600">
             <tr>
@@ -243,8 +256,15 @@ export default function Machine() {
             {entries.map((e) => {
               const actual = e.actualProduction || 0;
               const add = e.additionalProduction || 0;
+              // 코드 전 호기 합계 vs 목표 → 부족(연분홍) / 목표+100↑ 초과(빨강, 오입력 의심)
+              const codeKey = (e.code || '').toLowerCase();
+              const target = targetByCode[codeKey] || 0;
+              const producedTotal = combinedByCode[codeKey] || 0;
+              const over100 = target > 0 && producedTotal >= target + 100;
+              const shortage = target > 0 && producedTotal < target;
+              const rowBg = over100 ? 'bg-red-300' : shortage ? 'bg-rose-100' : '';
               return (
-                <tr key={e.docId} className="border-t">
+                <tr key={e.docId} className={`border-t ${rowBg}`}>
                   <td className="p-2 font-mono text-2xl font-bold">{e.code}</td>
                   <td className="p-2 text-right">
                     <QtyCell value={actual} editable={!!e.workTime} onSave={(v) => updateActual(e.docId, v)} />
