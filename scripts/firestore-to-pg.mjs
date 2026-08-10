@@ -30,9 +30,17 @@
  *  SQL 생성 로직은 scripts/pg-sql-gen.mjs 에 분리되어 있고
  *  scripts/pg-sql-gen.test.mjs 가 실제 PostgreSQL 적재로 검증한다.
  */
-import admin from 'firebase-admin';
-import { readFileSync, writeFileSync, statSync } from 'fs';
+import { existsSync, readFileSync, writeFileSync, statSync } from 'fs';
 import { createCollector, validateSql } from './pg-sql-gen.mjs';
+
+/* ── 사전 점검: 준비물 없으면 무엇을 해야 하는지 알려주고 종료 ── */
+const die = (msg) => { console.error(`\n${msg}\n`); process.exit(1); };
+let admin;
+try {
+  admin = (await import('firebase-admin')).default;
+} catch {
+  die(`[준비 필요] firebase-admin 이 설치되어 있지 않습니다.\n\n  npm i firebase-admin\n\n설치 후 다시 실행하세요.`);
+}
 
 /* ── 안전장치 ───────────────────────────────────────────────────
  *  이 스크립트는 읽기 전용이다 (쓰기·삭제 API 미사용 → 운영 데이터 불변).
@@ -54,7 +62,19 @@ const PAGE = 1000;   // 커서 페이징 크기 (누락 방지)
 class BudgetExceeded extends Error {}
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-admin.initializeApp({ credential: admin.credential.cert(JSON.parse(readFileSync(keyPath, 'utf8'))) });
+if (!existsSync(keyPath)) {
+  die(`[준비 필요] 서비스 계정 키 파일이 없습니다: ${keyPath}\n\n` +
+      `  1) Firebase Console → ⚙ 프로젝트 설정 → "서비스 계정" 탭\n` +
+      `  2) "새 비공개 키 생성" → JSON 다운로드\n` +
+      `  3) 이 폴더에 serviceAccount.json 으로 저장 후 다시 실행\n\n` +
+      `  ※ 이 키는 DB 전체 접근 권한입니다. 외부 공유·깃 커밋 금지 (.gitignore 등록됨)`);
+}
+let svc;
+try { svc = JSON.parse(readFileSync(keyPath, 'utf8')); }
+catch (e) { die(`[오류] 키 파일을 읽을 수 없습니다 (${keyPath}): ${e.message}`); }
+if (!svc.project_id) die(`[오류] 서비스 계정 키 형식이 아닙니다: ${keyPath}`);
+console.error(`프로젝트: ${svc.project_id}`);
+admin.initializeApp({ credential: admin.credential.cert(svc) });
 const db = admin.firestore();
 const collector = createCollector();
 
