@@ -52,13 +52,17 @@ export default function ContainerAnalysis() {
   const [err, setErr] = useState('');
   const [rows, setRows] = useState<Row[]>([]);
   const [ambiguous, setAmbiguous] = useState<string[]>([]);
+  const [monthlyTotal, setMonthlyTotal] = useState(0);   // 월별현황 공식으로 재계산한 냉장 총량(교차검증용)
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true); setErr('');
     const cached = tick === 0 ? getCache(month) : null;
-    if (cached) { setRows(cached.rows); setAmbiguous(cached.ambiguous || []); setLoading(false); return; }
+    if (cached) {
+      setRows(cached.rows); setAmbiguous(cached.ambiguous || []);
+      setMonthlyTotal(cached.monthlyTotal || 0); setLoading(false); return;
+    }
 
     (async () => {
       try {
@@ -111,22 +115,39 @@ export default function ContainerAnalysis() {
         const prod = computeMonthlyProduction(entries, items, [], logisticsByDay);
         const list: Row[] = [];
         prod.coldByCode.forEach((qty, short) => {
-          const q = Math.round(qty);
-          if (q === 0) return;
+          if (Math.round(qty) === 0) return;
           const size = sizeByShort.get(short);
           list.push({
             code: short,
             name: nameByShort.get(short) || prod.stages.flatMap((s) => s.items).find((i) => i.code === short)?.name || short,
-            qty: q,
+            qty,                                   // 원값 유지 (합계는 원값으로, 표시만 반올림)
             size: size || 'unknown',
             erpCode: erpByShort.get(short),
           });
         });
         list.sort((a, b) => b.qty - a.qty || compareCode(a.code, b.code));
+
+        // 교차검증: 월별현황(AnalyticsMonthly)과 동일한 일자 단위 공식으로 냉장 총량 재계산
+        //   물류 있는 날 = 목표합 + 잔여합 / 없는 날 = entries 합
+        const rawColdByDay: Record<string, number> = {};
+        entries.forEach((e) => {
+          rawColdByDay[e.date] = (rawColdByDay[e.date] || 0) + (e.actualProduction || 0) + (e.additionalProduction || 0);
+        });
+        const totalQtyByDay: Record<string, number> = {};
+        items.forEach((it) => { totalQtyByDay[it.date] = (totalQtyByDay[it.date] || 0) + (it.totalQty || 0); });
+        let monthlyTotal = 0;
+        new Set([...Object.keys(rawColdByDay), ...Object.keys(logisticsByDay), ...Object.keys(totalQtyByDay)])
+          .forEach((d) => {
+            monthlyTotal += logisticsByDay[d] !== undefined
+              ? (totalQtyByDay[d] || 0) + logisticsByDay[d]
+              : (rawColdByDay[d] || 0);
+          });
+
         if (cancelled) return;
         setRows(list);
         setAmbiguous([...conflict]);
-        setCache(month, { rows: list, ambiguous: [...conflict] });
+        setMonthlyTotal(monthlyTotal);
+        setCache(month, { rows: list, ambiguous: [...conflict], monthlyTotal });
       } catch (e) {
         if (!cancelled) setErr(e instanceof Error ? e.message : String(e));
       } finally {
@@ -136,16 +157,23 @@ export default function ContainerAnalysis() {
     return () => { cancelled = true; };
   }, [month, tick]);
 
+  // 합계는 원값(비반올림)으로 누적한 뒤 마지막에 반올림 → 코드별 반올림 누적오차 방지
   const sum = useMemo(() => {
-    const s = { small: 0, large: 0, unknown: 0, smallCnt: 0, largeCnt: 0, unknownCnt: 0 };
+    const raw = { small: 0, large: 0, unknown: 0 };
+    const cnt = { smallCnt: 0, largeCnt: 0, unknownCnt: 0 };
     rows.forEach((r) => {
-      if (r.size === 'small') { s.small += r.qty; s.smallCnt++; }
-      else if (r.size === 'large') { s.large += r.qty; s.largeCnt++; }
-      else { s.unknown += r.qty; s.unknownCnt++; }
+      if (r.size === 'small') { raw.small += r.qty; cnt.smallCnt++; }
+      else if (r.size === 'large') { raw.large += r.qty; cnt.largeCnt++; }
+      else { raw.unknown += r.qty; cnt.unknownCnt++; }
     });
-    return s;
+    return {
+      small: Math.round(raw.small), large: Math.round(raw.large), unknown: Math.round(raw.unknown),
+      rawTotal: raw.small + raw.large + raw.unknown, ...cnt,
+    };
   }, [rows]);
-  const total = sum.small + sum.large + sum.unknown;
+  const total = Math.round(sum.rawTotal);
+  // 월별현황(일자 단위 공식) 대비 차이 — 1개 이상 벌어지면 화면에 드러냄
+  const diff = monthlyTotal ? total - monthlyTotal : 0;
 
   const downloadXlsx = async () => {
     const wb = new ExcelJS.Workbook();
@@ -169,7 +197,7 @@ export default function ContainerAnalysis() {
     });
     rows.forEach((r) => {
       const row = ws.addRow([r.code, r.erpCode || '', r.name,
-        r.size === 'small' ? `작은 ${SMALL_ML}ml` : r.size === 'large' ? `큰 ${LARGE_ML}ml` : '미분류', r.qty]);
+        r.size === 'small' ? `작은 ${SMALL_ML}ml` : r.size === 'large' ? `큰 ${LARGE_ML}ml` : '미분류', Math.round(r.qty)]);
       row.eachCell((c, i) => { c.border = border; c.alignment = { horizontal: i === 3 ? 'left' : 'center' }; });
     });
     const buf = await wb.xlsx.writeBuffer();
@@ -218,9 +246,24 @@ export default function ContainerAnalysis() {
         <div className="bg-slate-50 border rounded-xl p-4">
           <div className="text-xs text-gray-500 font-semibold">합계</div>
           <div className="text-4xl font-extrabold text-gray-800 tabular-nums mt-1">{total.toLocaleString()}<span className="text-base font-normal text-gray-400 ml-1">개</span></div>
-          <div className="text-xs text-gray-500 mt-0.5">{rows.length}품목</div>
+          <div className="text-xs text-gray-500 mt-0.5">
+            {rows.length}품목
+            {!loading && monthlyTotal > 0 && (
+              <span className={diff === 0 ? 'text-emerald-600 ml-1.5 font-semibold' : 'text-red-600 ml-1.5 font-semibold'}>
+                · 월별현황 {monthlyTotal.toLocaleString()} {diff === 0 ? '일치 ✓' : `(${diff > 0 ? '+' : ''}${diff})`}
+              </span>
+            )}
+          </div>
         </div>
       </div>
+
+      {!loading && monthlyTotal > 0 && diff !== 0 && (
+        <div className="bg-red-50 border border-red-300 rounded-lg p-3 text-sm text-red-700">
+          ⚠ <b>월별현황 냉장 생산량({monthlyTotal.toLocaleString()})과 {Math.abs(diff).toLocaleString()}개 차이</b>가 납니다.
+          <span className="text-red-600"> 잔여량(물류)만 있고 품목 계획이 없는 날이 있으면 코드별로 배분할 대상이 없어 이런 차이가 생깁니다.
+          해당 일자의 품목/잔여량 입력을 확인해 주세요.</span>
+        </div>
+      )}
 
       {sum.unknownCnt > 0 && (
         <div className="bg-amber-50 border border-amber-300 rounded-lg p-3 text-sm text-amber-800">
@@ -269,7 +312,7 @@ export default function ContainerAnalysis() {
                         {r.size === 'small' ? `작은 ${SMALL_ML}` : r.size === 'large' ? `큰 ${LARGE_ML}` : '미분류'}
                       </span>
                     </td>
-                    <td className="px-3 py-1.5 text-right font-bold tabular-nums">{r.qty.toLocaleString()}</td>
+                    <td className="px-3 py-1.5 text-right font-bold tabular-nums">{Math.round(r.qty).toLocaleString()}</td>
                   </tr>
                 ))}
               </tbody>
