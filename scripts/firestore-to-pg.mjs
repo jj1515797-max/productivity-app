@@ -34,20 +34,37 @@ import admin from 'firebase-admin';
 import { readFileSync, writeFileSync, statSync } from 'fs';
 import { createCollector, validateSql } from './pg-sql-gen.mjs';
 
-const keyPath = process.argv[2] || './serviceAccount.json';
-const outPath = process.argv[3] || './ssbon_firestore_pg.sql';
+/* ── 안전장치 ───────────────────────────────────────────────────
+ *  이 스크립트는 읽기 전용이다 (쓰기·삭제 API 미사용 → 운영 데이터 불변).
+ *  단, 문서 읽기는 프로젝트 일일 무료 쿼터(5만/일)를 라이브 앱과 공유한다.
+ *  → MAX_READS 로 상한을 두고, 초과하면 즉시 중단해 앱 사용에 지장이 없게 한다.
+ */
+const args = process.argv.slice(2).filter((a) => !a.startsWith('--'));
+const flag = (name, def) => {
+  const f = process.argv.find((a) => a.startsWith(`--${name}=`));
+  return f ? f.split('=')[1] : def;
+};
+const keyPath = args[0] || './serviceAccount.json';
+const outPath = args[1] || './ssbon_firestore_pg.sql';
+const MAX_READS = Number(flag('max-reads', 40000));   // 무료 5만 중 여유 1만 남김
+const ONLY = (flag('only', '') || '').split(',').map((s) => s.trim()).filter(Boolean); // 특정 컬렉션만
+const PACE_MS = Number(flag('pace', 120));            // 페이지 사이 간격(버스트 방지)
 const PAGE = 1000;   // 커서 페이징 크기 (누락 방지)
+
+class BudgetExceeded extends Error {}
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 admin.initializeApp({ credential: admin.credential.cert(JSON.parse(readFileSync(keyPath, 'utf8'))) });
 const db = admin.firestore();
 const collector = createCollector();
 
 let docCount = 0;
-/** 컬렉션 전량 수집 (커서 페이징) + 각 문서의 서브컬렉션 재귀 */
+/** 컬렉션 전량 수집 (커서 페이징) + 각 문서의 서브컬렉션 재귀 — 읽기 전용 */
 async function walk(colRef, parentPath) {
   const path = parentPath ? `${parentPath}/${colRef.id}` : colRef.id;
   let last = null, n = 0;
   for (;;) {
+    if (docCount >= MAX_READS) throw new BudgetExceeded(path);
     let q = colRef.orderBy(admin.firestore.FieldPath.documentId()).limit(PAGE);
     if (last) q = q.startAfter(last);
     const snap = await q.get();
@@ -60,17 +77,37 @@ async function walk(colRef, parentPath) {
     }
     last = snap.docs[snap.docs.length - 1];
     if (snap.size < PAGE) break;
+    if (PACE_MS) await sleep(PACE_MS);   // 버스트 방지 (라이브 앱 영향 최소화)
   }
   if (n) console.error(`  · ${path}: ${n}`);
 }
 
 async function main() {
+  console.error('※ 읽기 전용 — 운영 데이터는 변경되지 않습니다.');
+  console.error(`※ 읽기 상한 ${MAX_READS.toLocaleString()}건 (초과 시 중단), 페이지 간격 ${PACE_MS}ms\n`);
   console.error('컬렉션 자동탐색 후 수집 시작…');
-  const roots = await db.listCollections();
+  let roots = await db.listCollections();
+  if (ONLY.length) {
+    roots = roots.filter((c) => ONLY.includes(c.id));
+    console.error(`--only 지정: ${ONLY.join(', ')}`);
+  }
   console.error(`루트 컬렉션 ${roots.length}개`);
-  for (const c of roots) await walk(c, '');
 
-  const { sql, stats } = collector.build({ header: `generated: ${new Date().toISOString()}` });
+  let incomplete = null;
+  try {
+    for (const c of roots) await walk(c, '');
+  } catch (e) {
+    if (!(e instanceof BudgetExceeded)) throw e;
+    incomplete = e.message;
+    console.error(`\n⚠ 읽기 상한(${MAX_READS.toLocaleString()})에 도달해 중단했습니다. 중단 지점: ${incomplete}`);
+    console.error('  라이브 앱 쿼터 보호를 위한 정상 동작입니다. 아래 파일은 "불완전 덤프"입니다.');
+    console.error(`  이어서 받으려면: --only=<남은컬렉션> 으로 나눠 실행하거나 --max-reads 를 조정하세요.`);
+  }
+
+  const header = incomplete
+    ? `generated: ${new Date().toISOString()}  ⚠ 불완전(읽기 상한 도달, 중단: ${incomplete})`
+    : `generated: ${new Date().toISOString()}`;
+  const { sql, stats } = collector.build({ header });
   writeFileSync(outPath, sql, 'utf8');
   const size = statSync(outPath).size;
 
@@ -86,6 +123,8 @@ async function main() {
   console.error(`      괄호 ${v.parenBalanced ? 'OK' : 'NG'} · 따옴표 ${v.quotesBalanced ? 'OK' : 'NG'} · BEGIN/COMMIT ${v.wrapped ? 'OK' : 'NG'}`);
   console.error(`\n적재:  createdb ssbon && psql -d ssbon -v ON_ERROR_STOP=1 -f ${outPath}`);
   console.error(`대조:  psql -d ssbon -c "SELECT relname, n_live_tup FROM pg_stat_user_tables ORDER BY relname;"`);
-  writeFileSync('./dump_stats.json', JSON.stringify({ stats, docCount, sizeBytes: size, ...v }, null, 2));
+  if (incomplete) console.error(`\n⚠ 이 덤프는 불완전합니다 (중단: ${incomplete}) — 이관 전 반드시 재수집하세요.`);
+  writeFileSync('./dump_stats.json', JSON.stringify({ stats, docCount, sizeBytes: size, incomplete, ...v }, null, 2));
+  if (incomplete) process.exitCode = 2;   // 스크립트 성공으로 오인하지 않도록
 }
 main().catch((e) => { console.error('실패:', e); process.exit(1); });
