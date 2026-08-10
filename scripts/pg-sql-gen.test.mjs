@@ -5,7 +5,7 @@
  */
 import { execFileSync } from 'child_process';
 import { writeFileSync } from 'fs';
-import { createCollector, validateSql } from './pg-sql-gen.mjs';
+import { createCollector, validateSql } from '../src/lib/pgSqlGen.mjs';
 
 const PSQL = process.argv[2] || 'psql';
 const CONN = process.argv.slice(3);

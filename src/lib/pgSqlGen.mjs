@@ -19,6 +19,7 @@ export function decode(v) {
     return { kind: 'json', js: { lat: v.latitude, lng: v.longitude } };                         // GeoPoint
   if (typeof v?.path === 'string' && typeof v?.id === 'string') return { kind: 'text', js: v.path }; // DocumentReference
   if (typeof Buffer !== 'undefined' && Buffer.isBuffer(v)) return { kind: 'text', js: v.toString('base64') };
+  if (typeof v?.toBase64 === 'function') return { kind: 'text', js: v.toBase64() };   // 웹 SDK Bytes
   if (Array.isArray(v)) return { kind: 'json', js: v.map((x) => decode(x).js) };
   if (typeof v === 'object') {
     const o = {};

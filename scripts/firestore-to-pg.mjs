@@ -31,7 +31,7 @@
  *  scripts/pg-sql-gen.test.mjs 가 실제 PostgreSQL 적재로 검증한다.
  */
 import { existsSync, readFileSync, writeFileSync, statSync } from 'fs';
-import { createCollector, validateSql } from './pg-sql-gen.mjs';
+import { createCollector, validateSql } from '../src/lib/pgSqlGen.mjs';
 
 /* ── 사전 점검: 준비물 없으면 무엇을 해야 하는지 알려주고 종료 ── */
 const die = (msg) => { console.error(`\n${msg}\n`); process.exit(1); };

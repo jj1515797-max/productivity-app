@@ -1,7 +1,9 @@
-import { Fragment, useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { collection, deleteDoc, doc, getCountFromServer, getDoc, getDocs, onSnapshot, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import type { Material, ProductSetting } from '../types';
+import { runBackup, downloadSql } from '../lib/dbBackup';
+import type { BackupProgress, BackupResult } from '../lib/dbBackup';
 import { canonicalShort, convertErpCode } from '../lib/codeUtil';
 import { CODE_KEY_PREFIX, normalizeCode, normalizeMaterialName } from '../lib/wasteCompute';
 import type { NotifySettings } from '../lib/productionNotify';
@@ -31,6 +33,7 @@ export default function ProductSettings() {
   const [showErpCode, setShowErpCode] = useState(false);
   const [erpCodeCount, setErpCodeCount] = useState<number | null>(null);
   const [showPurchaseErp, setShowPurchaseErp] = useState(false);
+  const [showBackup, setShowBackup] = useState(false);
   const [materials, setMaterials] = useState<Material[]>([]);
   // 헤더에 표시할 총개수만 가볍게 (count aggregation = 1읽기)
   const [productCount, setProductCount] = useState<number | null>(null);
@@ -344,6 +347,17 @@ export default function ProductSettings() {
         onToggle={() => setShowNotify(!showNotify)}
       >
         {showNotify && <NotifySettingsPanel />}
+      </Section>
+
+      {/* DB 백업 섹션 (맨 아래) */}
+      <Section
+        icon="💾"
+        title="DB 백업"
+        badge=""
+        open={showBackup}
+        onToggle={() => setShowBackup(!showBackup)}
+      >
+        {showBackup && <DbBackupPanel />}
       </Section>
 
       {/* 일괄 입력 모달 */}
@@ -2736,6 +2750,129 @@ function SupplierCodeBulkModal({ onClose }: { onClose: () => void }) {
           <button onClick={save} disabled={validRows.length === 0 || saving} className="ml-auto px-5 py-2 bg-teal-700 text-white rounded font-medium hover:bg-teal-800 disabled:bg-gray-300">{saving ? '저장중...' : `${validRows.length}개 저장`}</button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   DB 백업 — Firestore 전체를 읽어 PostgreSQL SQL 파일로 저장
+   · 읽기 전용 (운영 데이터 불변)
+   · 읽기 상한으로 라이브 앱 쿼터 보호
+   ============================================================ */
+function DbBackupPanel() {
+  const [running, setRunning] = useState(false);
+  const [prog, setProg] = useState<BackupProgress | null>(null);
+  const [result, setResult] = useState<BackupResult | null>(null);
+  const [error, setError] = useState('');
+  const abortRef = useRef<{ aborted: boolean }>({ aborted: false });
+
+  const start = async () => {
+    if (!confirm(
+      'DB 전체를 읽어 백업 파일(.sql)을 만듭니다.\n\n'
+      + '· 데이터를 읽기만 하며 변경하지 않습니다\n'
+      + '· 읽기 4만 건에서 자동 중단(현장 앱 보호)\n'
+      + '· 데이터가 많으면 몇 분 걸릴 수 있습니다\n\n계속할까요?'
+    )) return;
+    setRunning(true); setError(''); setResult(null); setProg(null);
+    abortRef.current = { aborted: false };
+    try {
+      const r = await runBackup({
+        onProgress: setProg,
+        signal: abortRef.current,
+      });
+      setResult(r);
+      const stamp = new Date().toISOString().slice(0, 10);
+      downloadSql(r.sql, `ssbon_backup_${stamp}${r.incomplete ? '_불완전' : ''}.sql`);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setRunning(false);
+    }
+  };
+
+  const pct = prog && prog.total ? Math.round((prog.done / prog.total) * 100) : 0;
+
+  return (
+    <div className="space-y-3">
+      <div className="bg-slate-50 border rounded p-3 text-xs text-gray-600 leading-relaxed">
+        Firestore 데이터 전체를 <b>PostgreSQL 형식(.sql)</b> 파일 하나로 저장합니다. 사내 서버 이관·백업 보관용.<br />
+        <b className="text-emerald-700">읽기 전용</b>이라 운영 데이터는 변하지 않고, 읽기 4만 건에서 자동 중단되어 현장 앱 사용에 지장을 주지 않습니다.
+        <span className="text-gray-400"> · 현장 사용이 적은 시간대 권장</span>
+      </div>
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <button onClick={start} disabled={running}
+          className="px-4 py-2 bg-slate-800 text-white rounded font-medium hover:bg-slate-900 disabled:bg-gray-300">
+          {running ? '백업 중…' : '💾 DB 백업 파일 만들기'}
+        </button>
+        {running && (
+          <button onClick={() => { abortRef.current.aborted = true; }}
+            className="px-3 py-2 border rounded text-sm hover:bg-gray-100">중단</button>
+        )}
+        {result && !running && (
+          <button
+            onClick={() => downloadSql(result.sql, `ssbon_backup_${new Date().toISOString().slice(0, 10)}.sql`)}
+            className="px-3 py-2 border rounded text-sm font-medium hover:bg-gray-50">다시 다운로드</button>
+        )}
+      </div>
+
+      {running && prog && (
+        <div className="space-y-1">
+          <div className="h-2.5 bg-gray-100 rounded-full overflow-hidden">
+            <div className="h-full bg-slate-700 transition-all" style={{ width: `${pct}%` }} />
+          </div>
+          <div className="text-xs text-gray-600">
+            {prog.phase} 수집 중 · <b>{prog.docs.toLocaleString()}</b>건 읽음 ({prog.done}/{prog.total} 컬렉션)
+          </div>
+        </div>
+      )}
+
+      {error && <div className="bg-red-50 border border-red-300 rounded p-3 text-sm text-red-700">실패: {error}</div>}
+
+      {result && (
+        <div className="space-y-2">
+          {result.incomplete ? (
+            <div className="bg-amber-50 border border-amber-300 rounded p-3 text-sm text-amber-800">
+              ⚠ <b>불완전한 백업</b>입니다 (중단: {result.incomplete}).
+              파일명에도 표시했습니다. 이관용으로 쓰려면 다시 받으세요.
+            </div>
+          ) : (
+            <div className="bg-emerald-50 border border-emerald-300 rounded p-3 text-sm text-emerald-800">
+              ✅ 백업 완료 — 다운로드됐습니다.
+            </div>
+          )}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-center">
+            <div className="border rounded p-2"><div className="text-xs text-gray-500">문서</div>
+              <div className="font-bold text-lg">{result.docCount.toLocaleString()}</div></div>
+            <div className="border rounded p-2"><div className="text-xs text-gray-500">테이블</div>
+              <div className="font-bold text-lg">{result.stats.length}</div></div>
+            <div className="border rounded p-2"><div className="text-xs text-gray-500">파일 크기</div>
+              <div className="font-bold text-lg">{(result.sizeBytes / 1024 / 1024).toFixed(2)}MB</div></div>
+            <div className="border rounded p-2"><div className="text-xs text-gray-500">구문 검사</div>
+              <div className={`font-bold text-lg ${result.validation.parenBalanced && result.validation.wrapped ? 'text-emerald-600' : 'text-red-600'}`}>
+                {result.validation.parenBalanced && result.validation.wrapped ? 'OK' : 'NG'}</div></div>
+          </div>
+          <div className="border rounded max-h-64 overflow-y-auto">
+            <table className="w-full text-xs">
+              <thead className="bg-gray-50 text-gray-500 sticky top-0">
+                <tr><th className="px-3 py-1.5 text-left">테이블</th><th className="px-3 py-1.5 text-right">행</th><th className="px-3 py-1.5 text-center">PK</th></tr>
+              </thead>
+              <tbody className="divide-y">
+                {result.stats.map((s) => (
+                  <tr key={s.table}>
+                    <td className="px-3 py-1 font-mono">{s.table}</td>
+                    <td className="px-3 py-1 text-right tabular-nums">{s.rows.toLocaleString()}</td>
+                    <td className="px-3 py-1 text-center text-gray-400">{s.pk}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div className="text-xs text-gray-500">
+            적재: <code className="bg-gray-100 px-1 rounded">psql -d 디비이름 -v ON_ERROR_STOP=1 -f 받은파일.sql</code>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
