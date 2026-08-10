@@ -2764,23 +2764,20 @@ function DbBackupPanel() {
   const [prog, setProg] = useState<BackupProgress | null>(null);
   const [result, setResult] = useState<BackupResult | null>(null);
   const [error, setError] = useState('');
-  const [maxReads, setMaxReads] = useState(40000);
   const abortRef = useRef<{ aborted: boolean }>({ aborted: false });
 
   const start = async () => {
     if (!confirm(
       'DB 전체를 읽어 백업 파일(.sql)을 만듭니다.\n\n'
       + '· 데이터를 읽기만 하며 변경하지 않습니다\n'
-      + `· 읽기 ${maxReads.toLocaleString()}건에서 자동 중단\n`
-      + '· 읽기 한도(무료 하루 5만)는 현장 앱과 공유합니다\n'
-      + '  → 근무 중이라면 현장 앱이 느려지거나 막힐 수 있으니\n'
-      + '     퇴근 후 실행을 권장합니다\n\n계속할까요?'
+      + '· 상한 없이 전부 읽습니다 (중단 버튼으로 언제든 멈춤 가능)\n'
+      + '· 읽기 한도(무료 하루 5만)는 현장 앱과 공유합니다\n\n계속할까요?'
     )) return;
     setRunning(true); setError(''); setResult(null); setProg(null);
     abortRef.current = { aborted: false };
     try {
       const r = await runBackup({
-        maxReads,
+        maxReads: Infinity,          // 상한 없음 — 전체 수집
         onProgress: setProg,
         signal: abortRef.current,
       });
@@ -2803,20 +2800,12 @@ function DbBackupPanel() {
         <b className="text-emerald-700">읽기 전용</b>이라 운영 데이터는 절대 변하지 않습니다.
       </div>
       <div className="bg-amber-50 border border-amber-300 rounded p-3 text-xs text-amber-800 leading-relaxed">
-        ⚠ <b>퇴근 후 실행을 권장합니다.</b> 읽기 한도(무료 <b>하루 5만 건</b>)를 현장 앱과 함께 씁니다.
-        앱이 그날 이미 많이 썼다면 백업과 합쳐 한도를 넘겨 <b>현장 태블릿 조회가 막힐 수</b> 있습니다
-        (한도는 다음날 자동 복구 · 한국시간 오후 4시경).
-        걱정되면 아래 상한을 낮춰 <b>여러 날에 나눠</b> 받으세요.
+        ⚠ 읽기 한도(무료 <b>하루 5만 건</b>)를 현장 앱과 함께 씁니다. 근무 중에 데이터가 많이 읽히면
+        한도를 넘겨 <b>현장 태블릿 조회가 일시적으로 막힐 수</b> 있습니다 (다음날 자동 복구 · 한국시간 오후 4시경).
+        <b>퇴근 후 실행을 권장</b>하고, 진행 중 이상하면 <b>중단</b> 버튼을 누르세요.
       </div>
 
       <div className="flex items-center gap-2 flex-wrap">
-        <label className="text-xs text-gray-600 font-medium">읽기 상한</label>
-        <select value={maxReads} onChange={(e) => setMaxReads(Number(e.target.value))} disabled={running}
-          className="border rounded px-2 py-1.5 text-sm">
-          <option value={10000}>1만 건 (가장 안전)</option>
-          <option value={20000}>2만 건</option>
-          <option value={40000}>4만 건 (전체 한 번에)</option>
-        </select>
         <button onClick={start} disabled={running}
           className="px-4 py-2 bg-slate-800 text-white rounded font-medium hover:bg-slate-900 disabled:bg-gray-300">
           {running ? '백업 중…' : '💾 DB 백업 파일 만들기'}
