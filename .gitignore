@@ -9,3 +9,7 @@ tsconfig.tsbuildinfo
 serviceAccount.json
 *serviceAccount*.json
 raw_ssbon_mes_export.sql
+
+# Firestore→PG 덤프 산출물
+ssbon_firestore_pg.sql
+dump_stats.json
