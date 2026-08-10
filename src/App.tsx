@@ -18,6 +18,7 @@ import Inventory from './pages/Inventory';
 import Remix from './pages/Remix';
 import Scoop from './pages/Scoop';
 import ScoopAnalysis from './pages/ScoopAnalysis';
+import ContainerAnalysis from './pages/ContainerAnalysis';
 import Inbound from './pages/Inbound';
 import InboundHistory from './pages/InboundHistory';
 import Logo from './components/Logo';
@@ -60,6 +61,7 @@ function MainContainer() {
           <Route path="/analytics/waste" element={<Waste />} />
           <Route path="/analytics/report" element={<Report />} />
           <Route path="/analytics/scoop" element={<ScoopAnalysis />} />
+          <Route path="/analytics/container" element={<ContainerAnalysis />} />
           <Route path="/analytics/settings" element={<ProductSettings />} />
         </Route>
         <Route path="/attendance" element={<Attendance />} />
@@ -106,6 +108,7 @@ const SUB_TABS: Record<Section, { label: string; to: string; exact?: boolean }[]
     { label: '폐기', to: '/analytics/waste' },
     { label: '금속CCP', to: '/analytics/report' },
     { label: '내포장분석', to: '/analytics/scoop' },
+    { label: '용기분석', to: '/analytics/container' },
     { label: '설정', to: '/analytics/settings' },
   ],
   purchase: [
