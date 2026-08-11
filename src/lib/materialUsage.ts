@@ -366,3 +366,126 @@ export function computeIngredientStageUsage(
   out.sort((a, b) => b.totalGrams - a.totalGrams);
   return out;
 }
+
+/** 제품(품목)별 재료비 — 원가 변동을 '어느 품목 때문인지'로 분해하기 위한 계산.
+ *  단가 매칭·레시피 적용 규칙은 computeMonthlyUsage 와 동일하게 맞춘다. */
+export interface ProductCostRow {
+  key: string;              // 냉장: canonicalShort 코드 / 실온: 정규화 제품명
+  label: string;            // 표시명
+  kind: 'cold' | 'ambient';
+  qty: number;              // 생산 EA
+  cost: number;             // 총 재료비 ₩
+  unitCost: number;         // EA당 재료비 ₩
+  hasRecipe: boolean;
+}
+export function computeProductCosts(
+  month: string,
+  entries: MachineEntry[],
+  items: Item[],
+  ambient: AmbientEntry[],
+  logisticsByDay: Record<string, number>,
+  recipeMap: Map<string, Recipe>,
+  ambientRecipeMap: Map<string, AmbientRecipe>,
+  priceMap: Map<string, number>,
+  priceMonth?: string,
+): ProductCostRow[] {
+  const pMonth = priceMonth ?? month;
+  const priceOf = (ingName: string, ingCode?: string) => {
+    const codeKey = ingCode ? monthPriceKey(pMonth, CODE_KEY_PREFIX + normalizeCode(ingCode)) : '';
+    if (codeKey && priceMap.has(codeKey)) return priceMap.get(codeKey) ?? 0;
+    return priceMap.get(monthPriceKey(pMonth, normalizeMaterialName(ingName))) ?? 0;
+  };
+
+  const out: ProductCostRow[] = [];
+
+  // ===== 냉장 =====
+  const normRecipeMap = new Map<string, Recipe>();
+  recipeMap.forEach((r) => {
+    const k = canonicalShort(r.code || '');
+    if (k && !normRecipeMap.has(k)) normRecipeMap.set(k, r);
+  });
+  const coldByCode = computeColdProductionByCode(entries, items, logisticsByDay);
+  coldByCode.forEach((count, code) => {
+    if (count <= 0) return;
+    const recipe = normRecipeMap.get(code);
+    const cost = recipe
+      ? recipe.ingredients.reduce((s, ing) => s + (ing.gPerPiece || 0) * count * priceOf(ing.name, ing.code), 0)
+      : 0;
+    out.push({
+      key: code, label: recipe?.name || code, kind: 'cold',
+      qty: count, cost, unitCost: count > 0 ? cost / count : 0, hasRecipe: !!recipe,
+    });
+  });
+
+  // ===== 실온 ===== (entry 단위 배치 환산은 computeMonthlyUsage 와 동일)
+  const ambAgg = new Map<string, { label: string; qty: number; cost: number; hasRecipe: boolean }>();
+  ambient.forEach((a) => {
+    const pname = a.productName || '';
+    if (!pname) return;
+    const key = normalizeMaterialName(pname);
+    const recipe = ambientRecipeMap.get(key);
+    let cost = 0;
+    if (recipe) {
+      const bp = recipe.batchPieces || 1;
+      const batchCount = Math.max(1, Math.round((a.qty || 0) / bp));
+      cost = recipe.ingredients.reduce((s, ing) => s + (ing.gPerBatch || 0) * batchCount * priceOf(ing.name, ing.code), 0);
+    }
+    const prev = ambAgg.get(key);
+    if (prev) { prev.qty += a.qty || 0; prev.cost += cost; prev.hasRecipe = prev.hasRecipe || !!recipe; }
+    else ambAgg.set(key, { label: pname, qty: a.qty || 0, cost, hasRecipe: !!recipe });
+  });
+  ambAgg.forEach((v, key) => {
+    out.push({
+      key: `amb:${key}`, label: v.label, kind: 'ambient',
+      qty: v.qty, cost: v.cost, unitCost: v.qty > 0 ? v.cost / v.qty : 0, hasRecipe: v.hasRecipe,
+    });
+  });
+
+  return out.sort((a, b) => b.cost - a.cost);
+}
+
+/** 두 달 품목별 기여도 분해.
+ *  EA당 재료비 변화 = Σ (점유율_B × EA당원가_B) − Σ (점유율_A × EA당원가_A)
+ *  각 품목 기여를 '물량(믹스)효과'와 '원가(요율)효과'로 나눈다. */
+export interface ContribRow {
+  key: string;
+  label: string;
+  kind: 'cold' | 'ambient';
+  aQty: number; bQty: number;
+  aUnit: number; bUnit: number;
+  aShare: number; bShare: number;
+  mixEffect: number;    // (점유율B−점유율A) × EA당원가A
+  rateEffect: number;   // 점유율B × (EA당원가B−EA당원가A)
+  contrib: number;      // 합 = 이 품목이 EA당 재료비에 준 영향(원)
+}
+export function contributionByProduct(aRows: ProductCostRow[], bRows: ProductCostRow[]): {
+  rows: ContribRow[]; aUnitTotal: number; bUnitTotal: number; delta: number;
+} {
+  const aQ = aRows.reduce((s, r) => s + r.qty, 0);
+  const bQ = bRows.reduce((s, r) => s + r.qty, 0);
+  const aCost = aRows.reduce((s, r) => s + r.cost, 0);
+  const bCost = bRows.reduce((s, r) => s + r.cost, 0);
+  const map = new Map<string, ContribRow>();
+  const touch = (r: ProductCostRow) => {
+    if (!map.has(r.key)) {
+      map.set(r.key, {
+        key: r.key, label: r.label, kind: r.kind,
+        aQty: 0, bQty: 0, aUnit: 0, bUnit: 0, aShare: 0, bShare: 0,
+        mixEffect: 0, rateEffect: 0, contrib: 0,
+      });
+    }
+    return map.get(r.key)!;
+  };
+  aRows.forEach((r) => { const t = touch(r); t.aQty = r.qty; t.aUnit = r.unitCost; t.aShare = aQ > 0 ? r.qty / aQ : 0; });
+  bRows.forEach((r) => { const t = touch(r); t.bQty = r.qty; t.bUnit = r.unitCost; t.bShare = bQ > 0 ? r.qty / bQ : 0; if (r.label) t.label = r.label; });
+  const rows = Array.from(map.values());
+  rows.forEach((t) => {
+    t.mixEffect = (t.bShare - t.aShare) * t.aUnit;
+    t.rateEffect = t.bShare * (t.bUnit - t.aUnit);
+    t.contrib = t.mixEffect + t.rateEffect;
+  });
+  rows.sort((x, y) => x.contrib - y.contrib);   // 절감(음수) 먼저
+  const aUnitTotal = aQ > 0 ? aCost / aQ : 0;
+  const bUnitTotal = bQ > 0 ? bCost / bQ : 0;
+  return { rows, aUnitTotal, bUnitTotal, delta: bUnitTotal - aUnitTotal };
+}

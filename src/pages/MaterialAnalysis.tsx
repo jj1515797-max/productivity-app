@@ -6,8 +6,8 @@ import type { AmbientEntry, Item, MachineEntry } from '../types';
 import type { AmbientRecipe, Recipe } from '../lib/wasteCompute';
 import { CODE_KEY_PREFIX, monthPriceKey, normalizeCode, normalizeMaterialName } from '../lib/wasteCompute';
 import { canonicalShort } from '../lib/codeUtil';
-import { computeFlexedDiff, computeIngredientStageUsage, computeMonthlyUsage, diffUsage } from '../lib/materialUsage';
-import type { DiffRow, FlexedRow, IngredientStageRow, UsageResult } from '../lib/materialUsage';
+import { computeFlexedDiff, computeIngredientStageUsage, computeMonthlyUsage, diffUsage, computeProductCosts, contributionByProduct } from '../lib/materialUsage';
+import type { DiffRow, FlexedRow, IngredientStageRow, UsageResult, ContribRow } from '../lib/materialUsage';
 import { computeMonthlyProduction, filterProduction, STAGE_COLOR, STAGE_LETTERS } from '../lib/monthlyProduction';
 import type { MonthlyProduction } from '../lib/monthlyProduction';
 import { expandAmbientRecipeMap, expandRecipeMap } from '../lib/bomExpansion';
@@ -309,6 +309,14 @@ export default function MaterialAnalysis() {
       ambDiff,
     };
   }, [aRaw, bRaw, aProd, bProd, monthA, monthB, effRecipeMap, effAmbientRecipeMap, priceMap]);
+
+  /** 품목별 원가 기여도 — EA당 재료비 변화를 품목 단위로 정확히 분해 */
+  const costDrivers = useMemo(() => {
+    if (!aRaw || !bRaw) return null;
+    const aP = computeProductCosts(monthA, aRaw.entries, aRaw.items, aRaw.ambient, aRaw.logistics, effRecipeMap, effAmbientRecipeMap, priceMap);
+    const bP = computeProductCosts(monthB, bRaw.entries, bRaw.items, bRaw.ambient, bRaw.logistics, effRecipeMap, effAmbientRecipeMap, priceMap);
+    return contributionByProduct(aP, bP);
+  }, [aRaw, bRaw, monthA, monthB, effRecipeMap, effAmbientRecipeMap, priceMap]);
 
   // 연동 비율 (A월 → B월 규모) — EA 기본, 생산금액 둘 다 입력 시 ₩ 토글 가능
   // 반제품 펼침 토글이나 레시피 DB 변경 시 분석 결과 자동 재계산 (raw 있을 때만)
@@ -821,6 +829,10 @@ export default function MaterialAnalysis() {
       {/* ============================================================
           제품군(냉장/실온)별 원재료비 분해 — 믹스 변화가 원가에 준 영향
           ============================================================ */}
+      {costDrivers && (
+        <CostDriverPanel monthA={monthA} monthB={monthB} data={costDrivers} />
+      )}
+
       {mixSplit && (
         <MixSplitPanel monthA={monthA} monthB={monthB} data={mixSplit} />
       )}
@@ -1541,6 +1553,256 @@ function MixSplitPanel({
               </tbody>
             </table>
           </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   원가 변동 요인 — 품목별 워터폴
+   "EA당 재료비가 A월 → B월로 왜 변했나" 를 품목 기여도로 한눈에.
+   발산형 팔레트: 절감 #2563eb / 상승 #e11d48 / 총계·기타 중립 회색
+   ============================================================ */
+const C_DOWN = '#2563eb';   // 원가 절감
+const C_UP = '#e11d48';     // 원가 상승
+const C_TOTAL = '#334155';  // 총계 기둥
+const C_OTHER = '#94a3b8';  // 기타(중립)
+
+function CostWaterfall({
+  monthA, monthB, aUnit, bUnit, rows, topN = 6,
+}: {
+  monthA: string; monthB: string; aUnit: number; bUnit: number; rows: ContribRow[]; topN?: number;
+}) {
+  const [hover, setHover] = useState<number | null>(null);
+
+  // 절감 상위 / 상승 상위 + 나머지는 '기타'로 접기 (색 순환 금지 규칙)
+  const downs = rows.filter((r) => r.contrib < 0).slice(0, topN);
+  const ups = [...rows].filter((r) => r.contrib > 0).sort((a, b) => b.contrib - a.contrib).slice(0, topN);
+  const picked = new Set([...downs, ...ups].map((r) => r.key));
+  const otherSum = rows.filter((r) => !picked.has(r.key)).reduce((s, r) => s + r.contrib, 0);
+
+  type Step = { label: string; value: number; kind: 'total' | 'step' | 'other'; row?: ContribRow };
+  const steps: Step[] = [
+    { label: `${monthA}`, value: aUnit, kind: 'total' },
+    ...downs.map((r) => ({ label: r.label, value: r.contrib, kind: 'step' as const, row: r })),
+    ...ups.map((r) => ({ label: r.label, value: r.contrib, kind: 'step' as const, row: r })),
+    ...(Math.abs(otherSum) > 0.01 ? [{ label: `기타 ${rows.length - picked.size}품목`, value: otherSum, kind: 'other' as const }] : []),
+    { label: `${monthB}`, value: bUnit, kind: 'total' },
+  ];
+
+  // 누적 좌표
+  let run = 0;
+  const bars = steps.map((s) => {
+    if (s.kind === 'total') { run = s.value; return { ...s, from: 0, to: s.value }; }
+    const from = run; run += s.value; return { ...s, from, to: run };
+  });
+  // 총계(수백원)와 변화(수원)의 스케일 차가 커서 0부터 그리면 변화가 안 보인다.
+  // → 실제 '수준(level)' 구간만 확대해서 표시하고, 0이 아님을 축에 명시한다.
+  //   총계 기둥은 구간 계산에서 제외하고(바닥이 0이라 범위를 망침) 축 바닥부터 그린다.
+  const vals = bars.flatMap((b) => (b.kind === 'total' ? [b.to] : [b.from, b.to]));
+  const rawMax = Math.max(...vals), rawMin = Math.min(...vals);
+  const pad = Math.max(0.5, (rawMax - rawMin) * 0.18);
+  const maxV = rawMax + pad, minV = rawMin - pad;
+
+  const W = 960, H = 340, padL = 56, padR = 16, padT = 22, padB = 92;
+  const innerW = W - padL - padR, innerH = H - padT - padB;
+  const band = innerW / bars.length;
+  const barW = Math.min(46, band * 0.6);
+  const span = Math.max(0.1, maxV - minV);
+  const y = (v: number) => padT + innerH - ((v - minV) / span) * innerH;
+
+  const fmt = (n: number) => (n >= 0 ? '+' : '−') + Math.abs(n).toFixed(1);
+
+  return (
+    <div className="relative">
+      <svg viewBox={`0 0 ${W} ${H}`} className="w-full h-auto" role="img"
+        aria-label={`${monthA}에서 ${monthB}까지 EA당 재료비 변동 요인`}>
+        {/* 격자 — 후퇴 */}
+        {[0, 0.25, 0.5, 0.75, 1].map((p) => (
+          <line key={p} x1={padL} x2={W - padR} y1={padT + innerH * p} y2={padT + innerH * p}
+            stroke="#e2e8f0" strokeWidth={1} />
+        ))}
+        {[0, 0.5, 1].map((p) => (
+          <text key={p} x={padL - 8} y={padT + innerH * p + 4} fontSize={11} textAnchor="end" fill="#94a3b8">
+            {(maxV - span * p).toFixed(1)}
+          </text>
+        ))}
+        <text x={padL - 8} y={padT + innerH + 26} fontSize={9} textAnchor="end" fill="#cbd5e1">축 0 아님</text>
+
+        {bars.map((b, i) => {
+          const cx = padL + band * i + band / 2;
+          // 총계는 축 바닥부터, 단계는 from→to 구간만
+          const floorY = padT + innerH;
+          const top = b.kind === 'total' ? y(b.to) : Math.min(y(b.from), y(b.to));
+          const h = b.kind === 'total'
+            ? Math.max(2, floorY - y(b.to))
+            : Math.max(2, Math.abs(y(b.to) - y(b.from)));
+          const fill = b.kind === 'total' ? C_TOTAL : b.kind === 'other' ? C_OTHER : (b.value < 0 ? C_DOWN : C_UP);
+          const isHover = hover === i;
+          return (
+            <g key={i} onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)}>
+              {/* 히트 영역은 마크보다 크게 */}
+              <rect x={cx - band / 2} y={padT} width={band} height={innerH} fill="transparent" />
+              <rect x={cx - barW / 2} y={top} width={barW} height={h} rx={4} fill={fill}
+                opacity={hover === null || isHover ? 1 : 0.45}
+                stroke="#ffffff" strokeWidth={2} />
+              {/* 연결선 */}
+              {i < bars.length - 1 && b.kind !== 'total' && (
+                <line x1={cx + barW / 2} x2={padL + band * (i + 1) + band / 2 - barW / 2}
+                  y1={y(b.to)} y2={y(b.to)} stroke="#cbd5e1" strokeWidth={1} strokeDasharray="3 3" />
+              )}
+              {i === 0 && (
+                <line x1={cx + barW / 2} x2={padL + band + band / 2 - barW / 2}
+                  y1={y(b.to)} y2={y(b.to)} stroke="#cbd5e1" strokeWidth={1} strokeDasharray="3 3" />
+              )}
+              {/* 값 직접 라벨 */}
+              <text x={cx} y={top - 6} fontSize={11} textAnchor="middle" fontWeight={700}
+                fill={b.kind === 'total' ? '#334155' : b.value < 0 ? C_DOWN : b.kind === 'other' ? '#64748b' : C_UP}>
+                {b.kind === 'total' ? b.value.toFixed(1) : fmt(b.value)}
+              </text>
+              {/* 품목명 — 회전 */}
+              <text x={cx} y={padT + innerH + 12} fontSize={10} textAnchor="end" fill="#475569"
+                transform={`rotate(-40 ${cx} ${padT + innerH + 12})`}>
+                {b.label.length > 14 ? b.label.slice(0, 13) + '…' : b.label}
+              </text>
+            </g>
+          );
+        })}
+        <line x1={padL} x2={W - padR} y1={padT + innerH} y2={padT + innerH} stroke="#cbd5e1" strokeWidth={1} />
+      </svg>
+
+      {hover !== null && bars[hover] && (
+        <div className="absolute left-1/2 -translate-x-1/2 top-1 bg-slate-900 text-white text-xs rounded px-3 py-2 shadow-lg pointer-events-none z-10">
+          <div className="font-bold">{bars[hover].label}</div>
+          {bars[hover].kind === 'total' ? (
+            <div>EA당 재료비 {bars[hover].value.toFixed(1)}원</div>
+          ) : bars[hover].row ? (
+            <>
+              <div>EA당 영향 <b>{fmt(bars[hover].value)}원</b></div>
+              <div className="text-slate-300">
+                물량효과 {fmt(bars[hover].row!.mixEffect)} · 원가효과 {fmt(bars[hover].row!.rateEffect)}
+              </div>
+              <div className="text-slate-300">
+                생산 {Math.round(bars[hover].row!.aQty).toLocaleString()} → {Math.round(bars[hover].row!.bQty).toLocaleString()} EA
+                · 단가 {bars[hover].row!.aUnit.toFixed(0)} → {bars[hover].row!.bUnit.toFixed(0)}원
+              </div>
+            </>
+          ) : <div>합계 {fmt(bars[hover].value)}원</div>}
+        </div>
+      )}
+
+      {/* 범례 — 색 단독 식별 금지 */}
+      <div className="flex items-center gap-4 justify-center text-xs text-gray-600 mt-1">
+        <span className="inline-flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm inline-block" style={{ background: C_DOWN }} />원가 절감</span>
+        <span className="inline-flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm inline-block" style={{ background: C_UP }} />원가 상승</span>
+        <span className="inline-flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm inline-block" style={{ background: C_OTHER }} />기타</span>
+        <span className="inline-flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm inline-block" style={{ background: C_TOTAL }} />월 합계</span>
+      </div>
+    </div>
+  );
+}
+
+function CostDriverPanel({
+  monthA, monthB, data,
+}: {
+  monthA: string; monthB: string;
+  data: { rows: ContribRow[]; aUnitTotal: number; bUnitTotal: number; delta: number };
+}) {
+  const [tab, setTab] = useState<'chart' | 'table'>('chart');
+  const { rows, aUnitTotal, bUnitTotal, delta } = data;
+  const fmt = (n: number) => (n >= 0 ? '+' : '−') + Math.abs(n).toFixed(1);
+  const mixSum = rows.reduce((s, r) => s + r.mixEffect, 0);
+  const rateSum = rows.reduce((s, r) => s + r.rateEffect, 0);
+  const topDown = rows.filter((r) => r.contrib < 0).slice(0, 3);
+  const topUp = [...rows].sort((a, b) => b.contrib - a.contrib).slice(0, 3).filter((r) => r.contrib > 0);
+
+  return (
+    <div className="bg-white border-2 border-slate-300 rounded-lg overflow-hidden">
+      <div className="px-4 py-3 bg-slate-800 text-white font-bold text-sm flex items-center gap-2 flex-wrap">
+        <span>📉 원가 변동 요인 — 품목별</span>
+        <span className="text-xs font-normal text-slate-300">EA당 재료비가 왜 변했는지 한눈에</span>
+      </div>
+
+      <div className="p-4 space-y-4">
+        {/* 헤드라인 */}
+        <div className="flex items-end gap-4 flex-wrap">
+          <div>
+            <div className="text-xs text-gray-500">{monthA} → {monthB} · EA당 재료비</div>
+            <div className="flex items-baseline gap-2">
+              <span className="text-2xl font-bold text-gray-500 tabular-nums">{aUnitTotal.toFixed(1)}</span>
+              <span className="text-gray-400">→</span>
+              <span className="text-3xl font-extrabold tabular-nums" style={{ color: delta < 0 ? C_DOWN : C_UP }}>
+                {bUnitTotal.toFixed(1)}
+              </span>
+              <span className="text-lg font-bold tabular-nums" style={{ color: delta < 0 ? C_DOWN : C_UP }}>
+                ({fmt(delta)}원)
+              </span>
+            </div>
+          </div>
+          <div className="ml-auto text-xs text-gray-600 bg-slate-50 border rounded px-3 py-2">
+            <div>물량(믹스)효과 합 <b className="tabular-nums" style={{ color: mixSum < 0 ? C_DOWN : C_UP }}>{fmt(mixSum)}원</b></div>
+            <div>품목원가(요율)효과 합 <b className="tabular-nums" style={{ color: rateSum < 0 ? C_DOWN : C_UP }}>{fmt(rateSum)}원</b></div>
+          </div>
+        </div>
+
+        {/* 한 줄 결론 */}
+        <div className="bg-slate-50 border rounded p-3 text-sm text-gray-700 leading-relaxed">
+          <b>요약</b> — EA당 재료비가 <b style={{ color: delta < 0 ? C_DOWN : C_UP }}>{fmt(delta)}원</b> 변했고,
+          그중 <b>{Math.abs(mixSum) > Math.abs(rateSum) ? '무엇을 얼마나 만들었나(물량·믹스)' : '품목 자체의 원가(레시피·단가)'}</b> 쪽 영향이 더 큽니다.
+          {topDown.length > 0 && <> 가장 크게 낮춘 품목: <b style={{ color: C_DOWN }}>{topDown.map((r) => r.label).join(', ')}</b>.</>}
+          {topUp.length > 0 && <> 가장 크게 올린 품목: <b style={{ color: C_UP }}>{topUp.map((r) => r.label).join(', ')}</b>.</>}
+        </div>
+
+        <div className="flex gap-1">
+          <button onClick={() => setTab('chart')}
+            className={`px-3 py-1.5 text-xs rounded font-medium ${tab === 'chart' ? 'bg-slate-800 text-white' : 'border hover:bg-gray-50'}`}>그래프</button>
+          <button onClick={() => setTab('table')}
+            className={`px-3 py-1.5 text-xs rounded font-medium ${tab === 'table' ? 'bg-slate-800 text-white' : 'border hover:bg-gray-50'}`}>표로 보기</button>
+        </div>
+
+        {tab === 'chart' ? (
+          <CostWaterfall monthA={monthA} monthB={monthB} aUnit={aUnitTotal} bUnit={bUnitTotal} rows={rows} />
+        ) : (
+          <div className="border rounded overflow-hidden max-h-96 overflow-y-auto">
+            <table className="w-full text-xs">
+              <thead className="bg-slate-50 text-gray-600 sticky top-0">
+                <tr>
+                  <th className="px-3 py-1.5 text-left">품목</th>
+                  <th className="px-3 py-1.5 text-center">구분</th>
+                  <th className="px-3 py-1.5 text-right">{monthA} EA</th>
+                  <th className="px-3 py-1.5 text-right">{monthB} EA</th>
+                  <th className="px-3 py-1.5 text-right">EA당 원가 A→B</th>
+                  <th className="px-3 py-1.5 text-right">물량효과</th>
+                  <th className="px-3 py-1.5 text-right">원가효과</th>
+                  <th className="px-3 py-1.5 text-right">기여(원/EA)</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y tabular-nums">
+                {rows.filter((r) => Math.abs(r.contrib) >= 0.01).map((r) => (
+                  <tr key={r.key} className="hover:bg-slate-50/60">
+                    <td className="px-3 py-1 text-gray-800">{r.label}</td>
+                    <td className="px-3 py-1 text-center">
+                      <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${r.kind === 'cold' ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700'}`}>
+                        {r.kind === 'cold' ? '냉장' : '실온'}
+                      </span>
+                    </td>
+                    <td className="px-3 py-1 text-right text-gray-500">{Math.round(r.aQty).toLocaleString()}</td>
+                    <td className="px-3 py-1 text-right text-gray-500">{Math.round(r.bQty).toLocaleString()}</td>
+                    <td className="px-3 py-1 text-right text-gray-500">{r.aUnit.toFixed(0)}→{r.bUnit.toFixed(0)}</td>
+                    <td className="px-3 py-1 text-right" style={{ color: r.mixEffect < 0 ? C_DOWN : r.mixEffect > 0 ? C_UP : '#94a3b8' }}>{fmt(r.mixEffect)}</td>
+                    <td className="px-3 py-1 text-right" style={{ color: r.rateEffect < 0 ? C_DOWN : r.rateEffect > 0 ? C_UP : '#94a3b8' }}>{fmt(r.rateEffect)}</td>
+                    <td className="px-3 py-1 text-right font-bold" style={{ color: r.contrib < 0 ? C_DOWN : r.contrib > 0 ? C_UP : '#94a3b8' }}>{fmt(r.contrib)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        <div className="text-xs text-gray-500 leading-relaxed">
+          <b>물량효과</b> = 그 품목을 더/덜 만들어서 생긴 영향 (믹스) · <b>원가효과</b> = 그 품목 자체의 EA당 재료비가 변해서 생긴 영향(레시피·단가).
+          모든 품목 기여를 더하면 EA당 재료비 변화와 정확히 일치합니다.
         </div>
       </div>
     </div>
