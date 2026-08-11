@@ -506,8 +506,22 @@ export function productsContainingMaterial(
   recipeMap: Map<string, Recipe>,
   ambientRecipeMap: Map<string, AmbientRecipe>,
 ): { coldCodes: Set<string>; ambientKeys: Set<string>; matchedMaterialNames: string[] } {
+  // '*' = 전체 원재료 (모든 레시피 제품 포함)
+  if (q.trim() === '*') {
+    const cold = new Set<string>(); const amb = new Set<string>(); const nm = new Set<string>();
+    recipeMap.forEach((r) => {
+      const c = canonicalShort(r.code || '');
+      if (c) cold.add(c);
+      r.ingredients.forEach((i) => nm.add(i.name));
+    });
+    ambientRecipeMap.forEach((r, k) => { amb.add(k); r.ingredients.forEach((i) => nm.add(i.name)); });
+    return { coldCodes: cold, ambientKeys: amb, matchedMaterialNames: [...nm].sort() };
+  }
   // 쉼표/줄바꿈으로 여러 원재료 동시 검색 (예: "한우, 전복, 게살") — 하나라도 맞으면 포함
-  const terms = q.split(/[,\n]/).map((t) => t.trim()).filter(Boolean);
+  //  '-' 로 시작하면 제외 (예: "한우, -사골육수" → 한우류에서 한우사골육수만 뺌)
+  const raw = q.split(/[,\n]/).map((t) => t.trim()).filter(Boolean);
+  const terms = raw.filter((t) => !t.startsWith('-'));
+  const excludes = raw.filter((t) => t.startsWith('-')).map((t) => normalizeMaterialName(t.slice(1))).filter(Boolean);
   const needles = terms.map((t) => normalizeMaterialName(t)).filter(Boolean);
   const codeNeedles = terms.map((t) => normalizeCode(t)).filter(Boolean);
   const coldCodes = new Set<string>();
@@ -518,6 +532,7 @@ export function productsContainingMaterial(
   const hit = (ingName: string, ingCode?: string) => {
     const n = normalizeMaterialName(ingName);
     const c = normalizeCode(ingCode || '');
+    if (excludes.some((ex) => n.includes(ex))) return false;   // 제외어 우선
     const ok = needles.some((nd) => n.includes(nd)) || (!!c && codeNeedles.some((cd) => c.includes(cd)));
     if (ok) names.add(ingName);
     return ok;

@@ -1997,8 +1997,8 @@ function MaterialSharePanel({
   rawDiff: DiffRow[];      // 각 월 실제 단가 기준
   flexedDiff: DiffRow[];   // A월 사용량도 B월 단가로 재평가 (단가효과 제거)
 }) {
-  const [q, setQ] = useState('한우');
-  const [applied, setApplied] = useState('한우');
+  const [q, setQ] = useState('한우, -사골육수');
+  const [applied, setApplied] = useState('한우, -사골육수');
 
   const res = useMemo(
     () => materialProductShare(applied, aP, bP, recipeMap, ambientRecipeMap),
@@ -2010,8 +2010,15 @@ function MaterialSharePanel({
   );
   // 선택 원재료의 금액 영향 — 실적 기준 / B월 단가 고정 기준
   const money = useMemo(() => {
-    const terms = applied.split(/[,\n]/).map((t) => normalizeMaterialName(t.trim())).filter(Boolean);
-    const pick = (arr: DiffRow[]) => arr.filter((r) => terms.some((t) => normalizeMaterialName(r.name).includes(t)));
+    const isAll = applied.trim() === '*';
+    const raw = applied.split(/[,\n]/).map((t) => t.trim()).filter(Boolean);
+    const terms = raw.filter((t) => !t.startsWith('-')).map((t) => normalizeMaterialName(t)).filter(Boolean);
+    const excludes = raw.filter((t) => t.startsWith('-')).map((t) => normalizeMaterialName(t.slice(1))).filter(Boolean);
+    const pick = (arr: DiffRow[]) => isAll ? arr : arr.filter((r) => {
+      const n = normalizeMaterialName(r.name);
+      if (excludes.some((ex) => n.includes(ex))) return false;
+      return terms.some((t) => n.includes(t));
+    });
     const sum = (arr: DiffRow[]) => arr.reduce((acc, r) => ({
       a: acc.a + r.aCost, b: acc.b + r.bCost, ag: acc.ag + r.aGrams, bg: acc.bg + r.bGrams,
     }), { a: 0, b: 0, ag: 0, bg: 0 });
@@ -2040,13 +2047,17 @@ function MaterialSharePanel({
         </div>
         <div className="flex items-center gap-1.5 flex-wrap">
           <span className="text-xs text-gray-500">빠른 선택</span>
-          {['한우', '전복', '게살', '관자', '두부'].map((k) => (
-            <button key={k} onClick={() => { setQ(k); setApplied(k); }}
-              className="px-2.5 py-1 text-xs rounded border hover:bg-gray-50">{k}</button>
+          {([['한우', '한우, -사골육수'], ['한우사골육수', '한우사골육수'], ['전복', '전복'], ['게살', '게살'], ['관자', '관자'], ['두부', '두부']] as const).map(([label, v]) => (
+            <button key={label} onClick={() => { setQ(v); setApplied(v); }}
+              className="px-2.5 py-1 text-xs rounded border hover:bg-gray-50">{label}</button>
           ))}
           <button onClick={() => { const v = '한우, 전복, 게살, 관자'; setQ(v); setApplied(v); }}
             className="px-2.5 py-1 text-xs rounded bg-teal-100 text-teal-800 border border-teal-300 font-bold hover:bg-teal-200">
             고단가 전체 (한우+전복+게살+관자)
+          </button>
+          <button onClick={() => { setQ('*'); setApplied('*'); }}
+            className="px-2.5 py-1 text-xs rounded bg-slate-800 text-white font-bold hover:bg-slate-900">
+            전체 원재료 (총 재료비)
           </button>
         </div>
 
@@ -2119,6 +2130,14 @@ function MaterialSharePanel({
                     단가 변동 포함 · 두 값의 차이 ≈ <b>단가 효과 {Math.round((money.raw.b - money.raw.a) - (money.flex.b - money.flex.a)).toLocaleString()}원</b>
                   </div>
                 </div>
+              </div>
+            )}
+
+            {applied.trim() === '*' && (
+              <div className="bg-slate-100 border border-slate-300 rounded p-3 text-xs text-slate-700">
+                ℹ️ <b>전체 원재료 기준</b>입니다. 모든 제품이 포함되므로 <b>비중은 100%에 가깝고 의미가 적습니다</b> —
+                아래 <b>금액</b>(총 재료비 절감·상승액)을 보고서 대표 수치로 쓰세요.
+                (100% 미만이면 그 차이는 <b>레시피 미등록 제품</b>입니다)
               </div>
             )}
 
