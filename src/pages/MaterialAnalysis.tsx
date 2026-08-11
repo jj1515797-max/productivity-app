@@ -286,10 +286,12 @@ export default function MaterialAnalysis() {
     const usage = (
       m: string,
       raw: { entries: MachineEntry[]; items: Item[]; ambient: AmbientEntry[]; logistics: Record<string, number> },
-      kind: 'cold' | 'ambient',
+      kind: 'cold' | 'ambient' | 'all',
     ) => kind === 'cold'
       ? computeMonthlyUsage(m, raw.entries, raw.items, [], raw.logistics, effRecipeMap, effAmbientRecipeMap, priceMap)
-      : computeMonthlyUsage(m, [], [], raw.ambient, {}, effRecipeMap, effAmbientRecipeMap, priceMap);
+      : kind === 'ambient'
+      ? computeMonthlyUsage(m, [], [], raw.ambient, {}, effRecipeMap, effAmbientRecipeMap, priceMap)
+      : computeMonthlyUsage(m, raw.entries, raw.items, raw.ambient, raw.logistics, effRecipeMap, effAmbientRecipeMap, priceMap);
 
     const sumCost = (r: UsageResult) => r.rows.reduce((s, x) => s + x.cost, 0);
     const aCold = usage(monthA, aRaw, 'cold');
@@ -297,15 +299,22 @@ export default function MaterialAnalysis() {
     const bCold = usage(monthB, bRaw, 'cold');
     const bAmb = usage(monthB, bRaw, 'ambient');
 
-    // 실온 재료 A→B 금액 변동 — 감소 상위 / 증가 상위 둘 다 (보고서에 양방향 사례가 필요)
-    const ambAll = diffUsage(aAmb, bAmb).filter((r) => r.aCost > 0 || r.bCost > 0);
-    const ambDiff = [...ambAll].sort((x, y) => x.diffCost - y.diffCost).slice(0, 12);
-    const ambDiffUp = [...ambAll].sort((x, y) => y.diffCost - x.diffCost).filter((r) => r.diffCost > 0).slice(0, 12);
+    // 원재료 A→B 금액 변동 — 전체/냉장/실온 각각 감소·증가 상위 (보고서에 양방향 사례 필요)
+    const pair = (aR: UsageResult, bR: UsageResult) => {
+      const all = diffUsage(aR, bR).filter((r) => r.aCost > 0 || r.bCost > 0);
+      return {
+        down: [...all].sort((x, y) => x.diffCost - y.diffCost).filter((r) => r.diffCost < 0).slice(0, 12),
+        up: [...all].sort((x, y) => y.diffCost - x.diffCost).filter((r) => r.diffCost > 0).slice(0, 12),
+      };
+    };
+    const aAll = usage(monthA, aRaw, 'all');
+    const bAll = usage(monthB, bRaw, 'all');
+    const byScope = { all: pair(aAll, bAll), cold: pair(aCold, bCold), ambient: pair(aAmb, bAmb) };
 
     return {
       a: { cold: sumCost(aCold), amb: sumCost(aAmb), coldQty: aProd.coldTotal, ambQty: aProd.ambientTotal },
       b: { cold: sumCost(bCold), amb: sumCost(bAmb), coldQty: bProd.coldTotal, ambQty: bProd.ambientTotal },
-      ambDiff, ambDiffUp,
+      byScope,
     };
   }, [aRaw, bRaw, aProd, bProd, monthA, monthB, effRecipeMap, effAmbientRecipeMap, priceMap]);
 
@@ -1403,10 +1412,10 @@ function MixSplitPanel({
   data: {
     a: { cold: number; amb: number; coldQty: number; ambQty: number };
     b: { cold: number; amb: number; coldQty: number; ambQty: number };
-    ambDiff: DiffRow[];
-    ambDiffUp: DiffRow[];
+    byScope: Record<'all' | 'cold' | 'ambient', { down: DiffRow[]; up: DiffRow[] }>;
   };
 }) {
+  const [scope, setScope] = useState<'all' | 'cold' | 'ambient'>('all');
   const won = (n: number) => Math.round(n).toLocaleString();
   const row = (d: { cold: number; amb: number; coldQty: number; ambQty: number }) => {
     const total = d.cold + d.amb;
@@ -1519,10 +1528,22 @@ function MixSplitPanel({
           <span className="text-indigo-600"> 단, 단가 변동 효과는 분석 2의 Flexed(연동예산)에서 따로 확인하세요.</span>
         </div>
 
+        <div className="flex items-center gap-2 flex-wrap">
+          <span className="text-sm font-bold text-gray-700">원재료별 금액 변동</span>
+          <div className="flex gap-1">
+            {([['all', '전체 (냉장+실온)'], ['cold', '냉장만'], ['ambient', '실온만']] as const).map(([k, lab]) => (
+              <button key={k} onClick={() => setScope(k)}
+                className={`px-3 py-1 text-xs rounded font-medium ${scope === k ? 'bg-indigo-600 text-white' : 'border hover:bg-gray-50'}`}>
+                {lab}
+              </button>
+            ))}
+          </div>
+        </div>
+
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div>
           <div className="text-sm font-bold mb-1.5" style={{ color: '#2563eb' }}>
-            ▼ 실온 원재료 — 금액 감소 상위 <span className="text-xs font-normal text-gray-500">({monthA} → {monthB})</span>
+            ▼ 금액 감소 상위 <span className="text-xs font-normal text-gray-500">({monthA} → {monthB})</span>
           </div>
           <div className="border rounded overflow-hidden max-h-80 overflow-y-auto">
             <table className="w-full text-xs">
@@ -1537,9 +1558,9 @@ function MixSplitPanel({
                 </tr>
               </thead>
               <tbody className="divide-y tabular-nums">
-                {data.ambDiff.length === 0 ? (
-                  <tr><td colSpan={6} className="px-3 py-6 text-center text-gray-400">실온 재료 사용 데이터가 없습니다.</td></tr>
-                ) : data.ambDiff.map((r) => (
+                {data.byScope[scope].down.length === 0 ? (
+                  <tr><td colSpan={6} className="px-3 py-6 text-center text-gray-400">감소한 원재료가 없습니다.</td></tr>
+                ) : data.byScope[scope].down.map((r) => (
                   <tr key={r.key} className="hover:bg-slate-50/60">
                     <td className="px-3 py-1 text-gray-800">{r.name}{!r.aHasPrice && !r.bHasPrice && <span className="ml-1 text-amber-600">(단가없음)</span>}</td>
                     <td className="px-3 py-1 text-right text-gray-500">{Math.round(r.aGrams).toLocaleString()}</td>
@@ -1558,7 +1579,7 @@ function MixSplitPanel({
 
         <div>
           <div className="text-sm font-bold mb-1.5" style={{ color: '#e11d48' }}>
-            ▲ 실온 원재료 — 금액 증가 상위 <span className="text-xs font-normal text-gray-500">({monthA} → {monthB})</span>
+            ▲ 금액 증가 상위 <span className="text-xs font-normal text-gray-500">({monthA} → {monthB})</span>
           </div>
           <div className="border rounded overflow-hidden max-h-80 overflow-y-auto">
             <table className="w-full text-xs">
@@ -1573,9 +1594,9 @@ function MixSplitPanel({
                 </tr>
               </thead>
               <tbody className="divide-y tabular-nums">
-                {data.ambDiffUp.length === 0 ? (
-                  <tr><td colSpan={6} className="px-3 py-6 text-center text-gray-400">금액이 증가한 실온 재료가 없습니다.</td></tr>
-                ) : data.ambDiffUp.map((r) => (
+                {data.byScope[scope].up.length === 0 ? (
+                  <tr><td colSpan={6} className="px-3 py-6 text-center text-gray-400">증가한 원재료가 없습니다.</td></tr>
+                ) : data.byScope[scope].up.map((r) => (
                   <tr key={r.key} className="hover:bg-slate-50/60">
                     <td className="px-3 py-1 text-gray-800">{r.name}{!r.aHasPrice && !r.bHasPrice && <span className="ml-1 text-amber-600">(단가없음)</span>}</td>
                     <td className="px-3 py-1 text-right text-gray-500">{Math.round(r.aGrams).toLocaleString()}</td>
