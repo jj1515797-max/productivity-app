@@ -1789,7 +1789,11 @@ function CostDriverPanel({
                     </td>
                     <td className="px-3 py-1 text-right text-gray-500">{Math.round(r.aQty).toLocaleString()}</td>
                     <td className="px-3 py-1 text-right text-gray-500">{Math.round(r.bQty).toLocaleString()}</td>
-                    <td className="px-3 py-1 text-right text-gray-500">{r.aUnit.toFixed(0)}→{r.bUnit.toFixed(0)}</td>
+                    <td className="px-3 py-1 text-right text-gray-500">
+                      {r.aQty <= 0 ? <span className="text-emerald-600 font-bold">신규</span>
+                        : r.bQty <= 0 ? <span className="text-rose-600 font-bold">중단</span>
+                        : <>{r.aUnit.toFixed(0)}→{r.bUnit.toFixed(0)}</>}
+                    </td>
                     <td className="px-3 py-1 text-right" style={{ color: r.mixEffect < 0 ? C_DOWN : r.mixEffect > 0 ? C_UP : '#94a3b8' }}>{fmt(r.mixEffect)}</td>
                     <td className="px-3 py-1 text-right" style={{ color: r.rateEffect < 0 ? C_DOWN : r.rateEffect > 0 ? C_UP : '#94a3b8' }}>{fmt(r.rateEffect)}</td>
                     <td className="px-3 py-1 text-right font-bold" style={{ color: r.contrib < 0 ? C_DOWN : r.contrib > 0 ? C_UP : '#94a3b8' }}>{fmt(r.contrib)}</td>
@@ -1801,7 +1805,7 @@ function CostDriverPanel({
         )}
 
         <div className="text-xs text-gray-500 leading-relaxed">
-          <b>물량효과</b> = 그 품목을 더/덜 만들어서 생긴 영향 (믹스) · <b>원가효과</b> = 그 품목 자체의 EA당 재료비가 변해서 생긴 영향(레시피·단가).
+          <b>물량효과</b> = 그 품목을 더/덜 만들어서 생긴 영향 (믹스). 신규 생산·생산 중단 품목은 전액 물량효과로 봅니다. · <b>원가효과</b> = 두 달 모두 만든 품목에서, 그 품목 자체의 EA당 재료비가 변해서 생긴 영향(레시피·단가).
           모든 품목 기여를 더하면 EA당 재료비 변화와 정확히 일치합니다.
         </div>
       </div>

@@ -480,8 +480,18 @@ export function contributionByProduct(aRows: ProductCostRow[], bRows: ProductCos
   bRows.forEach((r) => { const t = touch(r); t.bQty = r.qty; t.bUnit = r.unitCost; t.bShare = bQ > 0 ? r.qty / bQ : 0; if (r.label) t.label = r.label; });
   const rows = Array.from(map.values());
   rows.forEach((t) => {
-    t.mixEffect = (t.bShare - t.aShare) * t.aUnit;
-    t.rateEffect = t.bShare * (t.bUnit - t.aUnit);
+    if (t.aQty <= 0 && t.bQty > 0) {
+      // 신규 생산 품목 — 비교할 A월 원가가 없다. '새로 만들기 시작한 것'이므로 전액 물량효과.
+      t.mixEffect = t.bShare * t.bUnit;
+      t.rateEffect = 0;
+    } else if (t.bQty <= 0 && t.aQty > 0) {
+      // 생산 중단 품목 — 전액 물량효과 (빠져서 줄어든 몫)
+      t.mixEffect = -t.aShare * t.aUnit;
+      t.rateEffect = 0;
+    } else {
+      t.mixEffect = (t.bShare - t.aShare) * t.aUnit;
+      t.rateEffect = t.bShare * (t.bUnit - t.aUnit);
+    }
     t.contrib = t.mixEffect + t.rateEffect;
   });
   rows.sort((x, y) => x.contrib - y.contrib);   // 절감(음수) 먼저
