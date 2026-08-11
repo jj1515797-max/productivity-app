@@ -499,3 +499,81 @@ export function contributionByProduct(aRows: ProductCostRow[], bRows: ProductCos
   const bUnitTotal = bQ > 0 ? bCost / bQ : 0;
   return { rows, aUnitTotal, bUnitTotal, delta: bUnitTotal - aUnitTotal };
 }
+
+/** 특정 원재료가 들어간 제품 찾기 (이름 부분일치, 코드도 매칭) */
+export function productsContainingMaterial(
+  q: string,
+  recipeMap: Map<string, Recipe>,
+  ambientRecipeMap: Map<string, AmbientRecipe>,
+): { coldCodes: Set<string>; ambientKeys: Set<string>; matchedMaterialNames: string[] } {
+  const needle = normalizeMaterialName(q);
+  const coldCodes = new Set<string>();
+  const ambientKeys = new Set<string>();
+  const names = new Set<string>();
+  if (!needle) return { coldCodes, ambientKeys, matchedMaterialNames: [] };
+
+  const hit = (ingName: string, ingCode?: string) => {
+    const n = normalizeMaterialName(ingName);
+    const c = normalizeCode(ingCode || '');
+    const ok = n.includes(needle) || (!!c && c.includes(normalizeCode(q)));
+    if (ok) names.add(ingName);
+    return ok;
+  };
+
+  recipeMap.forEach((r) => {
+    const code = canonicalShort(r.code || '');
+    if (!code) return;
+    if (r.ingredients.some((ing) => hit(ing.name, ing.code))) coldCodes.add(code);
+  });
+  ambientRecipeMap.forEach((r, key) => {
+    if (r.ingredients.some((ing) => hit(ing.name, ing.code))) ambientKeys.add(key);
+  });
+  return { coldCodes, ambientKeys, matchedMaterialNames: [...names].sort() };
+}
+
+/** 원재료 투입 제품의 생산 비중 (전체 생산량 대비) */
+export interface MaterialShareRow {
+  key: string; label: string; kind: 'cold' | 'ambient';
+  aQty: number; bQty: number; diffQty: number;
+}
+export interface MaterialShareResult {
+  rows: MaterialShareRow[];
+  aQty: number; bQty: number;           // 해당 원재료 투입 제품 생산량 합
+  aTotal: number; bTotal: number;       // 전체 생산량
+  aSharePct: number; bSharePct: number; // 비중 %
+  matchedMaterialNames: string[];
+}
+export function materialProductShare(
+  q: string,
+  aProducts: ProductCostRow[],
+  bProducts: ProductCostRow[],
+  recipeMap: Map<string, Recipe>,
+  ambientRecipeMap: Map<string, AmbientRecipe>,
+): MaterialShareResult {
+  const { coldCodes, ambientKeys, matchedMaterialNames } = productsContainingMaterial(q, recipeMap, ambientRecipeMap);
+  const isMatch = (p: ProductCostRow) =>
+    p.kind === 'cold' ? coldCodes.has(p.key) : ambientKeys.has(p.key.replace(/^amb:/, ''));
+
+  const map = new Map<string, MaterialShareRow>();
+  const touch = (p: ProductCostRow) => {
+    if (!map.has(p.key)) map.set(p.key, { key: p.key, label: p.label, kind: p.kind, aQty: 0, bQty: 0, diffQty: 0 });
+    return map.get(p.key)!;
+  };
+  aProducts.filter(isMatch).forEach((p) => { touch(p).aQty = p.qty; });
+  bProducts.filter(isMatch).forEach((p) => { const t = touch(p); t.bQty = p.qty; if (p.label) t.label = p.label; });
+
+  const rows = [...map.values()];
+  rows.forEach((r) => { r.diffQty = r.bQty - r.aQty; });
+  rows.sort((x, y) => x.diffQty - y.diffQty);
+
+  const aQty = rows.reduce((s, r) => s + r.aQty, 0);
+  const bQty = rows.reduce((s, r) => s + r.bQty, 0);
+  const aTotal = aProducts.reduce((s, p) => s + p.qty, 0);
+  const bTotal = bProducts.reduce((s, p) => s + p.qty, 0);
+  return {
+    rows, aQty, bQty, aTotal, bTotal,
+    aSharePct: aTotal > 0 ? (aQty / aTotal) * 100 : 0,
+    bSharePct: bTotal > 0 ? (bQty / bTotal) * 100 : 0,
+    matchedMaterialNames,
+  };
+}

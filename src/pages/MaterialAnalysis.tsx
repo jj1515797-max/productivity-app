@@ -6,8 +6,8 @@ import type { AmbientEntry, Item, MachineEntry } from '../types';
 import type { AmbientRecipe, Recipe } from '../lib/wasteCompute';
 import { CODE_KEY_PREFIX, monthPriceKey, normalizeCode, normalizeMaterialName } from '../lib/wasteCompute';
 import { canonicalShort } from '../lib/codeUtil';
-import { computeFlexedDiff, computeIngredientStageUsage, computeMonthlyUsage, diffUsage, computeProductCosts, contributionByProduct } from '../lib/materialUsage';
-import type { DiffRow, FlexedRow, IngredientStageRow, UsageResult, ContribRow } from '../lib/materialUsage';
+import { computeFlexedDiff, computeIngredientStageUsage, computeMonthlyUsage, diffUsage, computeProductCosts, contributionByProduct, materialProductShare } from '../lib/materialUsage';
+import type { DiffRow, FlexedRow, IngredientStageRow, UsageResult, ContribRow, ProductCostRow } from '../lib/materialUsage';
 import { computeMonthlyProduction, filterProduction, STAGE_COLOR, STAGE_LETTERS } from '../lib/monthlyProduction';
 import type { MonthlyProduction } from '../lib/monthlyProduction';
 import { expandAmbientRecipeMap, expandRecipeMap } from '../lib/bomExpansion';
@@ -330,7 +330,7 @@ export default function MaterialAnalysis() {
     if (!aRaw || !bRaw) return null;
     const aP = computeProductCosts(monthA, aRaw.entries, aRaw.items, aRaw.ambient, aRaw.logistics, effRecipeMap, effAmbientRecipeMap, priceMap);
     const bP = computeProductCosts(monthB, bRaw.entries, bRaw.items, bRaw.ambient, bRaw.logistics, effRecipeMap, effAmbientRecipeMap, priceMap);
-    return contributionByProduct(aP, bP);
+    return { ...contributionByProduct(aP, bP), aP, bP };
   }, [aRaw, bRaw, monthA, monthB, effRecipeMap, effAmbientRecipeMap, priceMap]);
 
   // 연동 비율 (A월 → B월 규모) — EA 기본, 생산금액 둘 다 입력 시 ₩ 토글 가능
@@ -844,6 +844,14 @@ export default function MaterialAnalysis() {
       {/* ============================================================
           제품군(냉장/실온)별 원재료비 분해 — 믹스 변화가 원가에 준 영향
           ============================================================ */}
+      {costDrivers && (
+        <MaterialSharePanel
+          monthA={monthA} monthB={monthB}
+          aP={costDrivers.aP} bP={costDrivers.bP}
+          recipeMap={effRecipeMap} ambientRecipeMap={effAmbientRecipeMap}
+        />
+      )}
+
       {costDrivers && (
         <CostDriverPanel monthA={monthA} monthB={monthB} data={costDrivers} />
       )}
@@ -1969,6 +1977,136 @@ function CostDriverPanel({
           <b>물량효과</b> = 그 품목을 더/덜 만들어서 생긴 영향 (믹스). 신규 생산·생산 중단 품목은 전액 물량효과로 봅니다. · <b>원가효과</b> = 두 달 모두 만든 품목에서, 그 품목 자체의 EA당 재료비가 변해서 생긴 영향(레시피·단가).
           모든 품목 기여를 더하면 EA당 재료비 변화와 정확히 일치합니다.
         </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   원재료 투입 제품의 생산 비중
+   "전체 생산량 중 한우가 들어간 품목 비중이 몇%에서 몇%로 바뀌었나"
+   ============================================================ */
+function MaterialSharePanel({
+  monthA, monthB, aP, bP, recipeMap, ambientRecipeMap,
+}: {
+  monthA: string; monthB: string;
+  aP: ProductCostRow[]; bP: ProductCostRow[];
+  recipeMap: Map<string, Recipe>; ambientRecipeMap: Map<string, AmbientRecipe>;
+}) {
+  const [q, setQ] = useState('한우');
+  const [applied, setApplied] = useState('한우');
+
+  const res = useMemo(
+    () => materialProductShare(applied, aP, bP, recipeMap, ambientRecipeMap),
+    [applied, aP, bP, recipeMap, ambientRecipeMap],
+  );
+  const n = (v: number) => Math.round(v).toLocaleString();
+  const deltaPct = res.bSharePct - res.aSharePct;
+  const up = deltaPct > 0;
+  const col = up ? '#e11d48' : deltaPct < 0 ? '#2563eb' : '#64748b';
+
+  return (
+    <div className="bg-white border-2 border-teal-300 rounded-lg overflow-hidden">
+      <div className="px-4 py-3 bg-teal-700 text-white font-bold text-sm flex items-center gap-2 flex-wrap">
+        <span>🥩 원재료 투입 품목 비중</span>
+        <span className="text-xs font-normal text-teal-100">전체 생산량 중 해당 원재료가 들어간 품목의 비중 변화</span>
+      </div>
+
+      <div className="p-4 space-y-4">
+        <div className="flex items-center gap-2 flex-wrap">
+          <input value={q} onChange={(e) => setQ(e.target.value)}
+            onKeyDown={(e) => { if (e.key === 'Enter') setApplied(q); }}
+            placeholder="원재료명 (예: 한우, 전복, 두부)"
+            className="border rounded-md px-3 py-2 text-sm w-64" />
+          <button onClick={() => setApplied(q)}
+            className="px-4 py-2 bg-teal-700 text-white rounded text-sm font-medium hover:bg-teal-800">조회</button>
+          {['한우', '전복', '게살', '두부'].map((k) => (
+            <button key={k} onClick={() => { setQ(k); setApplied(k); }}
+              className="px-2.5 py-1 text-xs rounded border hover:bg-gray-50">{k}</button>
+          ))}
+        </div>
+
+        {res.matchedMaterialNames.length === 0 ? (
+          <div className="p-8 text-center text-gray-400 text-sm border rounded">
+            ‘{applied}’ 이(가) 들어간 레시피를 찾지 못했습니다.
+          </div>
+        ) : (
+          <>
+            {/* 헤드라인 */}
+            <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+              <div className="border rounded-xl p-4 sm:col-span-2">
+                <div className="text-xs text-gray-500">‘{applied}’ 투입 품목의 생산 비중</div>
+                <div className="flex items-baseline gap-3 mt-1 flex-wrap">
+                  <span className="text-2xl font-bold text-gray-500 tabular-nums">{res.aSharePct.toFixed(1)}%</span>
+                  <span className="text-gray-400">→</span>
+                  <span className="text-4xl font-extrabold tabular-nums" style={{ color: col }}>{res.bSharePct.toFixed(1)}%</span>
+                  <span className="text-lg font-bold tabular-nums" style={{ color: col }}>
+                    ({up ? '+' : ''}{deltaPct.toFixed(1)}%p)
+                  </span>
+                </div>
+                <div className="text-xs text-gray-500 mt-1">
+                  {monthA}: {n(res.aQty)} / {n(res.aTotal)} EA · {monthB}: {n(res.bQty)} / {n(res.bTotal)} EA
+                </div>
+              </div>
+              <div className="border rounded-xl p-4">
+                <div className="text-xs text-gray-500">해당 품목 생산량</div>
+                <div className="text-2xl font-bold tabular-nums mt-1">
+                  {n(res.aQty)} <span className="text-gray-400 text-base">→</span> {n(res.bQty)}
+                </div>
+                <div className="text-xs font-bold tabular-nums mt-0.5" style={{ color: res.bQty < res.aQty ? '#2563eb' : '#e11d48' }}>
+                  {res.bQty >= res.aQty ? '+' : ''}{n(res.bQty - res.aQty)} EA
+                  {res.aQty > 0 && ` (${((res.bQty / res.aQty - 1) * 100).toFixed(1)}%)`}
+                </div>
+                <div className="text-[11px] text-gray-400 mt-1">{res.rows.length}품목</div>
+              </div>
+            </div>
+
+            <div className="bg-teal-50 border border-teal-200 rounded p-3 text-xs text-teal-900">
+              매칭된 원재료: <b>{res.matchedMaterialNames.join(', ')}</b>
+              <span className="text-teal-600"> · 이 원재료가 레시피에 하나라도 들어간 제품을 모두 집계합니다.</span>
+            </div>
+
+            {/* 품목별 */}
+            <div className="border rounded overflow-hidden max-h-96 overflow-y-auto">
+              <table className="w-full text-xs">
+                <thead className="bg-slate-50 text-gray-600 sticky top-0">
+                  <tr>
+                    <th className="px-3 py-1.5 text-left">품목</th>
+                    <th className="px-3 py-1.5 text-center w-14">구분</th>
+                    <th className="px-3 py-1.5 text-right w-24">{monthA} EA</th>
+                    <th className="px-3 py-1.5 text-right w-24">{monthB} EA</th>
+                    <th className="px-3 py-1.5 text-right w-24">증감</th>
+                    <th className="px-3 py-1.5 text-right w-20">증감률</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y tabular-nums">
+                  {res.rows.map((r) => (
+                    <tr key={r.key} className="hover:bg-slate-50/60">
+                      <td className="px-3 py-1 text-gray-800">{r.label}</td>
+                      <td className="px-3 py-1 text-center">
+                        <span className={`px-1.5 py-0.5 rounded text-[10px] font-bold ${r.kind === 'cold' ? 'bg-blue-100 text-blue-700' : 'bg-amber-100 text-amber-700'}`}>
+                          {r.kind === 'cold' ? '냉장' : '실온'}
+                        </span>
+                      </td>
+                      <td className="px-3 py-1 text-right text-gray-600">{n(r.aQty)}</td>
+                      <td className="px-3 py-1 text-right text-gray-600">{n(r.bQty)}</td>
+                      <td className="px-3 py-1 text-right font-bold" style={{ color: r.diffQty < 0 ? '#2563eb' : r.diffQty > 0 ? '#e11d48' : '#94a3b8' }}>
+                        {r.diffQty >= 0 ? '+' : ''}{n(r.diffQty)}
+                      </td>
+                      <td className="px-3 py-1 text-right" style={{ color: r.diffQty < 0 ? '#2563eb' : r.diffQty > 0 ? '#e11d48' : '#94a3b8' }}>
+                        {r.aQty > 0 ? `${((r.bQty / r.aQty - 1) * 100).toFixed(0)}%` : (r.bQty > 0 ? '신규' : '–')}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="text-xs text-gray-500">
+              ※ 생산 <b>개수(EA)</b> 기준 비중입니다. 한 품목에 해당 원재료가 조금만 들어가도 포함되므로,
+              투입<b>량</b> 기준으로 보려면 위쪽 원재료 금액 변동표를 함께 참고하세요.
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
