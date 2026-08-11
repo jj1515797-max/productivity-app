@@ -2041,7 +2041,10 @@ function MaterialSharePanel({
     const sum = (arr: DiffRow[]) => arr.reduce((acc, r) => ({
       a: acc.a + r.aCost, b: acc.b + r.bCost, ag: acc.ag + r.aGrams, bg: acc.bg + r.bGrams,
     }), { a: 0, b: 0, ag: 0, bg: 0 });
-    return { raw: sum(pick(rawDiff)), flex: sum(pick(flexedDiff)) };
+    return {
+      raw: sum(pick(rawDiff)), flex: sum(pick(flexedDiff)),
+      totRaw: sum(rawDiff), totFlex: sum(flexedDiff),   // 전체 재료비 (비중 분모)
+    };
   }, [applied, rawDiff, flexedDiff]);
   const n = (v: number) => Math.round(v).toLocaleString();
   const deltaPct = res.bSharePct - res.aSharePct;
@@ -2101,6 +2104,30 @@ function MaterialSharePanel({
                 <div className="text-xs text-gray-500 mt-1">
                   {monthA}: {n(res.aQty)} / {n(res.aTotal)} EA · {monthB}: {n(res.bQty)} / {n(res.bTotal)} EA
                 </div>
+                {money.totRaw.a > 0 && money.totRaw.b > 0 && (() => {
+                  const aS = (money.raw.a / money.totRaw.a) * 100;
+                  const bS = (money.raw.b / money.totRaw.b) * 100;
+                  const d = bS - aS;
+                  return (
+                    <div className="mt-2 pt-2 border-t">
+                      <div className="text-xs text-gray-500">재료비 기준 비중 <span className="text-gray-400">(전체 재료비 대비 · 원가 설명용)</span></div>
+                      <div className="flex items-baseline gap-2 flex-wrap">
+                        <span className="text-lg font-bold text-gray-500 tabular-nums">{aS.toFixed(1)}%</span>
+                        <span className="text-gray-400">→</span>
+                        <span className="text-2xl font-extrabold tabular-nums" style={{ color: d < 0 ? '#2563eb' : d > 0 ? '#e11d48' : '#64748b' }}>
+                          {bS.toFixed(1)}%
+                        </span>
+                        <span className="text-sm font-bold tabular-nums" style={{ color: d < 0 ? '#2563eb' : d > 0 ? '#e11d48' : '#64748b' }}>
+                          ({d >= 0 ? '+' : ''}{d.toFixed(1)}%p)
+                        </span>
+                      </div>
+                      <div className="text-[11px] text-gray-400 mt-0.5 tabular-nums">
+                        {Math.round(money.raw.a).toLocaleString()} / {Math.round(money.totRaw.a).toLocaleString()}원
+                        · {Math.round(money.raw.b).toLocaleString()} / {Math.round(money.totRaw.b).toLocaleString()}원
+                      </div>
+                    </div>
+                  );
+                })()}
               </div>
               <div className="border rounded-xl p-4">
                 <div className="text-xs text-gray-500">해당 품목 생산량</div>
@@ -2239,8 +2266,8 @@ function MaterialSharePanel({
               </table>
             </div>
             <div className="text-xs text-gray-500">
-              ※ 생산 <b>개수(EA)</b> 기준 비중입니다. 한 품목에 해당 원재료가 조금만 들어가도 포함되므로,
-              투입<b>량</b> 기준으로 보려면 위쪽 원재료 금액 변동표를 함께 참고하세요.
+              ※ 두 비중은 서로 다른 질문에 답합니다. <b>생산 개수 비중</b> = “그 원재료가 들어간 제품을 몇 개나 만들었나”
+              (5g이든 100g이든 1개로 계산). <b>재료비 비중</b> = “재료비에서 그 원재료가 차지하는 몫”으로 <b>원가 설명에는 이쪽</b>을 씁니다.
             </div>
           </>
         )}
