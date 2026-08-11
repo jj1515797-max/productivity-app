@@ -1450,6 +1450,13 @@ function MixSplitPanel({
       coldPerEa: d.coldQty > 0 ? d.cold / d.coldQty : 0,
     };
   };
+  // 실제 적용된 g당 단가 = 금액 ÷ 사용량 (단가표 매칭 결과가 그대로 반영됨)
+  const ppg = (cost?: number, grams?: number) =>
+    (cost && grams && grams > 0) ? (cost / grams) : null;
+  const ppgTxt = (cost?: number, grams?: number) => {
+    const v = ppg(cost, grams);
+    return v === null ? '–' : v.toFixed(v < 10 ? 2 : 1);
+  };
   const A = row(data.a), B = row(data.b);
   const delta = (b: number, a: number) => b - a;
   const arrow = (v: number) => (v > 0 ? '▲' : v < 0 ? '▼' : '–');
@@ -1614,6 +1621,9 @@ function MixSplitPanel({
                     {r.aCost > 0 ? `${(r.diffCost / r.aCost * 100).toFixed(1)}%` : '–'}
                   </span> : <span className="text-gray-300">–</span>}
                 </td>
+                <td className="px-3 py-1 text-right text-gray-600">
+                  {r ? <>{ppgTxt(r.aCost, r.aGrams)} <span className="text-gray-300">→</span> {ppgTxt(r.bCost, r.bGrams)}</> : '–'}
+                </td>
                 <td className="px-3 py-1 text-right text-gray-500">{grams(r)}</td>
               </tr>
             );
@@ -1627,6 +1637,7 @@ function MixSplitPanel({
                       <th className="px-3 py-1.5 text-right">{monthB} 금액</th>
                       <th className="px-3 py-1.5 text-right">증감액</th>
                       <th className="px-3 py-1.5 text-right">증감률</th>
+                      <th className="px-3 py-1.5 text-right">단가(₩/g)</th>
                       <th className="px-3 py-1.5 text-right">사용량(g)</th>
                     </tr>
                   </thead>
@@ -1634,7 +1645,7 @@ function MixSplitPanel({
                     {list.map((x) => (
                       <Fragment2 key={x.k}>
                         <tr className="bg-indigo-50/60">
-                          <td colSpan={6} className="px-3 py-1 font-bold text-indigo-900">{x.name}</td>
+                          <td colSpan={7} className="px-3 py-1 font-bold text-indigo-900">{x.name}</td>
                         </tr>
                         {scopeRow('냉장', x.cold)}
                         {scopeRow('실온', x.amb)}
@@ -1645,7 +1656,7 @@ function MixSplitPanel({
                 </table>
                 <div className="px-3 py-1.5 bg-slate-50 text-[11px] text-gray-500">
                   냉장과 실온이 반대 방향이면 전체에서 상쇄되어 상위 목록에 안 보일 수 있습니다.
-                  보고서에는 <b>전체</b> 행 수치를 쓰세요.
+                  보고서에는 <b>전체</b> 행 수치를 쓰세요. 단가는 <b>금액 ÷ 사용량</b>으로 실제 적용된 ₩/g 입니다.
                 </div>
               </div>
             );
@@ -1662,6 +1673,7 @@ function MixSplitPanel({
               <thead className="bg-slate-50 text-gray-600 sticky top-0">
                 <tr>
                   <th className="px-3 py-1.5 text-left">원재료</th>
+                  <th className="px-3 py-1.5 text-right">단가(₩/g)</th>
                   <th className="px-3 py-1.5 text-right">{monthA} 사용(g)</th>
                   <th className="px-3 py-1.5 text-right">{monthB} 사용(g)</th>
                   <th className="px-3 py-1.5 text-right">{monthA} 금액</th>
@@ -1671,10 +1683,13 @@ function MixSplitPanel({
               </thead>
               <tbody className="divide-y tabular-nums">
                 {set.down.length === 0 ? (
-                  <tr><td colSpan={6} className="px-3 py-6 text-center text-gray-400">감소한 원재료가 없습니다.</td></tr>
+                  <tr><td colSpan={7} className="px-3 py-6 text-center text-gray-400">감소한 원재료가 없습니다.</td></tr>
                 ) : set.down.map((r) => (
                   <tr key={r.key} className="hover:bg-slate-50/60">
                     <td className="px-3 py-1 text-gray-800">{r.name}{!r.aHasPrice && !r.bHasPrice && <span className="ml-1 text-amber-600">(단가없음)</span>}</td>
+                    <td className="px-3 py-1 text-right text-gray-600">
+                      {ppgTxt(r.aCost, r.aGrams)} <span className="text-gray-300">→</span> {ppgTxt(r.bCost, r.bGrams)}
+                    </td>
                     <td className="px-3 py-1 text-right text-gray-500">{Math.round(r.aGrams).toLocaleString()}</td>
                     <td className="px-3 py-1 text-right text-gray-500">{Math.round(r.bGrams).toLocaleString()}</td>
                     <td className="px-3 py-1 text-right">{won(r.aCost)}</td>
@@ -1698,6 +1713,7 @@ function MixSplitPanel({
               <thead className="bg-slate-50 text-gray-600 sticky top-0">
                 <tr>
                   <th className="px-3 py-1.5 text-left">원재료</th>
+                  <th className="px-3 py-1.5 text-right">단가(₩/g)</th>
                   <th className="px-3 py-1.5 text-right">{monthA} 사용(g)</th>
                   <th className="px-3 py-1.5 text-right">{monthB} 사용(g)</th>
                   <th className="px-3 py-1.5 text-right">{monthA} 금액</th>
@@ -1707,10 +1723,13 @@ function MixSplitPanel({
               </thead>
               <tbody className="divide-y tabular-nums">
                 {set.up.length === 0 ? (
-                  <tr><td colSpan={6} className="px-3 py-6 text-center text-gray-400">증가한 원재료가 없습니다.</td></tr>
+                  <tr><td colSpan={7} className="px-3 py-6 text-center text-gray-400">증가한 원재료가 없습니다.</td></tr>
                 ) : set.up.map((r) => (
                   <tr key={r.key} className="hover:bg-slate-50/60">
                     <td className="px-3 py-1 text-gray-800">{r.name}{!r.aHasPrice && !r.bHasPrice && <span className="ml-1 text-amber-600">(단가없음)</span>}</td>
+                    <td className="px-3 py-1 text-right text-gray-600">
+                      {ppgTxt(r.aCost, r.aGrams)} <span className="text-gray-300">→</span> {ppgTxt(r.bCost, r.bGrams)}
+                    </td>
                     <td className="px-3 py-1 text-right text-gray-500">{Math.round(r.aGrams).toLocaleString()}</td>
                     <td className="px-3 py-1 text-right text-gray-500">{Math.round(r.bGrams).toLocaleString()}</td>
                     <td className="px-3 py-1 text-right">{won(r.aCost)}</td>
