@@ -506,16 +506,19 @@ export function productsContainingMaterial(
   recipeMap: Map<string, Recipe>,
   ambientRecipeMap: Map<string, AmbientRecipe>,
 ): { coldCodes: Set<string>; ambientKeys: Set<string>; matchedMaterialNames: string[] } {
-  const needle = normalizeMaterialName(q);
+  // 쉼표/줄바꿈으로 여러 원재료 동시 검색 (예: "한우, 전복, 게살") — 하나라도 맞으면 포함
+  const terms = q.split(/[,\n]/).map((t) => t.trim()).filter(Boolean);
+  const needles = terms.map((t) => normalizeMaterialName(t)).filter(Boolean);
+  const codeNeedles = terms.map((t) => normalizeCode(t)).filter(Boolean);
   const coldCodes = new Set<string>();
   const ambientKeys = new Set<string>();
   const names = new Set<string>();
-  if (!needle) return { coldCodes, ambientKeys, matchedMaterialNames: [] };
+  if (needles.length === 0) return { coldCodes, ambientKeys, matchedMaterialNames: [] };
 
   const hit = (ingName: string, ingCode?: string) => {
     const n = normalizeMaterialName(ingName);
     const c = normalizeCode(ingCode || '');
-    const ok = n.includes(needle) || (!!c && c.includes(normalizeCode(q)));
+    const ok = needles.some((nd) => n.includes(nd)) || (!!c && codeNeedles.some((cd) => c.includes(cd)));
     if (ok) names.add(ingName);
     return ok;
   };

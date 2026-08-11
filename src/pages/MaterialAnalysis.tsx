@@ -2016,14 +2016,21 @@ function MaterialSharePanel({
         <div className="flex items-center gap-2 flex-wrap">
           <input value={q} onChange={(e) => setQ(e.target.value)}
             onKeyDown={(e) => { if (e.key === 'Enter') setApplied(q); }}
-            placeholder="원재료명 (예: 한우, 전복, 두부)"
-            className="border rounded-md px-3 py-2 text-sm w-64" />
+            placeholder="원재료명 · 여러 개는 쉼표로 (예: 한우, 전복, 게살)"
+            className="border rounded-md px-3 py-2 text-sm flex-1 min-w-[280px]" />
           <button onClick={() => setApplied(q)}
             className="px-4 py-2 bg-teal-700 text-white rounded text-sm font-medium hover:bg-teal-800">조회</button>
-          {['한우', '전복', '게살', '두부'].map((k) => (
+        </div>
+        <div className="flex items-center gap-1.5 flex-wrap">
+          <span className="text-xs text-gray-500">빠른 선택</span>
+          {['한우', '전복', '게살', '관자', '두부'].map((k) => (
             <button key={k} onClick={() => { setQ(k); setApplied(k); }}
               className="px-2.5 py-1 text-xs rounded border hover:bg-gray-50">{k}</button>
           ))}
+          <button onClick={() => { const v = '한우, 전복, 게살, 관자'; setQ(v); setApplied(v); }}
+            className="px-2.5 py-1 text-xs rounded bg-teal-100 text-teal-800 border border-teal-300 font-bold hover:bg-teal-200">
+            고단가 전체 (한우+전복+게살+관자)
+          </button>
         </div>
 
         {res.matchedMaterialNames.length === 0 ? (
@@ -2062,8 +2069,8 @@ function MaterialSharePanel({
             </div>
 
             <div className="bg-teal-50 border border-teal-200 rounded p-3 text-xs text-teal-900">
-              매칭된 원재료: <b>{res.matchedMaterialNames.join(', ')}</b>
-              <span className="text-teal-600"> · 이 원재료가 레시피에 하나라도 들어간 제품을 모두 집계합니다.</span>
+              매칭된 원재료 {res.matchedMaterialNames.length}종: <b>{res.matchedMaterialNames.join(', ')}</b>
+              <span className="text-teal-600"> · 이 중 <b>하나라도</b> 들어간 제품을 모두 집계합니다 (냉장+실온 전체 생산량 기준, 중복 없이 1회만 계산).</span>
             </div>
 
             {/* 품목별 */}
