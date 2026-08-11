@@ -297,16 +297,15 @@ export default function MaterialAnalysis() {
     const bCold = usage(monthB, bRaw, 'cold');
     const bAmb = usage(monthB, bRaw, 'ambient');
 
-    // 실온 재료 중 A→B 금액 감소가 큰 순 (가설이 맞으면 한우 등 비싼 재료가 상단)
-    const ambDiff = diffUsage(aAmb, bAmb)
-      .filter((r) => r.aCost > 0 || r.bCost > 0)
-      .sort((x, y) => x.diffCost - y.diffCost)
-      .slice(0, 15);
+    // 실온 재료 A→B 금액 변동 — 감소 상위 / 증가 상위 둘 다 (보고서에 양방향 사례가 필요)
+    const ambAll = diffUsage(aAmb, bAmb).filter((r) => r.aCost > 0 || r.bCost > 0);
+    const ambDiff = [...ambAll].sort((x, y) => x.diffCost - y.diffCost).slice(0, 12);
+    const ambDiffUp = [...ambAll].sort((x, y) => y.diffCost - x.diffCost).filter((r) => r.diffCost > 0).slice(0, 12);
 
     return {
       a: { cold: sumCost(aCold), amb: sumCost(aAmb), coldQty: aProd.coldTotal, ambQty: aProd.ambientTotal },
       b: { cold: sumCost(bCold), amb: sumCost(bAmb), coldQty: bProd.coldTotal, ambQty: bProd.ambientTotal },
-      ambDiff,
+      ambDiff, ambDiffUp,
     };
   }, [aRaw, bRaw, aProd, bProd, monthA, monthB, effRecipeMap, effAmbientRecipeMap, priceMap]);
 
@@ -1405,6 +1404,7 @@ function MixSplitPanel({
     a: { cold: number; amb: number; coldQty: number; ambQty: number };
     b: { cold: number; amb: number; coldQty: number; ambQty: number };
     ambDiff: DiffRow[];
+    ambDiffUp: DiffRow[];
   };
 }) {
   const won = (n: number) => Math.round(n).toLocaleString();
@@ -1519,9 +1519,10 @@ function MixSplitPanel({
           <span className="text-indigo-600"> 단, 단가 변동 효과는 분석 2의 Flexed(연동예산)에서 따로 확인하세요.</span>
         </div>
 
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
         <div>
-          <div className="text-sm font-bold text-gray-700 mb-1.5">
-            실온 원재료 — 금액 감소 상위 <span className="text-xs font-normal text-gray-500">({monthA} → {monthB})</span>
+          <div className="text-sm font-bold mb-1.5" style={{ color: '#2563eb' }}>
+            ▼ 실온 원재료 — 금액 감소 상위 <span className="text-xs font-normal text-gray-500">({monthA} → {monthB})</span>
           </div>
           <div className="border rounded overflow-hidden max-h-80 overflow-y-auto">
             <table className="w-full text-xs">
@@ -1553,6 +1554,43 @@ function MixSplitPanel({
               </tbody>
             </table>
           </div>
+        </div>
+
+        <div>
+          <div className="text-sm font-bold mb-1.5" style={{ color: '#e11d48' }}>
+            ▲ 실온 원재료 — 금액 증가 상위 <span className="text-xs font-normal text-gray-500">({monthA} → {monthB})</span>
+          </div>
+          <div className="border rounded overflow-hidden max-h-80 overflow-y-auto">
+            <table className="w-full text-xs">
+              <thead className="bg-slate-50 text-gray-600 sticky top-0">
+                <tr>
+                  <th className="px-3 py-1.5 text-left">원재료</th>
+                  <th className="px-3 py-1.5 text-right">{monthA} 사용(g)</th>
+                  <th className="px-3 py-1.5 text-right">{monthB} 사용(g)</th>
+                  <th className="px-3 py-1.5 text-right">{monthA} 금액</th>
+                  <th className="px-3 py-1.5 text-right">{monthB} 금액</th>
+                  <th className="px-3 py-1.5 text-right">증감</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y tabular-nums">
+                {data.ambDiffUp.length === 0 ? (
+                  <tr><td colSpan={6} className="px-3 py-6 text-center text-gray-400">금액이 증가한 실온 재료가 없습니다.</td></tr>
+                ) : data.ambDiffUp.map((r) => (
+                  <tr key={r.key} className="hover:bg-slate-50/60">
+                    <td className="px-3 py-1 text-gray-800">{r.name}{!r.aHasPrice && !r.bHasPrice && <span className="ml-1 text-amber-600">(단가없음)</span>}</td>
+                    <td className="px-3 py-1 text-right text-gray-500">{Math.round(r.aGrams).toLocaleString()}</td>
+                    <td className="px-3 py-1 text-right text-gray-500">{Math.round(r.bGrams).toLocaleString()}</td>
+                    <td className="px-3 py-1 text-right">{won(r.aCost)}</td>
+                    <td className="px-3 py-1 text-right">{won(r.bCost)}</td>
+                    <td className={`px-3 py-1 text-right font-bold ${cls(r.diffCost)}`}>
+                      {arrow(r.diffCost)} {won(Math.abs(r.diffCost))}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
         </div>
       </div>
     </div>
