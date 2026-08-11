@@ -287,11 +287,12 @@ export default function MaterialAnalysis() {
       m: string,
       raw: { entries: MachineEntry[]; items: Item[]; ambient: AmbientEntry[]; logistics: Record<string, number> },
       kind: 'cold' | 'ambient' | 'all',
+      pm?: string,                       // 단가 기준 월 (지정 시 그 달 단가로 재평가 = 연동)
     ) => kind === 'cold'
-      ? computeMonthlyUsage(m, raw.entries, raw.items, [], raw.logistics, effRecipeMap, effAmbientRecipeMap, priceMap)
+      ? computeMonthlyUsage(m, raw.entries, raw.items, [], raw.logistics, effRecipeMap, effAmbientRecipeMap, priceMap, pm)
       : kind === 'ambient'
-      ? computeMonthlyUsage(m, [], [], raw.ambient, {}, effRecipeMap, effAmbientRecipeMap, priceMap)
-      : computeMonthlyUsage(m, raw.entries, raw.items, raw.ambient, raw.logistics, effRecipeMap, effAmbientRecipeMap, priceMap);
+      ? computeMonthlyUsage(m, [], [], raw.ambient, {}, effRecipeMap, effAmbientRecipeMap, priceMap, pm)
+      : computeMonthlyUsage(m, raw.entries, raw.items, raw.ambient, raw.logistics, effRecipeMap, effAmbientRecipeMap, priceMap, pm);
 
     const sumCost = (r: UsageResult) => r.rows.reduce((s, x) => s + x.cost, 0);
     const aCold = usage(monthA, aRaw, 'cold');
@@ -309,12 +310,17 @@ export default function MaterialAnalysis() {
     };
     const aAll = usage(monthA, aRaw, 'all');
     const bAll = usage(monthB, bRaw, 'all');
+    // 연동: A월 사용량을 B월 단가로 재평가 → 단가 변동 효과 제거, 사용량·믹스 효과만 남음
+    const aAllP = usage(monthA, aRaw, 'all', monthB);
+    const aColdP = usage(monthA, aRaw, 'cold', monthB);
+    const aAmbP = usage(monthA, aRaw, 'ambient', monthB);
     const byScope = { all: pair(aAll, bAll), cold: pair(aCold, bCold), ambient: pair(aAmb, bAmb) };
+    const byScopeFlexed = { all: pair(aAllP, bAll), cold: pair(aColdP, bCold), ambient: pair(aAmbP, bAmb) };
 
     return {
       a: { cold: sumCost(aCold), amb: sumCost(aAmb), coldQty: aProd.coldTotal, ambQty: aProd.ambientTotal },
       b: { cold: sumCost(bCold), amb: sumCost(bAmb), coldQty: bProd.coldTotal, ambQty: bProd.ambientTotal },
-      byScope,
+      byScope, byScopeFlexed,
     };
   }, [aRaw, bRaw, aProd, bProd, monthA, monthB, effRecipeMap, effAmbientRecipeMap, priceMap]);
 
@@ -1413,9 +1419,12 @@ function MixSplitPanel({
     a: { cold: number; amb: number; coldQty: number; ambQty: number };
     b: { cold: number; amb: number; coldQty: number; ambQty: number };
     byScope: Record<'all' | 'cold' | 'ambient', { down: DiffRow[]; up: DiffRow[] }>;
+    byScopeFlexed: Record<'all' | 'cold' | 'ambient', { down: DiffRow[]; up: DiffRow[] }>;
   };
 }) {
   const [scope, setScope] = useState<'all' | 'cold' | 'ambient'>('all');
+  const [flexed, setFlexed] = useState(false);   // true = B월 단가 고정(단가효과 제외)
+  const set = (flexed ? data.byScopeFlexed : data.byScope)[scope];
   const won = (n: number) => Math.round(n).toLocaleString();
   const row = (d: { cold: number; amb: number; coldQty: number; ambQty: number }) => {
     const total = d.cold + d.amb;
@@ -1538,6 +1547,26 @@ function MixSplitPanel({
               </button>
             ))}
           </div>
+          <span className="text-gray-300">|</span>
+          <div className="flex gap-1">
+            {([[false, '실적 그대로'], [true, `${monthB} 단가 고정`]] as const).map(([k, lab]) => (
+              <button key={String(k)} onClick={() => setFlexed(k)}
+                className={`px-3 py-1 text-xs rounded font-medium ${flexed === k ? 'bg-slate-700 text-white' : 'border hover:bg-gray-50'}`}>
+                {lab}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className={`border rounded p-2.5 text-xs leading-relaxed ${flexed ? 'bg-slate-50 border-slate-300 text-slate-700' : 'bg-amber-50 border-amber-300 text-amber-900'}`}>
+          {flexed ? (
+            <>🔒 <b>{monthB} 단가 고정(연동)</b> — {monthA} 사용량도 {monthB} 단가로 계산했습니다.
+            단가 변동 효과가 빠져 <b>얼마나 쓰고 무엇을 만들었는지의 차이만</b> 남습니다.
+            “제품 구성이 바뀌어서 줄었다”의 근거로 이 값을 쓰세요.</>
+          ) : (
+            <>📊 <b>실적 그대로</b> — 각 월의 실제 단가로 계산했습니다. 실제 지출 차이라 총액 설명에 맞지만,
+            <b> 사용량 변화와 단가 변화가 섞여</b> 있습니다. 단가 효과를 빼려면 “{monthB} 단가 고정”을 누르세요.</>
+          )}
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -1558,9 +1587,9 @@ function MixSplitPanel({
                 </tr>
               </thead>
               <tbody className="divide-y tabular-nums">
-                {data.byScope[scope].down.length === 0 ? (
+                {set.down.length === 0 ? (
                   <tr><td colSpan={6} className="px-3 py-6 text-center text-gray-400">감소한 원재료가 없습니다.</td></tr>
-                ) : data.byScope[scope].down.map((r) => (
+                ) : set.down.map((r) => (
                   <tr key={r.key} className="hover:bg-slate-50/60">
                     <td className="px-3 py-1 text-gray-800">{r.name}{!r.aHasPrice && !r.bHasPrice && <span className="ml-1 text-amber-600">(단가없음)</span>}</td>
                     <td className="px-3 py-1 text-right text-gray-500">{Math.round(r.aGrams).toLocaleString()}</td>
@@ -1594,9 +1623,9 @@ function MixSplitPanel({
                 </tr>
               </thead>
               <tbody className="divide-y tabular-nums">
-                {data.byScope[scope].up.length === 0 ? (
+                {set.up.length === 0 ? (
                   <tr><td colSpan={6} className="px-3 py-6 text-center text-gray-400">증가한 원재료가 없습니다.</td></tr>
-                ) : data.byScope[scope].up.map((r) => (
+                ) : set.up.map((r) => (
                   <tr key={r.key} className="hover:bg-slate-50/60">
                     <td className="px-3 py-1 text-gray-800">{r.name}{!r.aHasPrice && !r.bHasPrice && <span className="ml-1 text-amber-600">(단가없음)</span>}</td>
                     <td className="px-3 py-1 text-right text-gray-500">{Math.round(r.aGrams).toLocaleString()}</td>
