@@ -6,7 +6,7 @@ import type { AmbientEntry, Item, MachineEntry } from '../types';
 import type { AmbientRecipe, Recipe } from '../lib/wasteCompute';
 import { CODE_KEY_PREFIX, monthPriceKey, normalizeCode, normalizeMaterialName } from '../lib/wasteCompute';
 import { canonicalShort } from '../lib/codeUtil';
-import { computeFlexedDiff, computeIngredientStageUsage, computeMonthlyUsage, diffUsage, computeProductCosts, contributionByProduct, materialProductShare } from '../lib/materialUsage';
+import { computeFlexedDiff, computeIngredientStageUsage, computeMonthlyUsage, diffUsage, computeProductCosts, contributionByProduct, materialProductShare, materialShareRanking } from '../lib/materialUsage';
 import type { DiffRow, FlexedRow, IngredientStageRow, UsageResult, ContribRow, ProductCostRow } from '../lib/materialUsage';
 import { computeMonthlyProduction, filterProduction, STAGE_COLOR, STAGE_LETTERS } from '../lib/monthlyProduction';
 import type { MonthlyProduction } from '../lib/monthlyProduction';
@@ -2000,6 +2000,10 @@ function MaterialSharePanel({
     () => materialProductShare(applied, aP, bP, recipeMap, ambientRecipeMap),
     [applied, aP, bP, recipeMap, ambientRecipeMap],
   );
+  const ranking = useMemo(
+    () => materialShareRanking(aP, bP, recipeMap, ambientRecipeMap),
+    [aP, bP, recipeMap, ambientRecipeMap],
+  );
   const n = (v: number) => Math.round(v).toLocaleString();
   const deltaPct = res.bSharePct - res.aSharePct;
   const up = deltaPct > 0;
@@ -2072,6 +2076,44 @@ function MaterialSharePanel({
               매칭된 원재료 {res.matchedMaterialNames.length}종: <b>{res.matchedMaterialNames.join(', ')}</b>
               <span className="text-teal-600"> · 이 중 <b>하나라도</b> 들어간 제품을 모두 집계합니다 (냉장+실온 전체 생산량 기준, 중복 없이 1회만 계산).</span>
             </div>
+
+            {/* 원재료별 비중 변화 순위 */}
+            <details className="border rounded" open>
+              <summary className="px-3 py-2 bg-slate-50 text-sm font-bold text-gray-700 cursor-pointer">
+                📊 원재료별 비중 변화 순위 <span className="text-xs font-normal text-gray-500">· 변화 큰 순 · 클릭하면 해당 원재료로 조회</span>
+              </summary>
+              <div className="max-h-72 overflow-y-auto">
+                <table className="w-full text-xs">
+                  <thead className="bg-white text-gray-600 sticky top-0 border-b">
+                    <tr>
+                      <th className="px-3 py-1.5 text-left">원재료</th>
+                      <th className="px-3 py-1.5 text-right w-16">품목수</th>
+                      <th className="px-3 py-1.5 text-right w-20">{monthA} 비중</th>
+                      <th className="px-3 py-1.5 text-right w-20">{monthB} 비중</th>
+                      <th className="px-3 py-1.5 text-right w-20">증감(%p)</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y tabular-nums">
+                    {ranking.slice(0, 40).map((r) => (
+                      <tr key={r.name} onClick={() => { setQ(r.name); setApplied(r.name); }}
+                        className={`cursor-pointer hover:bg-teal-50 ${normalizeMaterialName(applied) === normalizeMaterialName(r.name) ? 'bg-teal-50' : ''}`}>
+                        <td className="px-3 py-1 text-gray-800">{r.name}</td>
+                        <td className="px-3 py-1 text-right text-gray-400">{r.productCount}</td>
+                        <td className="px-3 py-1 text-right text-gray-600">{r.aSharePct.toFixed(1)}%</td>
+                        <td className="px-3 py-1 text-right text-gray-600">{r.bSharePct.toFixed(1)}%</td>
+                        <td className="px-3 py-1 text-right font-bold"
+                          style={{ color: r.deltaPct < 0 ? '#2563eb' : r.deltaPct > 0 ? '#e11d48' : '#94a3b8' }}>
+                          {r.deltaPct >= 0 ? '+' : ''}{r.deltaPct.toFixed(1)}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="px-3 py-1.5 bg-slate-50 text-[11px] text-gray-500 border-t">
+                상위 40종 표시 · 비중 = 그 원재료가 들어간 품목의 생산량 ÷ 전체 생산량
+              </div>
+            </details>
 
             {/* 품목별 */}
             <div className="border rounded overflow-hidden max-h-96 overflow-y-auto">

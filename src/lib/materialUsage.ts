@@ -580,3 +580,64 @@ export function materialProductShare(
     matchedMaterialNames,
   };
 }
+
+/** 원재료별 '투입 품목 생산 비중' 변화 순위
+ *  원재료명(정규화) 기준으로 묶는다 — 같은 이름·다른 코드는 하나로 합산 (검색 동작과 일치) */
+export interface MaterialShareRankRow {
+  name: string;
+  aQty: number; bQty: number;
+  aSharePct: number; bSharePct: number;
+  deltaPct: number;        // %p (b − a)
+  productCount: number;    // 두 달 중 한 번이라도 생산된 관련 품목 수
+}
+export function materialShareRanking(
+  aProducts: ProductCostRow[],
+  bProducts: ProductCostRow[],
+  recipeMap: Map<string, Recipe>,
+  ambientRecipeMap: Map<string, AmbientRecipe>,
+): MaterialShareRankRow[] {
+  // 1) 원재료명 → 해당 재료를 쓰는 제품키 집합
+  const idx = new Map<string, { display: string; cold: Set<string>; amb: Set<string> }>();
+  const touch = (rawName: string) => {
+    const k = normalizeMaterialName(rawName);
+    if (!k) return null;
+    if (!idx.has(k)) idx.set(k, { display: rawName, cold: new Set(), amb: new Set() });
+    return idx.get(k)!;
+  };
+  recipeMap.forEach((r) => {
+    const code = canonicalShort(r.code || '');
+    if (!code) return;
+    r.ingredients.forEach((ing) => { touch(ing.name)?.cold.add(code); });
+  });
+  ambientRecipeMap.forEach((r, key) => {
+    r.ingredients.forEach((ing) => { touch(ing.name)?.amb.add(key); });
+  });
+
+  // 2) 제품별 생산량 인덱스
+  const aQtyBy = new Map<string, number>();
+  const bQtyBy = new Map<string, number>();
+  aProducts.forEach((p) => aQtyBy.set(p.key, p.qty));
+  bProducts.forEach((p) => bQtyBy.set(p.key, p.qty));
+  const aTotal = aProducts.reduce((s, p) => s + p.qty, 0);
+  const bTotal = bProducts.reduce((s, p) => s + p.qty, 0);
+
+  // 3) 원재료별 합산
+  const out: MaterialShareRankRow[] = [];
+  idx.forEach((v) => {
+    const keys = new Set<string>([...v.cold, ...[...v.amb].map((k) => `amb:${k}`)]);
+    let aQty = 0, bQty = 0, cnt = 0;
+    keys.forEach((k) => {
+      const a = aQtyBy.get(k) || 0;
+      const b = bQtyBy.get(k) || 0;
+      if (a > 0 || b > 0) cnt++;
+      aQty += a; bQty += b;
+    });
+    if (aQty <= 0 && bQty <= 0) return;
+    const aS = aTotal > 0 ? (aQty / aTotal) * 100 : 0;
+    const bS = bTotal > 0 ? (bQty / bTotal) * 100 : 0;
+    out.push({ name: v.display, aQty, bQty, aSharePct: aS, bSharePct: bS, deltaPct: bS - aS, productCount: cnt });
+  });
+  // 변화 큰 순 (절대값)
+  out.sort((x, y) => Math.abs(y.deltaPct) - Math.abs(x.deltaPct));
+  return out;
+}
