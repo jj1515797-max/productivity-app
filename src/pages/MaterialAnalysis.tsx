@@ -278,6 +278,38 @@ export default function MaterialAnalysis() {
     } finally { setRunning(false); }
   };
 
+  /** 제품군(냉장/실온)별 원재료비 분해.
+   *  같은 계산기를 입력만 나눠서 두 번 돌린다 → 냉장만 / 실온만 재료비를 각각 산출.
+   *  "실온 생산이 줄어 비싼 재료(한우 등)가 덜 들어간 것 아니냐" 같은 믹스 가설 검증용. */
+  const mixSplit = useMemo(() => {
+    if (!aRaw || !bRaw || !aProd || !bProd) return null;
+    const usage = (
+      m: string,
+      raw: { entries: MachineEntry[]; items: Item[]; ambient: AmbientEntry[]; logistics: Record<string, number> },
+      kind: 'cold' | 'ambient',
+    ) => kind === 'cold'
+      ? computeMonthlyUsage(m, raw.entries, raw.items, [], raw.logistics, effRecipeMap, effAmbientRecipeMap, priceMap)
+      : computeMonthlyUsage(m, [], [], raw.ambient, {}, effRecipeMap, effAmbientRecipeMap, priceMap);
+
+    const sumCost = (r: UsageResult) => r.rows.reduce((s, x) => s + x.cost, 0);
+    const aCold = usage(monthA, aRaw, 'cold');
+    const aAmb = usage(monthA, aRaw, 'ambient');
+    const bCold = usage(monthB, bRaw, 'cold');
+    const bAmb = usage(monthB, bRaw, 'ambient');
+
+    // 실온 재료 중 A→B 금액 감소가 큰 순 (가설이 맞으면 한우 등 비싼 재료가 상단)
+    const ambDiff = diffUsage(aAmb, bAmb)
+      .filter((r) => r.aCost > 0 || r.bCost > 0)
+      .sort((x, y) => x.diffCost - y.diffCost)
+      .slice(0, 15);
+
+    return {
+      a: { cold: sumCost(aCold), amb: sumCost(aAmb), coldQty: aProd.coldTotal, ambQty: aProd.ambientTotal },
+      b: { cold: sumCost(bCold), amb: sumCost(bAmb), coldQty: bProd.coldTotal, ambQty: bProd.ambientTotal },
+      ambDiff,
+    };
+  }, [aRaw, bRaw, aProd, bProd, monthA, monthB, effRecipeMap, effAmbientRecipeMap, priceMap]);
+
   // 연동 비율 (A월 → B월 규모) — EA 기본, 생산금액 둘 다 입력 시 ₩ 토글 가능
   // 반제품 펼침 토글이나 레시피 DB 변경 시 분석 결과 자동 재계산 (raw 있을 때만)
   useEffect(() => {
@@ -784,6 +816,13 @@ export default function MaterialAnalysis() {
             </div>
           </div>
         </div>
+      )}
+
+      {/* ============================================================
+          제품군(냉장/실온)별 원재료비 분해 — 믹스 변화가 원가에 준 영향
+          ============================================================ */}
+      {mixSplit && (
+        <MixSplitPanel monthA={monthA} monthB={monthB} data={mixSplit} />
       )}
 
       {/* ============================================================
@@ -1338,6 +1377,172 @@ function KpiCard({ label, value, accent }: { label: string; value: string; accen
     <div className={`border rounded-lg p-3 ${styles.box}`}>
       <div className="text-xs text-gray-600">{label}</div>
       <div className={`mt-1 text-xl font-bold ${styles.txt}`}>{value}</div>
+    </div>
+  );
+}
+
+/* ============================================================
+   제품군(냉장/실온)별 원재료비 분해 패널
+   "생산량은 비슷한데 원재료비율이 왜 달라졌나" 를 믹스 관점에서 본다.
+   ============================================================ */
+function MixSplitPanel({
+  monthA, monthB, data,
+}: {
+  monthA: string; monthB: string;
+  data: {
+    a: { cold: number; amb: number; coldQty: number; ambQty: number };
+    b: { cold: number; amb: number; coldQty: number; ambQty: number };
+    ambDiff: DiffRow[];
+  };
+}) {
+  const won = (n: number) => Math.round(n).toLocaleString();
+  const row = (d: { cold: number; amb: number; coldQty: number; ambQty: number }) => {
+    const total = d.cold + d.amb;
+    const qty = d.coldQty + d.ambQty;
+    return {
+      total, qty,
+      ambSharePct: total > 0 ? (d.amb / total) * 100 : 0,      // 재료비 중 실온 비중
+      ambQtySharePct: qty > 0 ? (d.ambQty / qty) * 100 : 0,    // 생산량 중 실온 비중
+      perEa: qty > 0 ? total / qty : 0,                        // EA당 재료비
+      ambPerEa: d.ambQty > 0 ? d.amb / d.ambQty : 0,
+      coldPerEa: d.coldQty > 0 ? d.cold / d.coldQty : 0,
+    };
+  };
+  const A = row(data.a), B = row(data.b);
+  const delta = (b: number, a: number) => b - a;
+  const arrow = (v: number) => (v > 0 ? '▲' : v < 0 ? '▼' : '–');
+  const cls = (v: number) => (v > 0 ? 'text-rose-600' : v < 0 ? 'text-blue-600' : 'text-gray-400');
+
+  return (
+    <div className="bg-white border-2 border-indigo-200 rounded-lg overflow-hidden">
+      <div className="px-4 py-3 bg-indigo-600 text-white font-bold text-sm flex items-center gap-2 flex-wrap">
+        <span>🧊🌡️ 제품군별 원재료비 분해</span>
+        <span className="text-xs font-normal text-indigo-100">냉장 vs 실온 — 생산 믹스가 원가에 준 영향</span>
+      </div>
+
+      <div className="p-4 space-y-4">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm border">
+            <thead className="bg-slate-50 text-xs text-gray-600">
+              <tr>
+                <th className="border px-3 py-2 text-left">구분</th>
+                <th className="border px-3 py-2 text-right">{monthA}</th>
+                <th className="border px-3 py-2 text-right">{monthB}</th>
+                <th className="border px-3 py-2 text-right">증감</th>
+              </tr>
+            </thead>
+            <tbody className="tabular-nums">
+              <tr>
+                <td className="border px-3 py-1.5 font-semibold text-blue-700">냉장 재료비</td>
+                <td className="border px-3 py-1.5 text-right">{won(data.a.cold)}</td>
+                <td className="border px-3 py-1.5 text-right">{won(data.b.cold)}</td>
+                <td className={`border px-3 py-1.5 text-right font-bold ${cls(delta(data.b.cold, data.a.cold))}`}>
+                  {arrow(delta(data.b.cold, data.a.cold))} {won(Math.abs(delta(data.b.cold, data.a.cold)))}
+                </td>
+              </tr>
+              <tr className="bg-amber-50/60">
+                <td className="border px-3 py-1.5 font-semibold text-amber-700">실온 재료비</td>
+                <td className="border px-3 py-1.5 text-right">{won(data.a.amb)}</td>
+                <td className="border px-3 py-1.5 text-right">{won(data.b.amb)}</td>
+                <td className={`border px-3 py-1.5 text-right font-bold ${cls(delta(data.b.amb, data.a.amb))}`}>
+                  {arrow(delta(data.b.amb, data.a.amb))} {won(Math.abs(delta(data.b.amb, data.a.amb)))}
+                </td>
+              </tr>
+              <tr className="bg-slate-50 font-bold">
+                <td className="border px-3 py-1.5">합계 재료비</td>
+                <td className="border px-3 py-1.5 text-right">{won(A.total)}</td>
+                <td className="border px-3 py-1.5 text-right">{won(B.total)}</td>
+                <td className={`border px-3 py-1.5 text-right ${cls(delta(B.total, A.total))}`}>
+                  {arrow(delta(B.total, A.total))} {won(Math.abs(delta(B.total, A.total)))}
+                </td>
+              </tr>
+              <tr>
+                <td className="border px-3 py-1.5 text-gray-600">생산량 (EA)</td>
+                <td className="border px-3 py-1.5 text-right">{A.qty.toLocaleString()}</td>
+                <td className="border px-3 py-1.5 text-right">{B.qty.toLocaleString()}</td>
+                <td className={`border px-3 py-1.5 text-right ${cls(delta(B.qty, A.qty))}`}>
+                  {arrow(delta(B.qty, A.qty))} {Math.abs(delta(B.qty, A.qty)).toLocaleString()}
+                </td>
+              </tr>
+              <tr className="bg-indigo-50/60">
+                <td className="border px-3 py-1.5 font-bold text-indigo-800">EA당 재료비 (원/개)</td>
+                <td className="border px-3 py-1.5 text-right font-bold">{A.perEa.toFixed(1)}</td>
+                <td className="border px-3 py-1.5 text-right font-bold">{B.perEa.toFixed(1)}</td>
+                <td className={`border px-3 py-1.5 text-right font-bold ${cls(delta(B.perEa, A.perEa))}`}>
+                  {arrow(delta(B.perEa, A.perEa))} {Math.abs(delta(B.perEa, A.perEa)).toFixed(1)}
+                </td>
+              </tr>
+              <tr>
+                <td className="border px-3 py-1.5 text-gray-600">실온 비중 — 생산량</td>
+                <td className="border px-3 py-1.5 text-right">{A.ambQtySharePct.toFixed(1)}%</td>
+                <td className="border px-3 py-1.5 text-right">{B.ambQtySharePct.toFixed(1)}%</td>
+                <td className={`border px-3 py-1.5 text-right ${cls(delta(B.ambQtySharePct, A.ambQtySharePct))}`}>
+                  {arrow(delta(B.ambQtySharePct, A.ambQtySharePct))} {Math.abs(delta(B.ambQtySharePct, A.ambQtySharePct)).toFixed(1)}%p
+                </td>
+              </tr>
+              <tr className="bg-amber-50/60">
+                <td className="border px-3 py-1.5 font-semibold text-amber-700">실온 비중 — 재료비</td>
+                <td className="border px-3 py-1.5 text-right">{A.ambSharePct.toFixed(1)}%</td>
+                <td className="border px-3 py-1.5 text-right">{B.ambSharePct.toFixed(1)}%</td>
+                <td className={`border px-3 py-1.5 text-right font-bold ${cls(delta(B.ambSharePct, A.ambSharePct))}`}>
+                  {arrow(delta(B.ambSharePct, A.ambSharePct))} {Math.abs(delta(B.ambSharePct, A.ambSharePct)).toFixed(1)}%p
+                </td>
+              </tr>
+              <tr>
+                <td className="border px-3 py-1.5 text-gray-500 text-xs">EA당 재료비 — 냉장 / 실온</td>
+                <td className="border px-3 py-1.5 text-right text-xs">{A.coldPerEa.toFixed(1)} / {A.ambPerEa.toFixed(1)}</td>
+                <td className="border px-3 py-1.5 text-right text-xs">{B.coldPerEa.toFixed(1)} / {B.ambPerEa.toFixed(1)}</td>
+                <td className="border px-3 py-1.5 text-right text-xs text-gray-400">
+                  {(B.ambPerEa > B.coldPerEa) ? '실온이 더 비쌈' : (B.ambPerEa < B.coldPerEa ? '냉장이 더 비쌈' : '동일')}
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        <div className="bg-indigo-50 border border-indigo-200 rounded p-3 text-xs text-indigo-900 leading-relaxed">
+          <b>읽는 법</b> — 실온 EA당 재료비가 냉장보다 비싸고, {monthB}에 <b>실온 비중(생산량)이 줄었다면</b>,
+          같은 생산량이라도 합계 재료비가 내려갑니다(믹스 효과). 아래 표에서 실온 재료 중
+          <b> 금액이 크게 줄어든 항목</b>(한우 등)이 상단에 오면 그 가설이 뒷받침됩니다.
+          <span className="text-indigo-600"> 단, 단가 변동 효과는 분석 2의 Flexed(연동예산)에서 따로 확인하세요.</span>
+        </div>
+
+        <div>
+          <div className="text-sm font-bold text-gray-700 mb-1.5">
+            실온 원재료 — 금액 감소 상위 <span className="text-xs font-normal text-gray-500">({monthA} → {monthB})</span>
+          </div>
+          <div className="border rounded overflow-hidden max-h-80 overflow-y-auto">
+            <table className="w-full text-xs">
+              <thead className="bg-slate-50 text-gray-600 sticky top-0">
+                <tr>
+                  <th className="px-3 py-1.5 text-left">원재료</th>
+                  <th className="px-3 py-1.5 text-right">{monthA} 사용(g)</th>
+                  <th className="px-3 py-1.5 text-right">{monthB} 사용(g)</th>
+                  <th className="px-3 py-1.5 text-right">{monthA} 금액</th>
+                  <th className="px-3 py-1.5 text-right">{monthB} 금액</th>
+                  <th className="px-3 py-1.5 text-right">증감</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y tabular-nums">
+                {data.ambDiff.length === 0 ? (
+                  <tr><td colSpan={6} className="px-3 py-6 text-center text-gray-400">실온 재료 사용 데이터가 없습니다.</td></tr>
+                ) : data.ambDiff.map((r) => (
+                  <tr key={r.key} className="hover:bg-slate-50/60">
+                    <td className="px-3 py-1 text-gray-800">{r.name}{!r.aHasPrice && !r.bHasPrice && <span className="ml-1 text-amber-600">(단가없음)</span>}</td>
+                    <td className="px-3 py-1 text-right text-gray-500">{Math.round(r.aGrams).toLocaleString()}</td>
+                    <td className="px-3 py-1 text-right text-gray-500">{Math.round(r.bGrams).toLocaleString()}</td>
+                    <td className="px-3 py-1 text-right">{won(r.aCost)}</td>
+                    <td className="px-3 py-1 text-right">{won(r.bCost)}</td>
+                    <td className={`px-3 py-1 text-right font-bold ${cls(r.diffCost)}`}>
+                      {arrow(r.diffCost)} {won(Math.abs(r.diffCost))}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
