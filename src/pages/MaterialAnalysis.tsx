@@ -1589,36 +1589,53 @@ function MixSplitPanel({
               amb: find(src.ambient.full, k),
             })).sort((a, b) => (a.all?.diffCost ?? 0) - (b.all?.diffCost ?? 0));
             if (list.length === 0) return <div className="mt-2 text-xs text-gray-400 px-1">일치하는 원재료가 없습니다.</div>;
-            const cell = (r?: DiffRow) => r
-              ? <span className={`font-bold ${cls(r.diffCost)}`}>{arrow(r.diffCost)} {won(Math.abs(r.diffCost))}</span>
-              : <span className="text-gray-300">–</span>;
-            const g = (r?: DiffRow) => r ? `${Math.round(r.aGrams).toLocaleString()}→${Math.round(r.bGrams).toLocaleString()}` : '–';
+            const money = (n?: number) => n === undefined ? '–' : won(n);
+            const grams = (r?: DiffRow) => r ? `${Math.round(r.aGrams).toLocaleString()} → ${Math.round(r.bGrams).toLocaleString()}` : '–';
+            const scopeRow = (label: string, r: DiffRow | undefined, strong = false) => (
+              <tr key={label} className={strong ? 'bg-slate-50 font-bold' : ''}>
+                <td className={`px-3 py-1 ${strong ? 'text-slate-800' : 'text-gray-500 pl-6'}`}>{label}</td>
+                <td className="px-3 py-1 text-right">{money(r?.aCost)}</td>
+                <td className="px-3 py-1 text-right">{money(r?.bCost)}</td>
+                <td className="px-3 py-1 text-right">
+                  {r ? <span className={cls(r.diffCost)}>{arrow(r.diffCost)} {won(Math.abs(r.diffCost))}</span> : <span className="text-gray-300">–</span>}
+                </td>
+                <td className="px-3 py-1 text-right">
+                  {r ? <span className={cls(r.diffCost)}>
+                    {r.aCost > 0 ? `${(r.diffCost / r.aCost * 100).toFixed(1)}%` : '–'}
+                  </span> : <span className="text-gray-300">–</span>}
+                </td>
+                <td className="px-3 py-1 text-right text-gray-500">{grams(r)}</td>
+              </tr>
+            );
             return (
-              <div className="mt-2 border rounded overflow-hidden">
-                <table className="w-full text-xs">
+              <div className="mt-2 border rounded overflow-hidden overflow-x-auto">
+                <table className="w-full text-xs min-w-[720px]">
                   <thead className="bg-slate-100 text-gray-600">
                     <tr>
-                      <th className="px-3 py-1.5 text-left">원재료</th>
-                      <th className="px-3 py-1.5 text-right">냉장 증감</th>
-                      <th className="px-3 py-1.5 text-right">실온 증감</th>
-                      <th className="px-3 py-1.5 text-right">전체 증감</th>
-                      <th className="px-3 py-1.5 text-right">전체 사용량(g)</th>
+                      <th className="px-3 py-1.5 text-left">원재료 / 구분</th>
+                      <th className="px-3 py-1.5 text-right">{monthA} 금액</th>
+                      <th className="px-3 py-1.5 text-right">{monthB} 금액</th>
+                      <th className="px-3 py-1.5 text-right">증감액</th>
+                      <th className="px-3 py-1.5 text-right">증감률</th>
+                      <th className="px-3 py-1.5 text-right">사용량(g)</th>
                     </tr>
                   </thead>
                   <tbody className="divide-y tabular-nums">
                     {list.map((x) => (
-                      <tr key={x.k} className="hover:bg-slate-50/60">
-                        <td className="px-3 py-1 text-gray-800">{x.name}</td>
-                        <td className="px-3 py-1 text-right">{cell(x.cold)}</td>
-                        <td className="px-3 py-1 text-right">{cell(x.amb)}</td>
-                        <td className="px-3 py-1 text-right">{cell(x.all)}</td>
-                        <td className="px-3 py-1 text-right text-gray-500">{g(x.all)}</td>
-                      </tr>
+                      <Fragment2 key={x.k}>
+                        <tr className="bg-indigo-50/60">
+                          <td colSpan={6} className="px-3 py-1 font-bold text-indigo-900">{x.name}</td>
+                        </tr>
+                        {scopeRow('냉장', x.cold)}
+                        {scopeRow('실온', x.amb)}
+                        {scopeRow('전체', x.all, true)}
+                      </Fragment2>
                     ))}
                   </tbody>
                 </table>
                 <div className="px-3 py-1.5 bg-slate-50 text-[11px] text-gray-500">
                   냉장과 실온이 반대 방향이면 전체에서 상쇄되어 상위 목록에 안 보일 수 있습니다.
+                  보고서에는 <b>전체</b> 행 수치를 쓰세요.
                 </div>
               </div>
             );
