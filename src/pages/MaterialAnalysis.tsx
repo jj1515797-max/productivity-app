@@ -2073,9 +2073,9 @@ function MaterialSharePanel({
             <button key={label} onClick={() => { setQ(v); setApplied(v); }}
               className="px-2.5 py-1 text-xs rounded border hover:bg-gray-50">{label}</button>
           ))}
-          <button onClick={() => { const v = '한우, 전복, 게살, 관자'; setQ(v); setApplied(v); }}
+          <button onClick={() => { const v = '한우, -사골육수, 전복, 게살, 관자'; setQ(v); setApplied(v); }}
             className="px-2.5 py-1 text-xs rounded bg-teal-100 text-teal-800 border border-teal-300 font-bold hover:bg-teal-200">
-            고단가 전체 (한우+전복+게살+관자)
+            고단가 전체 (한우·전복·게살·관자)
           </button>
           <button onClick={() => { setQ('*'); setApplied('*'); }}
             className="px-2.5 py-1 text-xs rounded bg-slate-800 text-white font-bold hover:bg-slate-900">
@@ -2188,8 +2188,34 @@ function MaterialSharePanel({
             )}
 
             <div className="bg-teal-50 border border-teal-200 rounded p-3 text-xs text-teal-900">
-              매칭된 원재료 {res.matchedMaterialNames.length}종: <b>{res.matchedMaterialNames.join(', ')}</b>
-              <span className="text-teal-600"> · 이 중 <b>하나라도</b> 들어간 제품을 모두 집계합니다 (냉장+실온 전체 생산량 기준, 중복 없이 1회만 계산).</span>
+              매칭된 원재료 {res.matchedMaterialNames.length}종
+              <span className="text-teal-600"> · 이 중 <b>하나라도</b> 들어간 제품을 모두 집계 (냉장+실온 전체 생산량 기준, 중복 없이 1회)</span>
+              {(() => {
+                // 매칭 재료를 실제 단가(₩/g) 순으로 — '고단가'인지 눈으로 확인
+                const pm = new Map<string, number>();
+                rawDiff.forEach((r) => {
+                  const g = r.bGrams || r.aGrams;
+                  const c = r.bGrams ? r.bCost : r.aCost;
+                  if (g > 0) pm.set(normalizeMaterialName(r.name), c / g);
+                });
+                const list = res.matchedMaterialNames
+                  .map((nm) => ({ nm, p: pm.get(normalizeMaterialName(nm)) ?? null }))
+                  .sort((a, b) => (b.p ?? -1) - (a.p ?? -1));
+                if (list.length === 0) return null;
+                return (
+                  <div className="mt-1.5 flex flex-wrap gap-1">
+                    {list.slice(0, 24).map((x) => (
+                      <span key={x.nm} className="px-1.5 py-0.5 rounded bg-white border border-teal-200 text-[11px]">
+                        {x.nm}
+                        <b className="ml-1 text-teal-700 tabular-nums">
+                          {x.p === null ? '단가없음' : `${x.p.toFixed(x.p < 10 ? 2 : 1)}원/g`}
+                        </b>
+                      </span>
+                    ))}
+                    {list.length > 24 && <span className="text-[11px] text-teal-600 self-center">외 {list.length - 24}종</span>}
+                  </div>
+                );
+              })()}
             </div>
 
             {/* 원재료별 비중 변화 순위 */}
