@@ -505,17 +505,23 @@ export function productsContainingMaterial(
   q: string,
   recipeMap: Map<string, Recipe>,
   ambientRecipeMap: Map<string, AmbientRecipe>,
-): { coldCodes: Set<string>; ambientKeys: Set<string>; matchedMaterialNames: string[] } {
+): { coldCodes: Set<string>; ambientKeys: Set<string>; matchedMaterialNames: string[]; matchedMaterials: { name: string; code?: string }[] } {
   // '*' = 전체 원재료 (모든 레시피 제품 포함)
   if (q.trim() === '*') {
-    const cold = new Set<string>(); const amb = new Set<string>(); const nm = new Set<string>();
+    const cold = new Set<string>(); const amb = new Set<string>();
+    const mm = new Map<string, { name: string; code?: string }>();
+    const add = (i: { name: string; code?: string }) => {
+      const k = i.code ? CODE_KEY_PREFIX + normalizeCode(i.code) : normalizeMaterialName(i.name);
+      if (!mm.has(k)) mm.set(k, { name: i.name, code: i.code });
+    };
     recipeMap.forEach((r) => {
       const c = canonicalShort(r.code || '');
       if (c) cold.add(c);
-      r.ingredients.forEach((i) => nm.add(i.name));
+      r.ingredients.forEach(add);
     });
-    ambientRecipeMap.forEach((r, k) => { amb.add(k); r.ingredients.forEach((i) => nm.add(i.name)); });
-    return { coldCodes: cold, ambientKeys: amb, matchedMaterialNames: [...nm].sort() };
+    ambientRecipeMap.forEach((r, k) => { amb.add(k); r.ingredients.forEach(add); });
+    const arr = [...mm.values()];
+    return { coldCodes: cold, ambientKeys: amb, matchedMaterialNames: arr.map((x) => x.name).sort(), matchedMaterials: arr };
   }
   // 쉼표/줄바꿈으로 여러 원재료 동시 검색 (예: "한우, 전복, 게살") — 하나라도 맞으면 포함
   //  '-' 로 시작하면 제외 (예: "한우, -사골육수" → 한우류에서 한우사골육수만 뺌)
@@ -526,15 +532,18 @@ export function productsContainingMaterial(
   const codeNeedles = terms.map((t) => normalizeCode(t)).filter(Boolean);
   const coldCodes = new Set<string>();
   const ambientKeys = new Set<string>();
-  const names = new Set<string>();
-  if (needles.length === 0) return { coldCodes, ambientKeys, matchedMaterialNames: [] };
+  const matched = new Map<string, { name: string; code?: string }>();
+  if (needles.length === 0) return { coldCodes, ambientKeys, matchedMaterialNames: [], matchedMaterials: [] };
 
   const hit = (ingName: string, ingCode?: string) => {
     const n = normalizeMaterialName(ingName);
     const c = normalizeCode(ingCode || '');
     if (excludes.some((ex) => n.includes(ex))) return false;   // 제외어 우선
     const ok = needles.some((nd) => n.includes(nd)) || (!!c && codeNeedles.some((cd) => c.includes(cd)));
-    if (ok) names.add(ingName);
+    if (ok) {
+      const k = ingCode ? CODE_KEY_PREFIX + normalizeCode(ingCode) : normalizeMaterialName(ingName);
+      if (!matched.has(k)) matched.set(k, { name: ingName, code: ingCode });
+    }
     return ok;
   };
 
@@ -546,7 +555,8 @@ export function productsContainingMaterial(
   ambientRecipeMap.forEach((r, key) => {
     if (r.ingredients.some((ing) => hit(ing.name, ing.code))) ambientKeys.add(key);
   });
-  return { coldCodes, ambientKeys, matchedMaterialNames: [...names].sort() };
+  const arr = [...matched.values()];
+  return { coldCodes, ambientKeys, matchedMaterialNames: arr.map((x) => x.name).sort(), matchedMaterials: arr };
 }
 
 /** 원재료 투입 제품의 생산 비중 (전체 생산량 대비) */
@@ -560,6 +570,7 @@ export interface MaterialShareResult {
   aTotal: number; bTotal: number;       // 전체 생산량
   aSharePct: number; bSharePct: number; // 비중 %
   matchedMaterialNames: string[];
+  matchedMaterials: { name: string; code?: string }[];
 }
 export function materialProductShare(
   q: string,
@@ -568,7 +579,7 @@ export function materialProductShare(
   recipeMap: Map<string, Recipe>,
   ambientRecipeMap: Map<string, AmbientRecipe>,
 ): MaterialShareResult {
-  const { coldCodes, ambientKeys, matchedMaterialNames } = productsContainingMaterial(q, recipeMap, ambientRecipeMap);
+  const { coldCodes, ambientKeys, matchedMaterialNames, matchedMaterials } = productsContainingMaterial(q, recipeMap, ambientRecipeMap);
   const isMatch = (p: ProductCostRow) =>
     p.kind === 'cold' ? coldCodes.has(p.key) : ambientKeys.has(p.key.replace(/^amb:/, ''));
 
@@ -592,7 +603,7 @@ export function materialProductShare(
     rows, aQty, bQty, aTotal, bTotal,
     aSharePct: aTotal > 0 ? (aQty / aTotal) * 100 : 0,
     bSharePct: bTotal > 0 ? (bQty / bTotal) * 100 : 0,
-    matchedMaterialNames,
+    matchedMaterialNames, matchedMaterials,
   };
 }
 

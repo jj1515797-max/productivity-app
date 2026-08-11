@@ -2192,14 +2192,27 @@ function MaterialSharePanel({
               <span className="text-teal-600"> · 이 중 <b>하나라도</b> 들어간 제품을 모두 집계 (냉장+실온 전체 생산량 기준, 중복 없이 1회)</span>
               {(() => {
                 // 매칭 재료를 실제 단가(₩/g) 순으로 — '고단가'인지 눈으로 확인
-                const pm = new Map<string, number>();
+                //  사용량은 ERP 코드로 병합되므로(같은 코드면 표시명 하나만 남음)
+                //  이름이 아니라 '코드 우선 → 이름' 순으로 찾아야 단가가 붙는다.
+                const byKey = new Map<string, number>();
+                const byName = new Map<string, number>();
                 rawDiff.forEach((r) => {
                   const g = r.bGrams || r.aGrams;
                   const c = r.bGrams ? r.bCost : r.aCost;
-                  if (g > 0) pm.set(normalizeMaterialName(r.name), c / g);
+                  if (g <= 0) return;
+                  const ppgv = c / g;
+                  byKey.set(r.key, ppgv);
+                  byName.set(normalizeMaterialName(r.name), ppgv);
                 });
-                const list = res.matchedMaterialNames
-                  .map((nm) => ({ nm, p: pm.get(normalizeMaterialName(nm)) ?? null }))
+                const lookup = (m: { name: string; code?: string }) => {
+                  if (m.code) {
+                    const k = CODE_KEY_PREFIX + normalizeCode(m.code);
+                    if (byKey.has(k)) return byKey.get(k)!;
+                  }
+                  return byName.get(normalizeMaterialName(m.name)) ?? null;
+                };
+                const list = (res.matchedMaterials || [])
+                  .map((m) => ({ nm: m.name, p: lookup(m) }))
                   .sort((a, b) => (b.p ?? -1) - (a.p ?? -1));
                 if (list.length === 0) return null;
                 return (
