@@ -1,0 +1,884 @@
+import { Fragment, useEffect, useMemo, useState } from 'react';
+import type { ReactNode } from 'react';
+import { collection, collectionGroup, doc, getDoc, getDocs, onSnapshot, query, setDoc, where } from 'firebase/firestore';
+import ExcelJS from 'exceljs';
+import { db } from '../firebase';
+import type { AmbientEntry, Item, MachineEntry } from '../types';
+import type { AmbientRecipe, Recipe } from '../lib/wasteCompute';
+import { CODE_KEY_PREFIX, monthPriceKey, normalizeCode, normalizeMaterialName } from '../lib/wasteCompute';
+import { canonicalShort } from '../lib/codeUtil';
+import { computeMonthlyProduction, getStage, STAGE_COLOR, STAGE_LETTERS } from '../lib/monthlyProduction';
+import type { MonthlyProduction } from '../lib/monthlyProduction';
+import { allocateActualOutflow, computeTheoreticalByProduct } from '../lib/materialAllocation';
+import type { AllocationResult, IngTheoretical } from '../lib/materialAllocation';
+import { expandAmbientRecipeMap, expandRecipeMap } from '../lib/bomExpansion';
+
+/* ===== 캐시 ===== */
+const PREFIX = 'matAnalysis2:';
+const TTL_PAST = 30 * 24 * 60 * 60 * 1000;
+const TTL_CURRENT = 5 * 60 * 1000;
+function getCache<T>(key: string, ttl: number): T | null {
+  try {
+    const raw = localStorage.getItem(PREFIX + key);
+    if (!raw) return null;
+    const p = JSON.parse(raw) as { ts: number; data: T };
+    if (Date.now() - p.ts > ttl) return null;
+    return p.data;
+  } catch { return null; }
+}
+function setCache<T>(key: string, data: T) {
+  try { localStorage.setItem(PREFIX + key, JSON.stringify({ ts: Date.now(), data })); } catch {}
+}
+
+function thisMonth(): string {
+  const d = new Date();
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+// 천단위 콤마 입력 헬퍼
+function parseNum(s: string): number { return Number((s || '').replace(/[^\d.-]/g, '')) || 0; }
+function fmtNum(n: number): string { return n ? Math.round(n).toLocaleString() : ''; }
+function shiftMonth(m: string, delta: number): string {
+  const [y, mm] = m.split('-').map(Number);
+  const d = new Date(y, mm - 1 + delta, 1);
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+}
+
+async function fetchMonthLogistics(month: string): Promise<Record<string, number>> {
+  const [yy, mm] = month.split('-').map(Number);
+  const lastDay = new Date(yy, mm, 0).getDate();
+  const dates = Array.from({ length: lastDay }, (_, i) => `${month}-${String(i + 1).padStart(2, '0')}`);
+  const snaps = await Promise.all(dates.map((d) => getDocs(collection(db, 'days', d, 'logistics'))));
+  const map: Record<string, number> = {};
+  snaps.forEach((s, i) => {
+    if (s.empty) return;
+    let sum = 0;
+    s.forEach((d) => { sum += (d.data().qty as number) || 0; });
+    map[dates[i]] = sum;
+  });
+  return map;
+}
+
+interface RawMonth {
+  entries: MachineEntry[];
+  items: Item[];
+  ambient: AmbientEntry[];
+  logistics: Record<string, number>;
+}
+async function fetchMonth(month: string): Promise<RawMonth> {
+  const start = `${month}-01`;
+  const end = `${month}-31`;
+  const [ents, its, amb, log] = await Promise.all([
+    getDocs(query(collectionGroup(db, 'entries'), where('date', '>=', start), where('date', '<=', end))),
+    getDocs(query(collectionGroup(db, 'items'), where('date', '>=', start), where('date', '<=', end))),
+    getDocs(query(collectionGroup(db, 'ambient'), where('date', '>=', start), where('date', '<=', end))),
+    fetchMonthLogistics(month),
+  ]);
+  const entries: MachineEntry[] = [];
+  ents.forEach((d) => {
+    const data = d.data() as MachineEntry;
+    if (!data.machine) return;
+    entries.push(data);
+  });
+  const items: Item[] = its.docs.map((d) => d.data() as Item);
+  const ambient: AmbientEntry[] = amb.docs.map((d) => d.data() as AmbientEntry);
+  return { entries, items, ambient, logistics: log };
+}
+
+export default function MaterialAnalysis2() {
+  const tm = thisMonth();
+  const [month, setMonth] = useState(shiftMonth(tm, -1));
+  const [running, setRunning] = useState(false);
+  const [raw, setRaw] = useState<RawMonth | null>(null);
+  const [prod, setProd] = useState<MonthlyProduction | null>(null);
+  const [byIng, setByIng] = useState<Map<string, IngTheoretical> | null>(null);
+  const [result, setResult] = useState<AllocationResult | null>(null);
+  const [outflowG, setOutflowG] = useState<Record<string, number>>({});
+  const [outflowAmt, setOutflowAmt] = useState<Record<string, number>>({});
+  const [search, setSearch] = useState('');
+  const [expand, setExpand] = useState<Record<string, boolean>>({});
+  const [err, setErr] = useState<string | null>(null);
+
+  // 분석1과 동일하게 마스터 DB 구독
+  const [recipeMap, setRecipeMap] = useState<Map<string, Recipe>>(new Map());
+  const [ambientRecipeMap, setAmbientRecipeMap] = useState<Map<string, AmbientRecipe>>(new Map());
+  const [subRecipeMap, setSubRecipeMap] = useState<Map<string, Recipe>>(new Map());
+  const [expandSub, setExpandSub] = useState<boolean>(() => {
+    try { return JSON.parse(localStorage.getItem('matAnalysis:expandSub') || 'true'); } catch { return true; }
+  });
+  useEffect(() => { try { localStorage.setItem('matAnalysis:expandSub', JSON.stringify(expandSub)); } catch {} }, [expandSub]);
+  const [basePriceMap, setBasePriceMap] = useState<Map<string, number>>(new Map());  // 기초단가 (materialPricesInventory)
+  const [baseNameMap, setBaseNameMap] = useState<Map<string, string>>(new Map());    // 키 → 단가표상 이름
+
+  // 이름 별칭 — 분석1과 동일 Firestore 문서(appMeta/materialAliases) 공유
+  const [nameOverrides, setNameOverrides] = useState<Record<string, string>>({});
+  useEffect(() => onSnapshot(doc(db, 'appMeta', 'materialAliases'), (snap) => {
+    const data = snap.exists() ? (snap.data() as { overrides?: Record<string, string> }) : {};
+    setNameOverrides(data.overrides || {});
+  }), []);
+  const saveNameOverride = (key: string, name: string, fallback: string) => {
+    const trimmed = name.trim();
+    const next = { ...nameOverrides };
+    if (!trimmed || trimmed === fallback) delete next[key]; else next[key] = trimmed;
+    setNameOverrides(next);
+    setDoc(doc(db, 'appMeta', 'materialAliases'), { overrides: next, updatedAt: new Date().toISOString() })
+      .catch((e) => console.error('[materialAliases save]', e));
+  };
+  const displayName = (key: string, original: string) => nameOverrides[key] || original;
+
+  useEffect(() => {
+    return onSnapshot(collection(db, 'recipes'), (snap) => {
+      const m = new Map<string, Recipe>();
+      snap.forEach((d) => {
+        const data = d.data() as Recipe;
+        m.set(d.id, { ...data, code: d.id });
+        m.set(d.id.toLowerCase(), { ...data, code: d.id });
+      });
+      setRecipeMap(m);
+    });
+  }, []);
+  useEffect(() => {
+    return onSnapshot(collection(db, 'subRecipes'), (snap) => {
+      const m = new Map<string, Recipe>();
+      snap.forEach((d) => {
+        const data = d.data() as Recipe;
+        m.set(d.id, { ...data, code: d.id });
+        m.set(d.id.toLowerCase(), { ...data, code: d.id });
+      });
+      setSubRecipeMap(m);
+    });
+  }, []);
+  useEffect(() => {
+    return onSnapshot(collection(db, 'ambientRecipes'), (snap) => {
+      const m = new Map<string, AmbientRecipe>();
+      snap.forEach((d) => {
+        const data = d.data() as AmbientRecipe;
+        m.set(d.id, { ...data, batchPieces: Number(data.batchPieces) || 1 });
+      });
+      setAmbientRecipeMap(m);
+    });
+  }, []);
+  useEffect(() => {
+    return onSnapshot(collection(db, 'materialPricesInventory'), (snap) => {
+      const m = new Map<string, number>();
+      const nm = new Map<string, string>();
+      snap.forEach((d) => {
+        const data = d.data() as { month?: string; name?: string; pricePerGram?: number; code?: string };
+        const mo = data.month || '';
+        if (!mo) return;
+        const price = Number(data.pricePerGram) || 0;
+        if (data.name) { const k = monthPriceKey(mo, normalizeMaterialName(data.name)); m.set(k, price); nm.set(k, data.name); }
+        if (data.code) { const k = monthPriceKey(mo, CODE_KEY_PREFIX + normalizeCode(data.code)); m.set(k, price); if (data.name) nm.set(k, data.name); }
+      });
+      setBasePriceMap(m);
+      setBaseNameMap(nm);
+    });
+  }, []);
+
+  // 월별 기초단가 → 이번달 단가 슬라이스 (key without month prefix → 통일 키)
+  // monthPriceKey 는 `${month}|${innerKey}` 형식 (구분자 '|')
+  const monthBasePrice = useMemo(() => {
+    const out = new Map<string, number>();
+    const prefix = `${month}|`;
+    basePriceMap.forEach((v, k) => {
+      if (!k.startsWith(prefix)) return;
+      out.set(k.slice(prefix.length), v);
+    });
+    return out;
+  }, [basePriceMap, month]);
+  // 키 → 단가표상 이름 (분배불가/표시 보강용)
+  const monthBaseName = useMemo(() => {
+    const out = new Map<string, string>();
+    const prefix = `${month}|`;
+    baseNameMap.forEach((v, k) => {
+      if (!k.startsWith(prefix)) return;
+      out.set(k.slice(prefix.length), v);
+    });
+    return out;
+  }, [baseNameMap, month]);
+  const orphanLabel = (key: string) => monthBaseName.get(key) || key.replace(CODE_KEY_PREFIX, '코드 ');
+
+  // 사용자 입력 출고량 Firestore 로드 (월별)
+  useEffect(() => {
+    let cancel = false;
+    getDoc(doc(db, 'materialOutflow', month)).then((snap) => {
+      if (cancel) return;
+      const d = snap.data() as { outflowGrams?: Record<string, number>; outflowAmounts?: Record<string, number> } | undefined;
+      setOutflowG(d?.outflowGrams || {});
+      setOutflowAmt(d?.outflowAmounts || {});
+    }).catch(() => {});
+    return () => { cancel = true; };
+  }, [month]);
+  const saveOutflow = (next: { outflowGrams?: Record<string, number>; outflowAmounts?: Record<string, number> }) => {
+    setDoc(doc(db, 'materialOutflow', month), { ...next, updatedAt: new Date().toISOString() }, { merge: true })
+      .catch((e) => console.error('[materialOutflow save]', e));
+  };
+
+  const runAnalysis = async (bustCache = false) => {
+    setRunning(true); setErr(null);
+    try {
+      const fetchOrCache = async (): Promise<RawMonth> => {
+        const ttl = month === tm ? TTL_CURRENT : TTL_PAST;
+        if (!bustCache) {
+          const c = getCache<RawMonth>(`raw:${month}`, ttl);
+          if (c) return c;
+        }
+        const r = await fetchMonth(month);
+        setCache(`raw:${month}`, r);
+        return r;
+      };
+      const r = await fetchOrCache();
+      setRaw(r);
+      const p = computeMonthlyProduction(r.entries, r.items, r.ambient, r.logistics);
+      setProd(p);
+      // 코드 → 표시명 매핑 (items 우선)
+      const nameByCode = new Map<string, string>();
+      r.items.forEach((it) => {
+        const k = canonicalShort(it.code || '');
+        if (k && it.name) nameByCode.set(k, it.name);
+      });
+      const ing = computeTheoreticalByProduct(p.coldByCode, r.ambient, effRecipeMap, effAmbientRecipeMap, nameByCode);
+      setByIng(ing);
+    } catch (e: any) {
+      console.error('[MaterialAnalysis2]', e);
+      setErr(e?.message || '분석 중 오류');
+    } finally { setRunning(false); }
+  };
+
+
+  // 반제품 펼침 옵션에 따라 effective recipe map 산출
+  const effRecipeMap = useMemo(() => (expandSub ? expandRecipeMap(recipeMap, subRecipeMap) : recipeMap), [recipeMap, subRecipeMap, expandSub]);
+  const effAmbientRecipeMap = useMemo(() => (expandSub ? expandAmbientRecipeMap(ambientRecipeMap, subRecipeMap) : ambientRecipeMap), [ambientRecipeMap, subRecipeMap, expandSub]);
+
+  // 레시피/실온레시피/반제품 DB가 (분석 시작 후에도) 변경되면 byIng 자동 재계산
+  useEffect(() => {
+    if (!raw || !prod) return;
+    const nameByCode = new Map<string, string>();
+    raw.items.forEach((it) => {
+      const k = canonicalShort(it.code || '');
+      if (k && it.name) nameByCode.set(k, it.name);
+    });
+    setByIng(computeTheoreticalByProduct(prod.coldByCode, raw.ambient, effRecipeMap, effAmbientRecipeMap, nameByCode));
+  }, [effRecipeMap, effAmbientRecipeMap, raw, prod]);
+
+  // 결과 재계산 (byIng + outflow + price 변화 시)
+  useEffect(() => {
+    if (!byIng) { setResult(null); return; }
+    const r = allocateActualOutflow(byIng, outflowG, outflowAmt, monthBasePrice, monthBaseName);
+    setResult(r);
+  }, [byIng, outflowG, outflowAmt, monthBasePrice, monthBaseName]);
+
+  // 입력 onBlur 핸들러
+  const updateG = (key: string, val: number) => {
+    const next = { ...outflowG };
+    if (val > 0) next[key] = val; else delete next[key];
+    setOutflowG(next);
+    saveOutflow({ outflowGrams: next });
+  };
+  const updateAmt = (key: string, val: number) => {
+    const next = { ...outflowAmt };
+    if (val > 0) next[key] = val; else delete next[key];
+    setOutflowAmt(next);
+    saveOutflow({ outflowAmounts: next });
+  };
+
+  // 원재료별 원가 산출 수량(costedG) — 분배% 계산용 + 검증
+  const totalActualByIngKey = useMemo(() => {
+    const m = new Map<string, number>();
+    result?.perIng.forEach((r) => m.set(r.key, r.costedG));
+    return m;
+  }, [result]);
+
+  // 검증: 각 원재료의 Σ 제품 분배g 이 원가산출 수량(costedG)과 일치하는지 (실수 누적 오차 허용)
+  const verifyRows = useMemo(() => {
+    if (!result) return [] as { name: string; code?: string; actualG: number; sumG: number; diff: number; pct: number }[];
+    const sumByIng = new Map<string, number>();
+    result.perProduct.forEach((p) => p.breakdown.forEach((b) => sumByIng.set(b.ingKey, (sumByIng.get(b.ingKey) || 0) + b.actualG)));
+    return result.perIng
+      .filter((r) => r.costedG > 0)
+      .map((r) => {
+        const sumG = sumByIng.get(r.key) || 0;
+        const diff = sumG - r.costedG;
+        const pct = r.costedG > 0 ? (Math.abs(diff) / r.costedG) * 100 : 0;
+        return { name: r.name, code: r.code, actualG: r.costedG, sumG, diff, pct };
+      });
+  }, [result]);
+  const verifySummary = useMemo(() => {
+    if (verifyRows.length === 0) return null;
+    const maxPct = Math.max(...verifyRows.map((r) => r.pct), 0);
+    const totalActual = verifyRows.reduce((s, r) => s + r.actualG, 0);
+    const totalSum = verifyRows.reduce((s, r) => s + r.sumG, 0);
+    const offenders = verifyRows.filter((r) => r.pct > 0.5).sort((a, b) => b.pct - a.pct).slice(0, 5);
+    return { maxPct, totalActual, totalSum, offenders };
+  }, [verifyRows]);
+
+  const filteredPerIng = useMemo(() => {
+    if (!result) return [];
+    const q = search.trim().toLowerCase();
+    if (!q) return result.perIng;
+    return result.perIng.filter((r) => r.name.toLowerCase().includes(q) || (r.code || '').toLowerCase().includes(q) || displayName(r.key, r.name).toLowerCase().includes(q));
+  }, [result, search, nameOverrides]);
+
+  // 검색 필터된 원재료 키 집합 (제품 표 필터링용)
+  const filteredIngKeys = useMemo(() => new Set(filteredPerIng.map((r) => r.key)), [filteredPerIng]);
+  const filteredPerProduct = useMemo(() => {
+    if (!result) return [];
+    const q = search.trim();
+    if (!q) return result.perProduct;
+    return result.perProduct.filter((p) => p.breakdown.some((b) => filteredIngKeys.has(b.ingKey)));
+  }, [result, search, filteredIngKeys]);
+
+  // 제품 표 정렬: 'stage' = 단계별 그룹(코드순) / 'perEA' = EA당 원가 내림차순(그룹 해제)
+  const [prodSort, setProdSort] = useState<'stage' | 'perEA'>('stage');
+  const stageIndex = (code: string) => {
+    const s = getStage(code);
+    const i = s ? (STAGE_LETTERS as readonly string[]).indexOf(s) : -1;
+    return i < 0 ? 999 : i;  // 단계 없는 코드는 맨 뒤
+  };
+  // EA당 정렬 모드: 평탄 리스트
+  const sortedPerEA = useMemo(
+    () => [...filteredPerProduct].sort((a, b) => b.materialCostPerEA - a.materialCostPerEA),
+    [filteredPerProduct],
+  );
+  // 단계별 그룹: 단계 → 제품들(코드순)
+  const groupedByStage = useMemo(() => {
+    const groups = new Map<string, typeof filteredPerProduct>();
+    filteredPerProduct.forEach((p) => {
+      const s = getStage(p.code) || (p.isAmbient ? 'S' : '기타');
+      if (!groups.has(s)) groups.set(s, []);
+      groups.get(s)!.push(p);
+    });
+    // 단계 순서대로 정렬 (A,B,...,I,S,기타), 그룹 내 코드순
+    const order = [...STAGE_LETTERS, '기타'];
+    const sortedKeys = Array.from(groups.keys()).sort((a, b) => {
+      const ia = order.indexOf(a); const ib = order.indexOf(b);
+      return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib);
+    });
+    return sortedKeys.map((stage) => {
+      const list = groups.get(stage)!.slice().sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }));
+      const subtotal = list.reduce((s, p) => s + p.materialCost, 0);
+      return { stage, list, subtotal, count: list.length };
+    });
+  }, [filteredPerProduct, stageIndex]);
+
+  const downloadXlsx = async () => {
+    if (!result) return;
+    const wb = new ExcelJS.Workbook();
+    const baseFont = { size: 11, name: '맑은 고딕' };
+    const thin = { style: 'thin' as const };
+    const border = { top: thin, left: thin, right: thin, bottom: thin };
+    const fill = (argb: string) => ({ type: 'pattern' as const, pattern: 'solid' as const, fgColor: { argb } });
+
+    // 시트 0: 계산 방법 (맨 앞)
+    const wsHelp = wb.addWorksheet('계산방법');
+    wsHelp.columns = [{ width: 22 }, { width: 92 }];
+    const help: [string, string][] = [
+      ['📘 원재료분석2 계산 방법', ''],
+      ['', ''],
+      ['[1] 이론사용량 (g)', '제품 BOM(레시피)의 "1개당 g" × 그 달 실제 생산수량 을 모두 합산.'],
+      ['', '예) 멥쌀이 A제품 10g×100개=1,000g, B제품 5g×500개=2,500g … → 멥쌀 이론총합'],
+      ['', '※ 반제품(순수본베이스·디포리육수)은 원물 단위로 풀어서 합산 (반제품 펼침 ON)'],
+      ['', ''],
+      ['[2] 실제출고 (g)', 'ERP 재고평가현황에서 입력한 그 달 실제 출고수량. (없으면 이론사용량으로 대체)'],
+      ['', ''],
+      ['[3] 수율 %', '= 이론사용량 ÷ 실제출고 × 100.  100% 미만 = BOM 보다 많이 씀(로스).'],
+      ['', ''],
+      ['[4] 적용단가 (₩/g)', '실측 = 출고금액 ÷ 출고수량.   기초 = 수동 입력(출고 없을 때). 단가구분 컬럼 참고.'],
+      ['', ''],
+      ['[5] 분배 % (제품별)', '= 그 제품의 이 원재료 BOM이론 ÷ 이 원재료 전체 이론총합.'],
+      ['', '"이 원재료를 어느 제품이 몇 % 책임지는가"의 이론 비율. 모든 제품 합 = 100%.'],
+      ['', ''],
+      ['[6] 분배 g (제품별)', '= 실제출고(g) × 분배%.   모든 제품 분배g 합 = 실제출고 (무손실).'],
+      ['', ''],
+      ['[7] 제품 원가 (₩)', '제품에 들어간 각 원재료의 (분배g × 적용단가) 를 모두 합산 = 그 제품 총 원재료비.'],
+      ['', ''],
+      ['[8] EA당 원가 (₩)', '= 제품 원재료비 ÷ 그 제품 생산수량(EA).'],
+      ['', ''],
+      ['── 검증 ──', 'Σ(제품별 분배g)=실제출고g (원재료별).   Σ(제품 원가)=Σ(원재료 실측원가).'],
+    ];
+    help.forEach(([a, b], i) => {
+      const r = i + 1;
+      const ca = wsHelp.getCell(r, 1); const cb = wsHelp.getCell(r, 2);
+      ca.value = a; cb.value = b;
+      ca.font = { ...baseFont, bold: i === 0 || a.startsWith('[') || a.startsWith('──') };
+      cb.font = baseFont; cb.alignment = { wrapText: true, vertical: 'top' };
+      if (i === 0) ca.font = { size: 14, bold: true, name: '맑은 고딕' };
+      if (a.startsWith('[') || a.startsWith('──')) ca.fill = fill('FFEEF2FF');
+    });
+
+    // 시트 1: 원재료별 출고
+    const ws1 = wb.addWorksheet('원재료별 출고');
+    ws1.columns = [
+      { width: 26 }, { width: 12 }, { width: 18 }, { width: 16 }, { width: 18 }, { width: 10 }, { width: 14 }, { width: 9 }, { width: 18 }, { width: 18 },
+    ];
+    ['원재료', '코드', '이론사용량(g)', '실제출고(g)', '실제출고금액(₩)', '수율%', '적용단가(₩/g)', '단가구분', '실측원가(₩)', '이론원가(₩)']
+      .forEach((h, i) => {
+        const c = ws1.getCell(1, i + 1);
+        c.value = h; c.font = { ...baseFont, bold: true }; c.alignment = { horizontal: 'center', wrapText: true };
+        c.fill = fill('FFE2E8F0'); c.border = border;
+      });
+    result.perIng.forEach((r, idx) => {
+      const row = 2 + idx;
+      ws1.getCell(row, 1).value = displayName(r.key, r.name);
+      ws1.getCell(row, 2).value = r.code || '';
+      // 셀 값은 원본 정밀도 그대로(클릭 시 full), 표시는 소수 2자리
+      ws1.getCell(row, 3).value = r.theoreticalG;
+      ws1.getCell(row, 4).value = r.actualG;
+      ws1.getCell(row, 5).value = outflowAmt[r.key] || (r.usedActualPrice ? r.actualG * r.unitCost : 0);
+      ws1.getCell(row, 6).value = r.yieldPct / 100;          // 백분율 셀
+      ws1.getCell(row, 7).value = r.unitCost;                 // 실제 적용된 단가
+      ws1.getCell(row, 8).value = r.usedActualPrice ? '실측' : (r.hasPrice ? '기초' : '없음');
+      ws1.getCell(row, 9).value = r.totalCost;
+      ws1.getCell(row, 10).value = r.theoreticalG * r.basePrice;
+      for (let c = 1; c <= 10; c++) {
+        const cell = ws1.getCell(row, c);
+        cell.font = baseFont; cell.border = border;
+        cell.alignment = { horizontal: c <= 2 || c === 8 ? (c === 1 ? 'left' : 'center') : 'right' };
+        if (c === 3 || c === 4 || c === 5 || c === 9 || c === 10) cell.numFmt = '#,##0.00';
+        if (c === 6) cell.numFmt = '0.0%';
+        if (c === 7) cell.numFmt = '#,##0.0000';
+      }
+    });
+
+    // 시트 2: 제품별 원재료원가 (요약)
+    const ws2 = wb.addWorksheet('제품별 원재료원가');
+    ws2.columns = [
+      { width: 14 }, { width: 40 }, { width: 14 }, { width: 20 }, { width: 16 },
+    ];
+    ['제품코드', '제품명', '생산수량(EA)', '원재료비(₩)', 'EA당 원가(₩)'].forEach((h, i) => {
+      const c = ws2.getCell(1, i + 1);
+      c.value = h; c.font = { ...baseFont, bold: true }; c.alignment = { horizontal: 'center' };
+      c.fill = fill('FFE2E8F0'); c.border = border;
+    });
+    result.perProduct.forEach((p, idx) => {
+      const row = 2 + idx;
+      ws2.getCell(row, 1).value = p.code;
+      ws2.getCell(row, 2).value = p.productName;
+      ws2.getCell(row, 3).value = p.productionQty;
+      ws2.getCell(row, 4).value = p.materialCost;
+      ws2.getCell(row, 5).value = p.materialCostPerEA;
+      for (let c = 1; c <= 5; c++) {
+        const cell = ws2.getCell(row, c);
+        cell.font = baseFont; cell.border = border;
+        cell.alignment = { horizontal: c === 2 ? 'left' : c === 1 ? 'center' : 'right' };
+        if (c === 3) cell.numFmt = '#,##0';
+        if (c === 4 || c === 5) cell.numFmt = '#,##0.00';
+      }
+    });
+
+    // 시트 2-2: 제품별 원재료 상세 (breakdown 펼침과 동일)
+    const ws2b = wb.addWorksheet('제품별 원재료 상세');
+    ws2b.columns = [
+      { width: 14 }, { width: 34 }, { width: 10 }, { width: 26 }, { width: 16 }, { width: 16 }, { width: 12 }, { width: 18 }, { width: 14 },
+    ];
+    ['제품코드', '제품명', '생산EA', '원재료', 'BOM 이론(g)', '분배 g', '분배 %', '원가(₩)', 'EA당(₩)'].forEach((h, i) => {
+      const c = ws2b.getCell(1, i + 1);
+      c.value = h; c.font = { ...baseFont, bold: true }; c.alignment = { horizontal: 'center' };
+      c.fill = fill('FFE2E8F0'); c.border = border;
+    });
+    let rr = 2;
+    result.perProduct.forEach((p) => {
+      // 제품 헤더(합계) 행
+      ws2b.getCell(rr, 1).value = p.code;
+      ws2b.getCell(rr, 2).value = p.productName;
+      ws2b.getCell(rr, 3).value = p.productionQty;
+      ws2b.getCell(rr, 4).value = `합계 (원재료 ${p.breakdown.length}종)`;
+      ws2b.getCell(rr, 8).value = p.materialCost;
+      ws2b.getCell(rr, 9).value = p.materialCostPerEA;
+      for (let c = 1; c <= 9; c++) {
+        const cell = ws2b.getCell(rr, c);
+        cell.font = { ...baseFont, bold: true }; cell.border = border;
+        cell.fill = fill('FFF1F5F9');
+        cell.alignment = { horizontal: c === 2 || c === 4 ? 'left' : c === 1 ? 'center' : 'right' };
+        if (c === 3) cell.numFmt = '#,##0';
+        if (c === 8 || c === 9) cell.numFmt = '#,##0.00';
+      }
+      rr++;
+      // 원재료별 상세 행
+      p.breakdown.forEach((b) => {
+        const total = totalActualByIngKey.get(b.ingKey) || 0;
+        const pct = total > 0 ? (b.actualG / total) * 100 : 0;
+        ws2b.getCell(rr, 4).value = displayName(b.ingKey, b.name);
+        ws2b.getCell(rr, 5).value = b.theoreticalG;
+        ws2b.getCell(rr, 6).value = b.actualG;
+        ws2b.getCell(rr, 7).value = pct;
+        ws2b.getCell(rr, 8).value = b.cost;
+        ws2b.getCell(rr, 9).value = p.productionQty > 0 ? b.cost / p.productionQty : 0;
+        for (let c = 1; c <= 9; c++) {
+          const cell = ws2b.getCell(rr, c);
+          cell.font = baseFont; cell.border = border;
+          cell.alignment = { horizontal: c === 4 ? 'left' : 'right' };
+          if (c === 5 || c === 6) cell.numFmt = '#,##0.00';
+          if (c === 7) cell.numFmt = '0.00"%"';
+          if (c === 8 || c === 9) cell.numFmt = '#,##0.00';
+        }
+        rr++;
+      });
+    });
+
+    // 시트 3: 분배 불가
+    if (result.orphans.length > 0) {
+      const ws3 = wb.addWorksheet('분배 불가');
+      ws3.columns = [{ width: 28 }, { width: 18 }, { width: 18 }];
+      ['원재료', '출고량(g)', '금액(₩)'].forEach((h, i) => {
+        const c = ws3.getCell(1, i + 1);
+        c.value = h; c.font = { ...baseFont, bold: true };
+        c.fill = fill('FFFEE2E2'); c.border = border;
+      });
+      result.orphans.forEach((o, idx) => {
+        const r = 2 + idx;
+        ws3.getCell(r, 1).value = o.name;
+        ws3.getCell(r, 2).value = o.actualG;
+        ws3.getCell(r, 3).value = o.totalCost;
+        ws3.getCell(r, 2).numFmt = '#,##0.00';
+        ws3.getCell(r, 3).numFmt = '#,##0.00';
+      });
+    }
+
+
+    const buf = await wb.xlsx.writeBuffer();
+    const blob = new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a'); a.href = url; a.download = `원재료분석2_${month}.xlsx`; a.click();
+    URL.revokeObjectURL(url);
+  };
+
+  // KPI 집계
+  const kpi = useMemo(() => {
+    if (!result) return null;
+    const totalActualG = result.perIng.reduce((s, r) => s + r.actualG, 0);
+    const totalTheoG = result.perIng.reduce((s, r) => s + r.theoreticalG, 0);
+    const loss = result.ingTotalCost - result.theoTotalCost;
+    return {
+      totalTheoG, totalActualG,
+      yieldPct: totalActualG > 0 ? (totalTheoG / totalActualG) * 100 : 0,
+      theoTotalCost: result.theoTotalCost,
+      actualTotalCost: result.ingTotalCost,
+      lossCost: loss,
+    };
+  }, [result]);
+
+  return (
+    <div className="space-y-5">
+      {/* 상단 액션바 */}
+      <div className="bg-white border rounded-lg p-4 flex items-center gap-3 flex-wrap">
+        <span className="font-bold text-gray-800 text-lg">🧪 원재료분석2 <span className="text-xs font-normal text-gray-500">— 실측 출고량 역배분</span></span>
+        <span className="text-gray-300">|</span>
+        <span className="text-xs text-gray-500">기준월</span>
+        <input type="month" value={month} onChange={(e) => e.target.value && setMonth(e.target.value)}
+          className="border rounded px-2 py-1 text-sm font-bold" />
+        {subRecipeMap.size > 0 && (
+          <label className="flex items-center gap-1.5 text-xs px-2 py-1 rounded border bg-emerald-50 cursor-pointer hover:bg-emerald-100" title="반제품(순수본베이스/디포리육수 등)을 원물 단위로 자동 분해해 계산">
+            <input type="checkbox" checked={expandSub} onChange={(e) => setExpandSub(e.target.checked)} />
+            <span className="font-semibold text-emerald-700">🧪 반제품 펼침</span>
+            <span className="text-emerald-500">({expandSub ? '원물 단위' : '반제품 단위'})</span>
+          </label>
+        )}
+        <div className="ml-auto flex items-center gap-1.5">
+          <button onClick={() => runAnalysis(true)} disabled={running} title="캐시 무시" className="px-2.5 py-1 text-xs rounded border hover:bg-gray-50 disabled:opacity-50">🔄</button>
+          <button onClick={downloadXlsx} disabled={!result} className="px-3 py-1.5 text-xs rounded bg-emerald-600 text-white font-semibold hover:bg-emerald-700 disabled:bg-gray-300">📥 엑셀</button>
+          <button onClick={() => runAnalysis(false)} disabled={running}
+            className="px-4 py-1.5 text-sm rounded bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:bg-gray-300 shadow-sm">
+            {running ? '분석 중...' : '🚀 분석 시작'}
+          </button>
+        </div>
+      </div>
+
+      {err && <div className="bg-rose-50 border border-rose-200 text-rose-700 rounded-lg p-3 text-sm">⚠️ {err}</div>}
+
+      {/* DB 상태 */}
+      {(recipeMap.size === 0 || basePriceMap.size === 0) && (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
+          ⚠️ 설정 페이지에서 <b>레시피</b> + <b>원재료단가(재고평가현황)</b> 를 먼저 입력해야 분석이 정확합니다.
+          {basePriceMap.size === 0 && <span className="ml-1 text-rose-600">(재고평가현황 비어있음)</span>}
+        </div>
+      )}
+
+      {/* 데이터 이상 감지 — 출고 합계가 이론 대비 비정상적으로 작으면 깨진 입력일 가능성 */}
+      {kpi && kpi.totalActualG > 0 && kpi.totalActualG < kpi.totalTheoG * 0.1 && (
+        <div className="bg-rose-50 border-2 border-rose-300 rounded-lg p-3 text-sm text-rose-800">
+          🚨 <b>출고 입력이 비정상적으로 작습니다</b> — 실제 출고 합계 {Math.round(kpi.totalActualG).toLocaleString()}g 가 이론 사용량 {Math.round(kpi.totalTheoG).toLocaleString()}g 의 10% 미만입니다.
+          이전에 천단위 콤마가 깨진 상태로 저장된 데이터일 수 있어요. 설정 &gt; 재고평가현황 에서 일괄입력 다시 또는 표에서 직접 수정하세요.
+        </div>
+      )}
+
+      {/* KPI */}
+      {kpi && (
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+          <KpiCard label="이론 원재료비" value={Math.round(kpi.theoTotalCost).toLocaleString() + '원'} accent="slate" />
+          <KpiCard label="실측 원재료비" value={Math.round(kpi.actualTotalCost).toLocaleString() + '원'} accent="slate" />
+          <KpiCard label="수율 손실 금액" value={(kpi.lossCost >= 0 ? '+' : '') + Math.round(kpi.lossCost).toLocaleString() + '원'} accent={kpi.lossCost >= 0 ? 'rose' : 'emerald'} sub={kpi.lossCost >= 0 ? '실측이 이론보다 더 씀' : '이론보다 적게 씀'} />
+          <KpiCard label="전체 수율" value={kpi.yieldPct.toFixed(1) + '%'} accent={kpi.yieldPct >= 95 ? 'emerald' : 'rose'} sub="이론g/실측g" />
+        </div>
+      )}
+
+      {/* 원재료별 출고 입력 표 */}
+      {result && (
+        <div className="bg-white border-2 border-indigo-200 rounded-lg overflow-hidden">
+          <div className="px-4 py-3 bg-indigo-600 text-white font-bold text-sm flex items-center gap-2 flex-wrap">
+            <span>📌 원재료별 실제 출고 입력 ({result.perIng.length}건)</span>
+            <span className="text-xs font-normal text-indigo-100">설정 &gt; 재고평가현황 일괄입력으로 데이터 관리 → 자동 반영</span>
+            <div className="ml-auto flex gap-1.5">
+              <input value={search} onChange={(e) => setSearch(e.target.value)}
+                placeholder="🔍 원재료/코드 검색"
+                className="text-gray-800 text-xs rounded px-2 py-1 border-0" />
+            </div>
+          </div>
+          <div className="overflow-x-auto max-h-[600px] overflow-y-auto">
+            <table className="w-full text-xs">
+              <thead className="bg-slate-50 text-gray-600 sticky top-0 z-10">
+                <tr>
+                  <th className="border px-2 py-1.5 text-left">원재료</th>
+                  <th className="border px-2 py-1.5 w-24">코드</th>
+                  <th className="border px-2 py-1.5 text-right w-28">이론사용량(g)</th>
+                  <th className="border px-2 py-1.5 text-right w-32">실제 출고(g)</th>
+                  <th className="border px-2 py-1.5 text-right w-20">수율%</th>
+                  <th className="border px-2 py-1.5 text-right w-32">적용단가 (₩/g)<br/><span className="text-[10px] font-normal text-gray-400">실측 = 출고금액 ÷ 출고수량</span></th>
+                  <th className="border px-2 py-1.5 text-right w-32">실제 출고금액(₩)</th>
+                  <th className="border px-2 py-1.5 text-right w-28">원재료원가(₩)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {filteredPerIng.map((r) => {
+                  const yld = r.yieldPct;
+                  const yClass = r.actualG === 0 ? 'text-gray-300' : yld >= 100 ? 'text-emerald-600' : yld >= 90 ? 'text-gray-600' : 'text-rose-600 font-bold';
+                  return (
+                    <tr key={r.key} className="border-t">
+                      <td className="border px-2 py-1">
+                        <input
+                          key={`name-${r.key}-${nameOverrides[r.key] || ''}`}
+                          defaultValue={displayName(r.key, r.name)}
+                          onBlur={(e) => saveNameOverride(r.key, e.target.value, r.name)}
+                          className="w-full bg-transparent focus:bg-yellow-50 focus:ring-1 focus:ring-yellow-300 rounded px-1 py-0.5"
+                          title={`원본: ${r.name}`}
+                        />
+                        {r.remappedFromKey && (
+                          <div className="text-[10px] text-indigo-600 pl-1" title={`출고 입력의 코드(${r.remappedFromKey.replace(CODE_KEY_PREFIX, '')})가 BOM 코드(${r.code || '-'})와 달라 이름으로 자동 매칭됨. 레시피DB 또는 단가표 코드를 통일해 주세요.`}>
+                            ↪ 코드불일치 → 이름으로 매칭됨 ({r.remappedFromKey.replace(CODE_KEY_PREFIX, '')})
+                          </div>
+                        )}
+                      </td>
+                      <td className="border px-2 py-1 text-center font-mono text-gray-500">{r.code || '-'}</td>
+                      <td className="border px-2 py-1 text-right">{Math.round(r.theoreticalG).toLocaleString()}</td>
+                      <td className="border px-2 py-0">
+                        <input inputMode="numeric" defaultValue={fmtNum(r.actualG)}
+                          key={`g-${r.key}-${r.actualG}`}
+                          onBlur={(e) => { const v = parseNum(e.target.value); updateG(r.key, v); e.target.value = fmtNum(v); }}
+                          className="w-full px-2 py-1 text-right border-0 focus:bg-yellow-50 focus:ring-1 focus:ring-yellow-300 rounded" />
+                      </td>
+                      <td className={`border px-2 py-1 text-right ${yClass}`}>{r.actualG > 0 ? yld.toFixed(1) + '%' : '-'}</td>
+                      <td className="border px-2 py-1 text-right">
+                        {!r.hasPrice && !r.usedActualPrice ? (
+                          <div className="text-amber-600 text-[11px]">⚠️ 없음</div>
+                        ) : r.usedActualPrice ? (
+                          <div className="leading-tight">
+                            <span className="text-indigo-700 font-bold" title="출고금액 ÷ 출고수량">{r.unitCost.toFixed(2)}</span>
+                            <span className="ml-1 text-[10px] text-blue-500">실측</span>
+                          </div>
+                        ) : (
+                          <div className="leading-tight">
+                            <span className="text-gray-800 font-semibold">{r.basePrice.toFixed(4)}</span>
+                            <span className="ml-1 text-[10px] text-amber-600">기초</span>
+                          </div>
+                        )}
+                      </td>
+                      <td className="border px-2 py-0">
+                        <input inputMode="numeric" defaultValue={fmtNum(outflowAmt[r.key] || 0)}
+                          key={`amt-${r.key}-${outflowAmt[r.key] || 0}`}
+                          placeholder="선택"
+                          onBlur={(e) => { const v = parseNum(e.target.value); updateAmt(r.key, v); e.target.value = v ? fmtNum(v) : ''; }}
+                          className="w-full px-2 py-1 text-right border-0 focus:bg-yellow-50 focus:ring-1 focus:ring-yellow-300 rounded text-gray-500" />
+                      </td>
+                      <td className="border px-2 py-1 text-right font-semibold">
+                        {Math.round(r.totalCost).toLocaleString()}
+                        {r.usedTheoretical && <span className="ml-1 text-[10px] text-amber-600" title="출고 데이터가 없어 이론사용량 × 기초단가로 산출">이론</span>}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* 분배 불가 */}
+      {result && result.orphans.length > 0 && (
+        <div className="bg-rose-50 border-2 border-rose-300 rounded-lg overflow-hidden">
+          <div className="px-4 py-2.5 bg-rose-200 font-bold text-rose-900 text-sm">⚠️ 분배 불가 — 이론사용량 0 인데 실측 출고 입력됨 (BOM 누락/타 라인/입력 오류 가능)</div>
+          <div className="overflow-x-auto">
+            <table className="w-full text-xs">
+              <thead className="bg-rose-100 text-gray-700">
+                <tr>
+                  <th className="border px-2 py-1.5 text-left">원재료</th>
+                  <th className="border px-2 py-1.5 text-left w-32">출고 입력 코드</th>
+                  <th className="border px-2 py-1.5 text-right w-28">출고(g)</th>
+                  <th className="border px-2 py-1.5 text-right w-28">금액(₩)</th>
+                </tr>
+              </thead>
+              <tbody>
+                {result.orphans.map((o) => (
+                  <tr key={o.key} className="border-t">
+                    <td className="border px-2 py-1 font-semibold">{orphanLabel(o.key)}</td>
+                    <td className="border px-2 py-1 font-mono text-gray-500">{o.key.startsWith(CODE_KEY_PREFIX) ? o.key.replace(CODE_KEY_PREFIX, '') : '(이름키)'}</td>
+                    <td className="border px-2 py-1 text-right">{Math.round(o.actualG).toLocaleString()}</td>
+                    <td className="border px-2 py-1 text-right">{Math.round(o.totalCost).toLocaleString()}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* 분배 검증 — 각 원재료의 Σ제품 분배g = 실측 출고g 인지 */}
+      {verifySummary && (
+        <div className={`border-2 rounded-lg p-3 text-sm ${verifySummary.maxPct < 0.001 ? 'bg-emerald-50 border-emerald-200' : verifySummary.maxPct < 0.5 ? 'bg-blue-50 border-blue-200' : 'bg-amber-50 border-amber-300'}`}>
+          <div className="font-bold text-gray-800 mb-1">🔬 분배 검증</div>
+          <div className="text-xs text-gray-700">
+            전체 {verifyRows.length}개 원재료의 <b>Σ(제품별 분배 g)</b> = {Math.round(verifySummary.totalSum).toLocaleString()}g, <b>원가산출 수량</b> 합계 = {Math.round(verifySummary.totalActual).toLocaleString()}g
+            <span className="ml-2 font-mono">(최대 오차 {verifySummary.maxPct.toFixed(4)}%)</span>
+            <span className="ml-1 text-gray-400">· 원가산출 수량 = 출고있으면 실제출고, 없으면 이론사용량</span>
+          </div>
+          {verifySummary.maxPct < 0.001
+            ? <div className="text-xs text-emerald-700 mt-1">✓ 모든 원재료의 분배 합이 원가산출 수량과 정확히 일치합니다 (분배 무손실)</div>
+            : verifySummary.maxPct < 0.5
+              ? <div className="text-xs text-blue-700 mt-1">✓ 부동소수점 누적 오차 범위 내 (실질적으로 일치)</div>
+              : <div className="text-xs text-amber-700 mt-1">
+                  ⚠️ 분배 오차 큰 원재료: {verifySummary.offenders.map((o) => `${o.name}(${o.pct.toFixed(1)}%)`).join(', ')}
+                </div>}
+        </div>
+      )}
+
+      {/* 제품별 원재료 원가 */}
+      {result && (() => {
+        // 한 제품 행 + (펼침) 원재료 상세 렌더
+        const renderProductRow = (p: typeof filteredPerProduct[number], rankLabel: ReactNode) => {
+          const k = p.code + (p.isAmbient ? '_A' : '_C');
+          const open = !!expand[k];
+          return (
+            <Fragment key={k}>
+              <tr className="border-t hover:bg-slate-50 cursor-pointer"
+                onClick={() => setExpand((prev) => ({ ...prev, [k]: !prev[k] }))}>
+                <td className="border px-2 py-1 text-center text-gray-500">{rankLabel}</td>
+                <td className="border px-2 py-1 font-mono text-gray-500">{p.code}{p.isAmbient && <span className="ml-1 text-orange-500">S</span>}</td>
+                <td className="border px-2 py-1">{p.productName}</td>
+                <td className="border px-2 py-1 text-right">{p.productionQty.toLocaleString()}</td>
+                <td className="border px-2 py-1 text-right font-semibold">{Math.round(p.materialCost).toLocaleString()}</td>
+                <td className="border px-2 py-1 text-right font-bold text-emerald-700">{Math.round(p.materialCostPerEA).toLocaleString()}</td>
+                <td className="border px-2 py-1 text-center text-gray-400">{open ? '▾' : '▸'}</td>
+              </tr>
+              {open && (
+                <tr className="bg-slate-50">
+                  <td colSpan={7} className="border px-2 py-2">
+                    <table className="w-full text-xs">
+                      <thead className="text-gray-500">
+                        <tr>
+                          <th className="text-left px-2">원재료</th>
+                          <th className="text-right px-2 w-28">BOM 이론(g)</th>
+                          <th className="text-right px-2 w-28">분배 g</th>
+                          <th className="text-right px-2 w-16">분배 %</th>
+                          <th className="text-right px-2 w-28">원가(₩)</th>
+                          <th className="text-right px-2 w-20">EA당(₩)</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {p.breakdown.map((b) => {
+                          const total = totalActualByIngKey.get(b.ingKey) || 0;
+                          const pct = total > 0 ? (b.actualG / total) * 100 : 0;
+                          return (
+                          <tr key={b.ingKey} className="border-t border-gray-200">
+                            <td className="px-2 py-0.5">{displayName(b.ingKey, b.name)}</td>
+                            <td className="px-2 py-0.5 text-right text-gray-500">{Math.round(b.theoreticalG).toLocaleString()}</td>
+                            <td className="px-2 py-0.5 text-right">{Math.round(b.actualG).toLocaleString()}</td>
+                            <td className="px-2 py-0.5 text-right text-gray-500">{pct.toFixed(2)}%</td>
+                            <td className="px-2 py-0.5 text-right">{Math.round(b.cost).toLocaleString()}</td>
+                            <td className="px-2 py-0.5 text-right">{p.productionQty > 0 ? Math.round(b.cost / p.productionQty).toLocaleString() : '-'}</td>
+                          </tr>
+                          );
+                        })}
+                      </tbody>
+                    </table>
+                  </td>
+                </tr>
+              )}
+            </Fragment>
+          );
+        };
+        return (
+        <div className="bg-white border-2 border-emerald-200 rounded-lg overflow-hidden">
+          <div className="px-4 py-3 bg-emerald-600 text-white font-bold text-sm flex items-center gap-2 flex-wrap">
+            <span>🍱 제품별 원재료 원가 ({filteredPerProduct.length}품목)</span>
+            <span className="text-xs font-normal text-emerald-100">실측 출고 역배분 기준</span>
+            <div className="ml-auto flex items-center gap-1.5">
+              <button onClick={() => setProdSort('stage')}
+                className={`px-2.5 py-1 text-xs rounded font-semibold ${prodSort === 'stage' ? 'bg-white text-emerald-700' : 'bg-emerald-500 text-white hover:bg-emerald-400'}`}>
+                🗂️ 단계별 그룹
+              </button>
+              <button onClick={() => setProdSort('perEA')}
+                className={`px-2.5 py-1 text-xs rounded font-semibold ${prodSort === 'perEA' ? 'bg-white text-emerald-700' : 'bg-emerald-500 text-white hover:bg-emerald-400'}`}>
+                💰 EA당 높은순
+              </button>
+            </div>
+          </div>
+          <div className="overflow-x-auto max-h-[700px] overflow-y-auto">
+            <table className="w-full text-xs">
+              <thead className="bg-slate-50 text-gray-600 sticky top-0 z-10">
+                <tr>
+                  <th className="border px-2 py-1.5 w-10">{prodSort === 'perEA' ? '순위' : '단계'}</th>
+                  <th className="border px-2 py-1.5 w-24">코드</th>
+                  <th className="border px-2 py-1.5 text-left">제품명</th>
+                  <th className="border px-2 py-1.5 text-right w-24">생산 EA</th>
+                  <th className="border px-2 py-1.5 text-right w-32">원재료비(₩)</th>
+                  <th className="border px-2 py-1.5 text-right w-28">EA당(₩)</th>
+                  <th className="border px-2 py-1.5 w-8"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {prodSort === 'perEA'
+                  ? sortedPerEA.map((p, idx) => renderProductRow(p, idx + 1))
+                  : groupedByStage.map((grp) => (
+                      <Fragment key={`grp-${grp.stage}`}>
+                        <tr className="bg-emerald-50 sticky top-[29px] z-[5]">
+                          <td className="border px-2 py-1.5" colSpan={4}>
+                            <span className={`inline-block w-6 h-6 rounded text-white text-[11px] font-bold leading-6 text-center mr-2 ${STAGE_COLOR[grp.stage] || 'bg-gray-400'}`}>{grp.stage}</span>
+                            <span className="font-bold text-emerald-800">{grp.stage} 단계</span>
+                            <span className="text-gray-500 ml-1">· {grp.count}품목</span>
+                          </td>
+                          <td className="border px-2 py-1.5 text-right font-bold text-emerald-800">{Math.round(grp.subtotal).toLocaleString()}</td>
+                          <td className="border" colSpan={2}></td>
+                        </tr>
+                        {grp.list.map((p) => renderProductRow(p, <span className="text-gray-300">·</span>))}
+                      </Fragment>
+                    ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+        );
+      })()}
+
+      {!result && !running && (
+        <div className="bg-white border border-dashed border-gray-300 rounded-lg p-16 text-center text-gray-400 text-sm">
+          기준월을 선택하고 우측 상단 <b className="text-blue-600">🚀 분석 시작</b> 을 누른 뒤,<br />
+          원재료별 실제 출고량(g)을 ERP 재고평가 데이터로 입력하세요.<br />
+          → 제품별 원재료 원가가 자동 산출됩니다.
+        </div>
+      )}
+    </div>
+  );
+}
+
+function KpiCard({ label, value, accent, sub }: { label: string; value: string; accent: 'rose' | 'emerald' | 'slate'; sub?: string }) {
+  const styles = {
+    rose:    { box: 'bg-rose-50 border-rose-200',       txt: 'text-rose-700' },
+    emerald: { box: 'bg-emerald-50 border-emerald-200', txt: 'text-emerald-700' },
+    slate:   { box: 'bg-slate-50 border-slate-200',     txt: 'text-slate-700' },
+  }[accent];
+  return (
+    <div className={`border rounded-lg p-3 ${styles.box}`}>
+      <div className="text-xs text-gray-600">{label}</div>
+      <div className={`mt-1 text-xl font-bold ${styles.txt}`}>{value}</div>
+      {sub && <div className="text-[10px] text-gray-500 mt-0.5">{sub}</div>}
+    </div>
+  );
+}
