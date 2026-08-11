@@ -849,6 +849,8 @@ export default function MaterialAnalysis() {
           monthA={monthA} monthB={monthB}
           aP={costDrivers.aP} bP={costDrivers.bP}
           recipeMap={effRecipeMap} ambientRecipeMap={effAmbientRecipeMap}
+          rawDiff={mixSplit?.byScope.all.full || []}
+          flexedDiff={mixSplit?.byScopeFlexed.all.full || []}
         />
       )}
 
@@ -1987,11 +1989,13 @@ function CostDriverPanel({
    "전체 생산량 중 한우가 들어간 품목 비중이 몇%에서 몇%로 바뀌었나"
    ============================================================ */
 function MaterialSharePanel({
-  monthA, monthB, aP, bP, recipeMap, ambientRecipeMap,
+  monthA, monthB, aP, bP, recipeMap, ambientRecipeMap, rawDiff, flexedDiff,
 }: {
   monthA: string; monthB: string;
   aP: ProductCostRow[]; bP: ProductCostRow[];
   recipeMap: Map<string, Recipe>; ambientRecipeMap: Map<string, AmbientRecipe>;
+  rawDiff: DiffRow[];      // 각 월 실제 단가 기준
+  flexedDiff: DiffRow[];   // A월 사용량도 B월 단가로 재평가 (단가효과 제거)
 }) {
   const [q, setQ] = useState('한우');
   const [applied, setApplied] = useState('한우');
@@ -2004,6 +2008,15 @@ function MaterialSharePanel({
     () => materialShareRanking(aP, bP, recipeMap, ambientRecipeMap),
     [aP, bP, recipeMap, ambientRecipeMap],
   );
+  // 선택 원재료의 금액 영향 — 실적 기준 / B월 단가 고정 기준
+  const money = useMemo(() => {
+    const terms = applied.split(/[,\n]/).map((t) => normalizeMaterialName(t.trim())).filter(Boolean);
+    const pick = (arr: DiffRow[]) => arr.filter((r) => terms.some((t) => normalizeMaterialName(r.name).includes(t)));
+    const sum = (arr: DiffRow[]) => arr.reduce((acc, r) => ({
+      a: acc.a + r.aCost, b: acc.b + r.bCost, ag: acc.ag + r.aGrams, bg: acc.bg + r.bGrams,
+    }), { a: 0, b: 0, ag: 0, bg: 0 });
+    return { raw: sum(pick(rawDiff)), flex: sum(pick(flexedDiff)) };
+  }, [applied, rawDiff, flexedDiff]);
   const n = (v: number) => Math.round(v).toLocaleString();
   const deltaPct = res.bSharePct - res.aSharePct;
   const up = deltaPct > 0;
@@ -2071,6 +2084,43 @@ function MaterialSharePanel({
                 <div className="text-[11px] text-gray-400 mt-1">{res.rows.length}품목</div>
               </div>
             </div>
+
+            {/* 금액 환산 */}
+            {(money.flex.a > 0 || money.flex.b > 0) && (
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="border-2 rounded-xl p-3" style={{ borderColor: money.flex.b - money.flex.a < 0 ? '#bfdbfe' : '#fecdd3' }}>
+                  <div className="text-xs font-bold text-gray-700">
+                    🔒 {monthB} 재고평가 단가 기준 <span className="font-normal text-gray-500">(단가효과 제외 · 권장)</span>
+                  </div>
+                  <div className="text-2xl font-extrabold tabular-nums mt-1"
+                    style={{ color: money.flex.b - money.flex.a < 0 ? '#2563eb' : '#e11d48' }}>
+                    {money.flex.b - money.flex.a < 0 ? '▼ 절감 ' : '▲ 상승 '}
+                    {Math.abs(Math.round(money.flex.b - money.flex.a)).toLocaleString()}원
+                  </div>
+                  <div className="text-xs text-gray-500 mt-0.5 tabular-nums">
+                    {Math.round(money.flex.a).toLocaleString()} → {Math.round(money.flex.b).toLocaleString()}원
+                    · 사용량 {Math.round(money.flex.ag / 1000).toLocaleString()} → {Math.round(money.flex.bg / 1000).toLocaleString()}kg
+                  </div>
+                  <div className="text-[11px] text-gray-400 mt-1">
+                    두 달 모두 {monthB} 단가로 계산 → <b>사용량·제품구성 변화만</b> 반영
+                  </div>
+                </div>
+                <div className="border rounded-xl p-3 bg-slate-50">
+                  <div className="text-xs font-bold text-gray-600">📊 실적 기준 <span className="font-normal text-gray-500">(각 월 실제 단가)</span></div>
+                  <div className="text-2xl font-extrabold tabular-nums mt-1"
+                    style={{ color: money.raw.b - money.raw.a < 0 ? '#2563eb' : '#e11d48' }}>
+                    {money.raw.b - money.raw.a < 0 ? '▼ ' : '▲ '}
+                    {Math.abs(Math.round(money.raw.b - money.raw.a)).toLocaleString()}원
+                  </div>
+                  <div className="text-xs text-gray-500 mt-0.5 tabular-nums">
+                    {Math.round(money.raw.a).toLocaleString()} → {Math.round(money.raw.b).toLocaleString()}원
+                  </div>
+                  <div className="text-[11px] text-gray-400 mt-1">
+                    단가 변동 포함 · 두 값의 차이 ≈ <b>단가 효과 {Math.round((money.raw.b - money.raw.a) - (money.flex.b - money.flex.a)).toLocaleString()}원</b>
+                  </div>
+                </div>
+              </div>
+            )}
 
             <div className="bg-teal-50 border border-teal-200 rounded p-3 text-xs text-teal-900">
               매칭된 원재료 {res.matchedMaterialNames.length}종: <b>{res.matchedMaterialNames.join(', ')}</b>
