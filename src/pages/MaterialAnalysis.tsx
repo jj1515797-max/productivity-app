@@ -306,6 +306,7 @@ export default function MaterialAnalysis() {
       return {
         down: [...all].sort((x, y) => x.diffCost - y.diffCost).filter((r) => r.diffCost < 0).slice(0, 12),
         up: [...all].sort((x, y) => y.diffCost - x.diffCost).filter((r) => r.diffCost > 0).slice(0, 12),
+        full: all,   // 검색용 전체 목록 (상위 12에서 밀려난 항목도 찾을 수 있게)
       };
     };
     const aAll = usage(monthA, aRaw, 'all');
@@ -1418,12 +1419,13 @@ function MixSplitPanel({
   data: {
     a: { cold: number; amb: number; coldQty: number; ambQty: number };
     b: { cold: number; amb: number; coldQty: number; ambQty: number };
-    byScope: Record<'all' | 'cold' | 'ambient', { down: DiffRow[]; up: DiffRow[] }>;
-    byScopeFlexed: Record<'all' | 'cold' | 'ambient', { down: DiffRow[]; up: DiffRow[] }>;
+    byScope: Record<'all' | 'cold' | 'ambient', { down: DiffRow[]; up: DiffRow[]; full: DiffRow[] }>;
+    byScopeFlexed: Record<'all' | 'cold' | 'ambient', { down: DiffRow[]; up: DiffRow[]; full: DiffRow[] }>;
   };
 }) {
   const [scope, setScope] = useState<'all' | 'cold' | 'ambient'>('all');
   const [flexed, setFlexed] = useState(false);   // true = B월 단가 고정(단가효과 제외)
+  const [q, setQ] = useState('');                // 원재료 검색 (상위 12에서 밀린 항목 확인용)
   const set = (flexed ? data.byScopeFlexed : data.byScope)[scope];
   const won = (n: number) => Math.round(n).toLocaleString();
   const row = (d: { cold: number; amb: number; coldQty: number; ambQty: number }) => {
@@ -1567,6 +1569,60 @@ function MixSplitPanel({
             <>📊 <b>실적 그대로</b> — 각 월의 실제 단가로 계산했습니다. 실제 지출 차이라 총액 설명에 맞지만,
             <b> 사용량 변화와 단가 변화가 섞여</b> 있습니다. 단가 효과를 빼려면 “{monthB} 단가 고정”을 누르세요.</>
           )}
+        </div>
+
+        {/* 원재료 검색 — 냉장/실온이 서로 상쇄되어 상위 목록에서 사라진 항목 확인용 */}
+        <div>
+          <input value={q} onChange={(e) => setQ(e.target.value)}
+            placeholder="🔍 원재료 검색 (예: 한우) — 냉장·실온을 나눠서 봅니다"
+            className="w-full border rounded-md px-3 py-2 text-sm" />
+          {q.trim() && (() => {
+            const src = flexed ? data.byScopeFlexed : data.byScope;
+            const norm = (x: string) => x.toLowerCase().replace(/\s+/g, '');
+            const keys = new Set(src.all.full.filter((r) => norm(r.name).includes(norm(q))).map((r) => r.key));
+            const find = (arr: DiffRow[], k: string) => arr.find((r) => r.key === k);
+            const list = [...keys].map((k) => ({
+              k,
+              name: find(src.all.full, k)?.name || k,
+              all: find(src.all.full, k),
+              cold: find(src.cold.full, k),
+              amb: find(src.ambient.full, k),
+            })).sort((a, b) => (a.all?.diffCost ?? 0) - (b.all?.diffCost ?? 0));
+            if (list.length === 0) return <div className="mt-2 text-xs text-gray-400 px-1">일치하는 원재료가 없습니다.</div>;
+            const cell = (r?: DiffRow) => r
+              ? <span className={`font-bold ${cls(r.diffCost)}`}>{arrow(r.diffCost)} {won(Math.abs(r.diffCost))}</span>
+              : <span className="text-gray-300">–</span>;
+            const g = (r?: DiffRow) => r ? `${Math.round(r.aGrams).toLocaleString()}→${Math.round(r.bGrams).toLocaleString()}` : '–';
+            return (
+              <div className="mt-2 border rounded overflow-hidden">
+                <table className="w-full text-xs">
+                  <thead className="bg-slate-100 text-gray-600">
+                    <tr>
+                      <th className="px-3 py-1.5 text-left">원재료</th>
+                      <th className="px-3 py-1.5 text-right">냉장 증감</th>
+                      <th className="px-3 py-1.5 text-right">실온 증감</th>
+                      <th className="px-3 py-1.5 text-right">전체 증감</th>
+                      <th className="px-3 py-1.5 text-right">전체 사용량(g)</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y tabular-nums">
+                    {list.map((x) => (
+                      <tr key={x.k} className="hover:bg-slate-50/60">
+                        <td className="px-3 py-1 text-gray-800">{x.name}</td>
+                        <td className="px-3 py-1 text-right">{cell(x.cold)}</td>
+                        <td className="px-3 py-1 text-right">{cell(x.amb)}</td>
+                        <td className="px-3 py-1 text-right">{cell(x.all)}</td>
+                        <td className="px-3 py-1 text-right text-gray-500">{g(x.all)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+                <div className="px-3 py-1.5 bg-slate-50 text-[11px] text-gray-500">
+                  냉장과 실온이 반대 방향이면 전체에서 상쇄되어 상위 목록에 안 보일 수 있습니다.
+                </div>
+              </div>
+            );
+          })()}
         </div>
 
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
