@@ -162,6 +162,8 @@ export default function MaterialAnalysis() {
   useEffect(() => { try { localStorage.setItem('matAnalysis:expandSub', JSON.stringify(expandSub)); } catch {} }, [expandSub]);
   const [priceMap, setPriceMap] = useState<Map<string, number>>(new Map());
   const [priceNameByCode, setPriceNameByCode] = useState<Map<string, string>>(new Map());
+  // 제품 공급가 (설정 › 제품 공급가) — 수식 엑셀의 제품수익성 시트에 자동 반영
+  const [supplyPrices, setSupplyPrices] = useState<Record<string, number>>({});
 
   useEffect(() => {
     return onSnapshot(collection(db, 'recipes'), (snap) => {
@@ -217,6 +219,11 @@ export default function MaterialAnalysis() {
       setPriceNameByCode(nm);
     });
   }, []);
+
+  useEffect(() => onSnapshot(doc(db, 'appMeta', 'supplyPrices'), (snap) => {
+    const d = snap.exists() ? (snap.data() as { prices?: Record<string, number> }) : {};
+    setSupplyPrices(d.prices || {});
+  }), []);
 
   // monthlyMeta/{month}.productionAmount — 월별 생산금액 (다른 사용자 공유)
   useEffect(() => {
@@ -646,6 +653,7 @@ export default function MaterialAnalysis() {
         aAmount: Number(aAmount.replace(/[^\d.]/g, '')) || undefined,
         bAmount: Number(bAmount.replace(/[^\d.]/g, '')) || undefined,
         appTotalA: sum(aResult.rows), appTotalB: sum(bResult.rows),
+        supplyPrices,
         highCostTerms: ['한우', '전복', '게살', '관자'],
         highCostExcludes: ['사골육수'],
       });
