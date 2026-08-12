@@ -549,13 +549,18 @@ export function productsContainingMaterial(
     return ok;
   };
 
+  // some() 은 첫 매칭에서 멈춰 나머지 원재료가 목록에 안 잡힘 → 전부 순회해야 함
   recipeMap.forEach((r) => {
     const code = canonicalShort(r.code || '');
     if (!code) return;
-    if (r.ingredients.some((ing) => hit(ing.name, ing.code))) coldCodes.add(code);
+    let any = false;
+    r.ingredients.forEach((ing) => { if (hit(ing.name, ing.code)) any = true; });
+    if (any) coldCodes.add(code);
   });
   ambientRecipeMap.forEach((r, key) => {
-    if (r.ingredients.some((ing) => hit(ing.name, ing.code))) ambientKeys.add(key);
+    let any = false;
+    r.ingredients.forEach((ing) => { if (hit(ing.name, ing.code)) any = true; });
+    if (any) ambientKeys.add(key);
   });
   const arr = [...matched.values()];
   return { coldCodes, ambientKeys, matchedMaterialNames: arr.map((x) => x.name).sort(), matchedMaterials: arr };

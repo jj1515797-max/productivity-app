@@ -2212,20 +2212,34 @@ function MaterialSharePanel({
                   return byName.get(normalizeMaterialName(m.name)) ?? null;
                 };
                 const list = (res.matchedMaterials || [])
-                  .map((m) => ({ nm: m.name, p: lookup(m) }))
+                  .map((m) => ({ nm: m.name, code: m.code, p: lookup(m) }))
                   .sort((a, b) => (b.p ?? -1) - (a.p ?? -1));
+                // 같은 이름인데 코드가 여러 개면 레시피 DB 중복 등록 의심
+                const byNm = new Map<string, number>();
+                list.forEach((x) => byNm.set(x.nm, (byNm.get(x.nm) || 0) + 1));
+                const dupNames = [...byNm.entries()].filter(([, c]) => c > 1);
                 if (list.length === 0) return null;
                 return (
-                  <div className="mt-1.5 flex flex-wrap gap-1">
+                  <div className="mt-1.5">
+                  <div className="flex flex-wrap gap-1">
                     {list.slice(0, 24).map((x) => (
-                      <span key={x.nm} className="px-1.5 py-0.5 rounded bg-white border border-teal-200 text-[11px]">
+                      <span key={(x.code || '') + x.nm} className={`px-1.5 py-0.5 rounded bg-white text-[11px] border ${(byNm.get(x.nm) || 0) > 1 ? 'border-rose-300' : 'border-teal-200'}`}>
                         {x.nm}
+                        {x.code && <span className="ml-1 font-mono text-gray-400">{x.code}</span>}
                         <b className="ml-1 text-teal-700 tabular-nums">
                           {x.p === null ? '단가없음' : `${x.p.toFixed(x.p < 10 ? 2 : 1)}원/g`}
                         </b>
                       </span>
                     ))}
                     {list.length > 24 && <span className="text-[11px] text-teal-600 self-center">외 {list.length - 24}종</span>}
+                  </div>
+                  {dupNames.length > 0 && (
+                    <div className="mt-1.5 text-[11px] text-rose-700 bg-rose-50 border border-rose-200 rounded px-2 py-1">
+                      ⚠ 같은 이름에 <b>ERP 코드가 여러 개</b> 등록된 원재료 {dupNames.length}건 —
+                      {dupNames.map(([n, c]) => ` ${n}(${c}개)`).join(',')}
+                      <br />레시피 DB에서 코드가 제각각이면 사용량이 나뉘어 집계됩니다. 하나로 통일하는 게 좋습니다.
+                    </div>
+                  )}
                   </div>
                 );
               })()}
