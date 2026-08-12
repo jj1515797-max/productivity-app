@@ -117,6 +117,8 @@ export function computeMonthlyUsage(
   ambientRecipeMap: Map<string, AmbientRecipe>, // key = normalizeMaterialName(name)
   priceMap: Map<string, number>,
   priceMonth?: string,
+  /** 일자 → 품목코드 → 잔여량. 주면 품목별 실제 생산량으로 계산 (비례배분 X) */
+  logisticsByDayCode?: Record<string, Record<string, number>>,
 ): UsageResult {
   const pMonth = priceMonth ?? month;
   const usageGrams = new Map<string, { name: string; code?: string; grams: number }>();
@@ -135,7 +137,7 @@ export function computeMonthlyUsage(
     const k = canonicalShort(r.code || '');
     if (k && !normRecipeMap.has(k)) normRecipeMap.set(k, r);
   });
-  const coldByCode = computeColdProductionByCode(entries, items, logisticsByDay);
+  const coldByCode = computeColdProductionByCode(entries, items, logisticsByDay, logisticsByDayCode);
   const missingColdCodes: string[] = [];
   let totalQty = 0, missingQty = 0;
   coldByCode.forEach((count, code) => {

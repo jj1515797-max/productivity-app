@@ -113,9 +113,6 @@ export default function MaterialAnalysis() {
   const [flexed, setFlexed] = useState<FlexedRow[]>([]);
   const [aQty, setAQty] = useState<number>(0);   // A월 총생산량 EA (자동 채움, 사용자 수정 가능)
   const [bQty, setBQty] = useState<number>(0);
-  const [aAmount, setAAmount] = useState<string>(''); // A월 생산금액 ₩ (선택)
-  const [bAmount, setBAmount] = useState<string>('');
-  const [scaleBy, setScaleBy] = useState<'qty' | 'amount'>('qty');
   const [aProd, setAProd] = useState<MonthlyProduction | null>(null);
   const [bProd, setBProd] = useState<MonthlyProduction | null>(null);
   const [aRaw, setARaw] = useState<RawMonth | null>(null);
@@ -221,33 +218,6 @@ export default function MaterialAnalysis() {
     });
   }, []);
 
-  // monthlyMeta/{month}.productionAmount — 월별 생산금액 (다른 사용자 공유)
-  useEffect(() => {
-    let cancel = false;
-    getDoc(doc(db, 'monthlyMeta', monthA)).then((snap) => {
-      if (cancel) return;
-      const v = snap.exists() ? (snap.data().productionAmount as number) : null;
-      setAAmount(v && v > 0 ? String(v) : '');
-    }).catch(() => {});
-    return () => { cancel = true; };
-  }, [monthA]);
-  useEffect(() => {
-    let cancel = false;
-    getDoc(doc(db, 'monthlyMeta', monthB)).then((snap) => {
-      if (cancel) return;
-      const v = snap.exists() ? (snap.data().productionAmount as number) : null;
-      setBAmount(v && v > 0 ? String(v) : '');
-    }).catch(() => {});
-    return () => { cancel = true; };
-  }, [monthB]);
-  const saveProductionAmount = (month: string, raw: string) => {
-    const v = Number(raw) || 0;
-    setDoc(doc(db, 'monthlyMeta', month), {
-      productionAmount: v,
-      updatedAt: new Date().toISOString(),
-    }, { merge: true }).catch((e) => console.error('[monthlyMeta save]', e));
-  };
-
   // 반제품 펼침 옵션 적용된 effective 레시피 맵
   const effRecipeMap = useMemo(() => (expandSub ? expandRecipeMap(recipeMap, subRecipeMap) : recipeMap), [recipeMap, subRecipeMap, expandSub]);
   const effAmbientRecipeMap = useMemo(() => (expandSub ? expandAmbientRecipeMap(ambientRecipeMap, subRecipeMap) : ambientRecipeMap), [ambientRecipeMap, subRecipeMap, expandSub]);
@@ -273,10 +243,10 @@ export default function MaterialAnalysis() {
       setAProd(aProd_); setBProd(bProd_);
 
       // 분석 2 — 각 월 자체 단가 결과 (기존 표)
-      const aRes = computeMonthlyUsage(monthA, aRaw.entries, aRaw.items, aRaw.ambient, aRaw.logistics, effRecipeMap, effAmbientRecipeMap, priceMap);
-      const bRes = computeMonthlyUsage(monthB, bRaw.entries, bRaw.items, bRaw.ambient, bRaw.logistics, effRecipeMap, effAmbientRecipeMap, priceMap);
+      const aRes = computeMonthlyUsage(monthA, aRaw.entries, aRaw.items, aRaw.ambient, aRaw.logistics, effRecipeMap, effAmbientRecipeMap, priceMap, undefined, aRaw.logisticsByCode);
+      const bRes = computeMonthlyUsage(monthB, bRaw.entries, bRaw.items, bRaw.ambient, bRaw.logistics, effRecipeMap, effAmbientRecipeMap, priceMap, undefined, bRaw.logisticsByCode);
       // A월 데이터를 B월 단가로 재평가 (Flexed Budget)
-      const aResB = computeMonthlyUsage(monthA, aRaw.entries, aRaw.items, aRaw.ambient, aRaw.logistics, effRecipeMap, effAmbientRecipeMap, priceMap, monthB);
+      const aResB = computeMonthlyUsage(monthA, aRaw.entries, aRaw.items, aRaw.ambient, aRaw.logistics, effRecipeMap, effAmbientRecipeMap, priceMap, monthB, aRaw.logisticsByCode);
       setAResult(aRes); setBResult(bRes); setAResultBPrice(aResB);
       setDiff(diffUsage(aRes, bRes));
 
@@ -296,9 +266,9 @@ export default function MaterialAnalysis() {
   // 반제품 펼침 토글이나 레시피 DB 변경 시 분석 결과 자동 재계산 (raw 있을 때만)
   useEffect(() => {
     if (!aRaw || !bRaw) return;
-    const aRes = computeMonthlyUsage(monthA, aRaw.entries, aRaw.items, aRaw.ambient, aRaw.logistics, effRecipeMap, effAmbientRecipeMap, priceMap);
-    const bRes = computeMonthlyUsage(monthB, bRaw.entries, bRaw.items, bRaw.ambient, bRaw.logistics, effRecipeMap, effAmbientRecipeMap, priceMap);
-    const aResB = computeMonthlyUsage(monthA, aRaw.entries, aRaw.items, aRaw.ambient, aRaw.logistics, effRecipeMap, effAmbientRecipeMap, priceMap, monthB);
+    const aRes = computeMonthlyUsage(monthA, aRaw.entries, aRaw.items, aRaw.ambient, aRaw.logistics, effRecipeMap, effAmbientRecipeMap, priceMap, undefined, aRaw.logisticsByCode);
+    const bRes = computeMonthlyUsage(monthB, bRaw.entries, bRaw.items, bRaw.ambient, bRaw.logistics, effRecipeMap, effAmbientRecipeMap, priceMap, undefined, bRaw.logisticsByCode);
+    const aResB = computeMonthlyUsage(monthA, aRaw.entries, aRaw.items, aRaw.ambient, aRaw.logistics, effRecipeMap, effAmbientRecipeMap, priceMap, monthB, aRaw.logisticsByCode);
     setAResult(aRes); setBResult(bRes); setAResultBPrice(aResB);
     setDiff(diffUsage(aRes, bRes));
   }, [effRecipeMap, effAmbientRecipeMap, priceMap, aRaw, bRaw, monthA, monthB]);
@@ -307,13 +277,8 @@ export default function MaterialAnalysis() {
   // Flexed Budget — 입력 변화에 반응
   useEffect(() => {
     if (!aResultBPrice || !bResult) { setFlexed([]); return; }
-    const aAmt = Number(aAmount) || 0;
-    const bAmt = Number(bAmount) || 0;
-    const useAmount = scaleBy === 'amount' && aAmt > 0 && bAmt > 0;
-    const aScale = useAmount ? aAmt : aQty;
-    const bScale = useAmount ? bAmt : bQty;
-    setFlexed(computeFlexedDiff(aResultBPrice.rows, bResult.rows, aScale, bScale));
-  }, [aResultBPrice, bResult, aQty, bQty, aAmount, bAmount, scaleBy]);
+    setFlexed(computeFlexedDiff(aResultBPrice.rows, bResult.rows, aQty, bQty));
+  }, [aResultBPrice, bResult, aQty, bQty]);
 
   const clearAll = () => {
     if (!confirm('분석 결과와 캐시를 모두 삭제할까요?')) return;
@@ -322,7 +287,6 @@ export default function MaterialAnalysis() {
     setAProd(null); setBProd(null); setARaw(null); setBRaw(null);
     setDiff([]); setFlexed([]);
     setAQty(0); setBQty(0);
-    // 생산금액(aAmount/bAmount)은 Firestore 공유값이라 분석결과 삭제로 지우지 않음
     setProdSearch(''); setExcludedIng([]); setErr(null);
   };
 
@@ -554,15 +518,23 @@ export default function MaterialAnalysis() {
         const v = d.data() as { code?: string; name?: string };
         return { code: v.code || d.id, name: v.name };
       });
+      // ERP 마감 실제 출고 (materialOutflow/{month}) — 원재료별 실제 사용량·금액
+      const [outA, outB] = await Promise.all([
+        getDoc(doc(db, 'materialOutflow', monthA)),
+        getDoc(doc(db, 'materialOutflow', monthB)),
+      ]);
+      const outflowOf = (snap: typeof outA) => {
+        const d = snap.exists() ? (snap.data() as { outflowGrams?: Record<string, number>; outflowAmounts?: Record<string, number> }) : {};
+        return { grams: d.outflowGrams || {}, amounts: d.outflowAmounts || {} };
+      };
       const sum = (rows: { cost: number }[]) => rows.reduce((s2, x) => s2 + x.cost, 0);
       const blob = await buildMaterialWorkbook({
         monthA, monthB, aProd, bProd, productNameByCode,
         recipeMap: effRecipeMap, ambientRecipeMap: effAmbientRecipeMap,
         priceMap, priceNameByCode,
-        aAmount: Number(aAmount.replace(/[^\d.]/g, '')) || undefined,
-        bAmount: Number(bAmount.replace(/[^\d.]/g, '')) || undefined,
         appTotalA: sum(aResult.rows), appTotalB: sum(bResult.rows),
         productCodes,
+        outflowA: outflowOf(outA), outflowB: outflowOf(outB),
         highCostTerms: ['한우', '전복', '게살', '관자'],
         highCostExcludes: ['사골육수'],
       });
@@ -625,51 +597,6 @@ export default function MaterialAnalysis() {
       {(recipeMap.size === 0 && ambientRecipeMap.size === 0) && (
         <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
           ⚠️ 설정 페이지에서 레시피·실온이유식레시피·원재료단가를 먼저 입력해야 분석 가능합니다.
-        </div>
-      )}
-
-      {/* 입력 패널 — 총생산량(자동, 수정가능) + 생산금액(선택) */}
-      {aResult && bResult && (
-        <div className="bg-white border rounded-lg p-4">
-          <div className="flex items-center gap-2 mb-3">
-            <span className="font-bold text-gray-800 text-sm">📌 생산 규모 입력</span>
-            <span className="text-xs text-gray-500">총생산량은 자동 계산됨 — 필요 시 직접 수정하세요</span>
-          </div>
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-            <div>
-              <label className="text-xs font-semibold text-blue-700">{monthA} 총생산량 (EA)</label>
-              <input type="number" value={aQty} onChange={(e) => setAQty(Number(e.target.value) || 0)}
-                className="mt-1 w-full border rounded px-2 py-1.5 text-sm text-right font-mono" />
-            </div>
-            <div>
-              <label className="text-xs font-semibold text-rose-700">{monthB} 총생산량 (EA)</label>
-              <input type="number" value={bQty} onChange={(e) => setBQty(Number(e.target.value) || 0)}
-                className="mt-1 w-full border rounded px-2 py-1.5 text-sm text-right font-mono" />
-            </div>
-            <div>
-              <label className="text-xs text-gray-600">{monthA} 생산금액 (₩, 선택)</label>
-              <input type="number" value={aAmount} onChange={(e) => setAAmount(e.target.value)}
-                onBlur={(e) => saveProductionAmount(monthA, e.target.value)} placeholder="직접 입력"
-                className="mt-1 w-full border rounded px-2 py-1.5 text-sm text-right font-mono" />
-            </div>
-            <div>
-              <label className="text-xs text-gray-600">{monthB} 생산금액 (₩, 선택)</label>
-              <input type="number" value={bAmount} onChange={(e) => setBAmount(e.target.value)}
-                onBlur={(e) => saveProductionAmount(monthB, e.target.value)} placeholder="직접 입력"
-                className="mt-1 w-full border rounded px-2 py-1.5 text-sm text-right font-mono" />
-            </div>
-          </div>
-          {Number(aAmount) > 0 && Number(bAmount) > 0 && (
-            <div className="mt-3 flex items-center gap-3 text-xs">
-              <span className="text-gray-600 font-semibold">연동 기준:</span>
-              <label className="flex items-center gap-1 cursor-pointer">
-                <input type="radio" checked={scaleBy === 'qty'} onChange={() => setScaleBy('qty')} /> 총생산량(EA)
-              </label>
-              <label className="flex items-center gap-1 cursor-pointer">
-                <input type="radio" checked={scaleBy === 'amount'} onChange={() => setScaleBy('amount')} /> 생산금액(₩)
-              </label>
-            </div>
-          )}
         </div>
       )}
 
