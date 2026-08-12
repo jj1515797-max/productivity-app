@@ -5,7 +5,6 @@ import type { Material, ProductSetting } from '../types';
 import { runBackup, downloadSql } from '../lib/dbBackup';
 import type { BackupProgress, BackupResult } from '../lib/dbBackup';
 import { canonicalShort, convertErpCode } from '../lib/codeUtil';
-import { looseKey } from '../lib/ambientProducts';
 import { CODE_KEY_PREFIX, normalizeCode, normalizeMaterialName } from '../lib/wasteCompute';
 import type { NotifySettings } from '../lib/productionNotify';
 
@@ -35,8 +34,6 @@ export default function ProductSettings() {
   const [erpCodeCount, setErpCodeCount] = useState<number | null>(null);
   const [showPurchaseErp, setShowPurchaseErp] = useState(false);
   const [showBackup, setShowBackup] = useState(false);
-  const [showSupply, setShowSupply] = useState(false);
-  const [supplyCount, setSupplyCount] = useState<number | null>(null);
   const [materials, setMaterials] = useState<Material[]>([]);
   // 헤더에 표시할 총개수만 가볍게 (count aggregation = 1읽기)
   const [productCount, setProductCount] = useState<number | null>(null);
@@ -339,17 +336,6 @@ export default function ProductSettings() {
             <MaterialPriceDB onCountChange={setInventoryPriceCount} collectionName="materialPricesInventory" />
           </div>
         )}
-      </Section>
-
-      {/* 제품 공급가 섹션 — 원가율/한계이익 분석용 (원재료분석 → 수식 엑셀에 자동 반영) */}
-      <Section
-        icon="💰"
-        title="제품 공급가 (원/EA)"
-        badge={supplyCount !== null ? `${supplyCount}개` : ''}
-        open={showSupply}
-        onToggle={() => setShowSupply(!showSupply)}
-      >
-        {showSupply && <SupplyPricePanel onCountChange={setSupplyCount} />}
       </Section>
 
       {/* 생산완료 Gmail 알림 섹션 */}
@@ -2758,151 +2744,6 @@ function SupplierCodeBulkModal({ onClose }: { onClose: () => void }) {
    · 읽기 전용 (운영 데이터 불변)
    · 읽기 상한으로 라이브 앱 쿼터 보호
    ============================================================ */
-/* ===================== 제품 공급가 (원/EA) =====================
-   appMeta/supplyPrices 에 { prices: { 품목키: 원/EA } } 로 저장.
-   품목키 = 냉장은 제품코드(A-001-01 / A01 등 어떤 형태로 넣어도 내부에서 통일),
-            실온은 제품명(순수본_한우야채진밥).
-   원재료분석 → "수식 엑셀" 의 제품수익성 시트 공급가 열에 자동으로 채워진다. */
-function supplyKeyOf(raw: string): string {
-  const t = (raw || '').trim();
-  if (!t) return '';
-  // 냉장 전체코드(A-001-01)만 단축코드로 통일. 그 외(실온 ERP코드·제품명)는 느슨한 키로.
-  if (/^[A-Za-z]-\d+-\d+$/.test(t)) return canonicalShort(t);
-  return looseKey(t);
-}
-
-function SupplyPricePanel({ onCountChange }: { onCountChange: (n: number) => void }) {
-  const [prices, setPrices] = useState<Record<string, number>>({});
-  const [labels, setLabels] = useState<Record<string, string>>({});
-  const [text, setText] = useState('');
-  const [search, setSearch] = useState('');
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => onSnapshot(doc(db, 'appMeta', 'supplyPrices'), (snap) => {
-    const d = snap.exists() ? (snap.data() as { prices?: Record<string, number>; labels?: Record<string, string> }) : {};
-    setPrices(d.prices || {});
-    setLabels(d.labels || {});
-    onCountChange(Object.keys(d.prices || {}).length);
-  }), []);
-
-  const parsed = useMemo(() => {
-    const rows: { key: string; label: string; price: number }[] = [];
-    const errors: string[] = [];
-    text.split(/\r?\n/).forEach((line, i) => {
-      const t = line.trim();
-      if (!t) return;
-      const cols = t.split(/\t|,|\s{2,}/).map((c) => c.trim()).filter(Boolean);
-      if (cols.length < 2) { errors.push(`${i + 1}행: 열이 2개 미만`); return; }
-      const price = parseNumStr(cols[cols.length - 1]);
-      if (!(price > 0)) { errors.push(`${i + 1}행: 공급가를 못 읽음 (${t})`); return; }
-      // 앞쪽 열 중 코드처럼 생긴 걸 우선 키로, 없으면 첫 열(제품명)
-      const head = cols.slice(0, -1);
-      const codeCol = head.find((c) => /^[A-Za-z]-\d+-\d+$/.test(c) || /^SSB\d+$/i.test(c));
-      const keySrc = codeCol || head[0];
-      const key = supplyKeyOf(keySrc);
-      if (!key) { errors.push(`${i + 1}행: 품목을 못 읽음`); return; }
-      rows.push({ key, label: head.join(' ').trim(), price });
-    });
-    return { rows, errors };
-  }, [text]);
-
-  const save = async () => {
-    if (parsed.rows.length === 0) return;
-    setSaving(true);
-    try {
-      const nextP = { ...prices }, nextL = { ...labels };
-      parsed.rows.forEach((r) => { nextP[r.key] = r.price; if (r.label) nextL[r.key] = r.label; });
-      await setDoc(doc(db, 'appMeta', 'supplyPrices'),
-        { prices: nextP, labels: nextL, updatedAt: new Date().toISOString() });
-      setText('');
-      alert(`${parsed.rows.length}개 저장됨`);
-    } finally { setSaving(false); }
-  };
-
-  const removeOne = async (key: string) => {
-    const nextP = { ...prices }, nextL = { ...labels };
-    delete nextP[key]; delete nextL[key];
-    await setDoc(doc(db, 'appMeta', 'supplyPrices'), { prices: nextP, labels: nextL, updatedAt: new Date().toISOString() });
-  };
-  const clearAll = async () => {
-    if (!confirm(`공급가 ${Object.keys(prices).length}개를 전부 삭제할까요?`)) return;
-    await setDoc(doc(db, 'appMeta', 'supplyPrices'), { prices: {}, labels: {}, updatedAt: new Date().toISOString() });
-  };
-
-  const list = useMemo(() => {
-    const q = search.trim().toLowerCase();
-    return Object.entries(prices)
-      .map(([k, v]) => ({ key: k, label: labels[k] || k, price: v }))
-      .filter((x) => !q || x.key.toLowerCase().includes(q) || x.label.toLowerCase().includes(q))
-      .sort((a, b) => a.label.localeCompare(b.label));
-  }, [prices, labels, search]);
-
-  return (
-    <div className="space-y-3">
-      <div className="bg-amber-50 border border-amber-200 rounded p-2.5 text-xs text-amber-900">
-        제품별 <b>공급가(원/EA)</b>를 넣어두면 <b>원재료분석 → 🧮 수식 엑셀</b>의 제품수익성 시트에 자동으로 채워집니다.<br/>
-        그러면 <b>제품별 원가율 · 한계이익 · 제품구성(믹스) 효과 / 제품별 원가율 효과 분해</b>까지 엑셀에서 바로 나옵니다.<br/>
-        형식: <code className="bg-white px-1 rounded">품목코드(또는 제품명)  공급가</code> — 탭·쉼표·공백 구분.<br/>
-        냉장은 <code className="bg-white px-1 rounded">A-001-01</code>, 실온은 <code className="bg-white px-1 rounded">SSB55130016</code> 또는 제품명 아무거나 됩니다.
-      </div>
-
-      <textarea
-        value={text} onChange={(e) => setText(e.target.value)}
-        placeholder={'A-001-01\t한우진밥\t3200\nB-002\t전복죽\t4100\n순수본_한우야채진밥\t2900'}
-        className="w-full h-32 border rounded p-2 text-xs font-mono" />
-      <div className="flex items-center gap-2 flex-wrap">
-        <button onClick={save} disabled={saving || parsed.rows.length === 0}
-          className="px-3 py-2 bg-blue-600 text-white rounded text-sm font-medium hover:bg-blue-700 disabled:bg-gray-300">
-          {saving ? '저장중...' : `💾 ${parsed.rows.length}건 저장`}
-        </button>
-        {parsed.errors.length > 0 && (
-          <span className="text-xs text-red-600">{parsed.errors.length}행 오류 — {parsed.errors.slice(0, 2).join(' / ')}</span>
-        )}
-        <div className="ml-auto flex items-center gap-2">
-          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="검색"
-            className="border rounded px-2 py-1 text-sm w-40" />
-          {Object.keys(prices).length > 0 && (
-            <button onClick={clearAll} className="px-3 py-2 bg-red-600 text-white rounded text-sm font-medium hover:bg-red-700">
-              🗑️ 전체 삭제 ({Object.keys(prices).length})
-            </button>
-          )}
-        </div>
-      </div>
-
-      {list.length === 0 ? (
-        <div className="p-10 text-center text-gray-400 text-sm border rounded-lg">등록된 공급가가 없습니다</div>
-      ) : (
-        <div className="border rounded-lg overflow-hidden">
-          <div className="max-h-[420px] overflow-y-auto">
-            <table className="w-full text-sm">
-              <thead className="bg-slate-50 text-xs text-gray-600 sticky top-0 z-10">
-                <tr>
-                  <th className="px-3 py-2 text-left">품목</th>
-                  <th className="px-3 py-2 text-left w-32">키</th>
-                  <th className="px-3 py-2 text-right w-32">공급가(원/EA)</th>
-                  <th className="px-3 py-2 w-16"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {list.map((x) => (
-                  <tr key={x.key} className="border-t hover:bg-slate-50">
-                    <td className="px-3 py-1.5">{x.label}</td>
-                    <td className="px-3 py-1.5 font-mono text-xs text-gray-500">{x.key}</td>
-                    <td className="px-3 py-1.5 text-right tabular-nums font-semibold">{x.price.toLocaleString()}</td>
-                    <td className="px-3 py-1.5 text-right">
-                      <button onClick={() => removeOne(x.key)} className="text-xs text-red-500 hover:underline">삭제</button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
 function DbBackupPanel() {
   const [running, setRunning] = useState(false);
   const [prog, setProg] = useState<BackupProgress | null>(null);

@@ -15,7 +15,7 @@ import ExcelJS from 'exceljs';
 import type { AmbientRecipe, Recipe } from './wasteCompute';
 import { CODE_KEY_PREFIX, monthPriceKey, normalizeCode, normalizeMaterialName } from './wasteCompute';
 import { canonicalShort } from './codeUtil';
-import { findAmbientErp, looseKey } from './ambientProducts';
+import { findAmbientErp } from './ambientProducts';
 import type { MonthlyProduction } from './monthlyProduction';
 
 export interface WorkbookInput {
@@ -42,8 +42,6 @@ export interface WorkbookInput {
   highCostTerms: string[];
   /** 고단가에서 뺄 키워드 */
   highCostExcludes: string[];
-  /** 제품 공급가 (원/EA). 키 = 냉장 canonicalShort 코드 / 실온 normalizeName(제품명) */
-  supplyPrices?: Record<string, number>;
   /** 제품 DB(productSettings) 의 전체 ERP 코드 목록 — 품목키를 A-001-01 형태로 표시하는 데 사용 */
   productCodes?: { code: string; name?: string }[];
 }
@@ -365,24 +363,13 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     { header: '앱 내부키', width: 24 },
   ];
   styleHeader(wsPro, 1, 'FFC55A11');
-  const supplyOf = (p: ProductRow): number | null => {
-    const m = inp.supplyPrices || {};
-    const cands = p.kind === '냉장'
-      ? [canonicalShort(p.key), p.key, looseKey(p.key), looseKey(p.name)]
-      : [looseKey(p.key), looseKey(p.name), looseKey(p.shortCode), normalizeMaterialName(p.name), p.key];
-    for (const c of cands) {
-      const v = c ? m[c] : undefined;
-      if (v && v > 0) return v;
-    }
-    return null;
-  };
   products.forEach((p, i) => {
     const R = i + 2;
     const row = wsPro.addRow([
       p.key, p.name, p.kind,
       { formula: `IF(COUNTIFS(레시피계산!$A$2:$A$${calcLast},$A${R},레시피계산!$O$2:$O$${calcLast},"고단가")>0,"O","")` },
-      supplyOf(p),
-      null,
+      null,   // 공급가 — 사용자가 VLOOKUP/직접 입력
+      null,   // 권장소비자가
       { formula: `IFERROR(VLOOKUP($A${R},생산량!$A$2:$E$${qtyLast},4,FALSE),0)` },
       { formula: `IFERROR(VLOOKUP($A${R},생산량!$A$2:$E$${qtyLast},5,FALSE),0)` },
       { formula: `SUMIF(레시피계산!$A$2:$A$${calcLast},$A${R},레시피계산!$M$2:$M$${calcLast})` },
@@ -666,7 +653,8 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     '■ 쓰는 법 (노란칸만 입력하면 됩니다)',
     '  1) [요약] ① 생산금액 — 두 달치 ERP 생산금액. 넣으면 ⑤ 원재료비율이 나옵니다.',
     '  2) [요약] ⑦ ERP 실제 원재료비 — 넣으면 ⑧ 실제÷이론 이 나와서 "레시피 대비 실제로 얼마나 썼나"가 보입니다.',
-    '  3) [제품수익성] 공급가(원/EA)·권장소비자가 — 넣으면 제품별 원가율, 믹스효과/원가율효과 분해,',
+    '  3) [제품수익성] E열 공급가(원/EA)·F열 권장소비자가 — 직접 입력하거나 VLOOKUP 으로 채우세요.',
+    '     넣으면 제품별 원가율, 믹스효과/원가율효과 분해,',
     '     한계이익, 그리고 ㉔~㉝ "고단가를 덜 썼나 / 비싼 제품을 만들었나" 지표가 전부 나옵니다.',
     '  4) [생산량]·[단가] 노란칸을 고치면 위 숫자가 전부 자동으로 다시 계산됩니다.',
     "     · [단가] 두 열에 같은 달 단가를 넣으면 '단가효과 제거(연동예산)' 이 됩니다.",
