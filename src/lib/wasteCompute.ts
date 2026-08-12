@@ -21,11 +21,11 @@ export interface MaterialPrice {
   pricePerGram: number;
 }
 
-/** 실온이유식 레시피 (1회 배합 기준) */
+/** 실온이유식 레시피 (제품 1개=1EA 기준. 냉장 레시피와 동일) */
 export interface AmbientRecipeIngredient {
   seq: number;
   name: string;
-  /** 1회 배합당 g */
+  /** 제품 1개(1EA)당 g. (과거 배합당 값이면 batchPieces 로 나눠 개당 환산) */
   gPerBatch: number;
   /** 원재료 ERP코드 (단가 매칭 우선키, 선택) */
   code?: string;
@@ -34,7 +34,7 @@ export interface AmbientRecipeIngredient {
 export interface AmbientRecipe {
   /** 풀네임 (prefix 포함, 예: "순수본_한우야채진밥") */
   name: string;
-  /** 1회 배합으로 나오는 평균 포장 수 (기본 1100) */
+  /** 나눔 계수 — 개당 입력이면 1. (과거 배합당 입력분은 1회 배합 포장수) */
   batchPieces: number;
   ingredients: AmbientRecipeIngredient[];
 }

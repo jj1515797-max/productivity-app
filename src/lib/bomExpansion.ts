@@ -123,10 +123,11 @@ export function expandRecipeMap(
   return out;
 }
 
-/** AmbientRecipe 펼치기 (gPerBatch 단위, batchPieces 유지) */
+/** AmbientRecipe 펼치기 — 실온도 개당(1EA) 기준이라 반제품(gPerPiece)과 단위가 일치한다.
+ *  (과거 배합당 기준 데이터가 남아 있으면 단위가 어긋나므로 개당으로 재등록 필요) */
 export function expandAmbientRecipe(recipe: AmbientRecipe, subRecipeMap: Map<string, Recipe>): AmbientRecipe {
   if (!subRecipeMap || subRecipeMap.size === 0) return recipe;
-  // gPerBatch 를 gPerPiece 처럼 다뤄서 동일 엔진 사용
+  // 실온 gPerBatch(=개당 g, batchPieces=1) 를 gPerPiece 로 그대로 사용
   const ings = (recipe.ingredients || []).map((i) => ({ name: i.name, code: i.code, gPerPiece: i.gPerBatch || 0 }));
   const { expanded } = expandIngredients(ings, subRecipeMap);
   const merged = new Map<string, { name: string; code?: string; gPerBatch: number; seq: number }>();

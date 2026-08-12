@@ -308,7 +308,7 @@ export default function ProductSettings() {
         )}
       </Section>
 
-      {/* 실온이유식 레시피 DB 섹션 (1회 배합 기준) */}
+      {/* 실온이유식 레시피 DB 섹션 (제품 1개=1EA 기준) */}
       <Section
         icon="🍼"
         title="실온이유식 레시피 DB"
@@ -2064,7 +2064,7 @@ function PriceImportModal({ month, onClose, collectionName = 'materialPricesMont
 }
 
 /* ============================================================
-   실온이유식 레시피 DB (1회 배합 기준)
+   실온이유식 레시피 DB (제품 1개=1EA 기준)
    Firestore: ambientRecipes/{normalizedName}
               = { name, batchPieces, ingredients: [{seq, name, gPerBatch, code?}], updatedAt }
    ============================================================ */
@@ -2096,7 +2096,7 @@ function AmbientRecipeDB({ onCountChange }: { onCountChange: (n: number) => void
         list.push({
           id: d.id,
           name: data.name || d.id,
-          batchPieces: Number(data.batchPieces) || 1100,
+          batchPieces: Number(data.batchPieces) || 1,   // 개당 기준 (분석 페이지와 동일 기본값)
           ingredients: data.ingredients || [],
           updatedAt: data.updatedAt,
         });
