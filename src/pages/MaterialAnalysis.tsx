@@ -11,6 +11,7 @@ import type { DiffRow, FlexedRow, IngredientStageRow, UsageResult, ContribRow, P
 import { computeMonthlyProduction, filterProduction, STAGE_COLOR, STAGE_LETTERS } from '../lib/monthlyProduction';
 import type { MonthlyProduction } from '../lib/monthlyProduction';
 import { expandAmbientRecipeMap, expandRecipeMap } from '../lib/bomExpansion';
+import { buildMaterialWorkbook } from '../lib/materialWorkbook';
 
 /* ===== 캐시 ===== */
 const PREFIX = 'matAnalysis:';
@@ -626,6 +627,38 @@ export default function MaterialAnalysis() {
     URL.revokeObjectURL(url);
   };
 
+  // 수식이 살아있는 엑셀 — 레시피/단가/생산량 DB를 그대로 넣고 엑셀에서 재계산되게 만든다
+  const [wbBusy, setWbBusy] = useState(false);
+  const downloadFormulaXlsx = async () => {
+    if (!aProd || !bProd || !aResult || !bResult) return;
+    setWbBusy(true);
+    try {
+      const productNameByCode = new Map<string, string>();
+      [aRaw, bRaw].forEach((r) => r?.items.forEach((it) => {
+        const k = canonicalShort(it.code || '');
+        if (k && it.name && it.name !== it.code) productNameByCode.set(k, it.name);
+      }));
+      const sum = (rows: { cost: number }[]) => rows.reduce((s2, x) => s2 + x.cost, 0);
+      const blob = await buildMaterialWorkbook({
+        monthA, monthB, aProd, bProd, productNameByCode,
+        recipeMap: effRecipeMap, ambientRecipeMap: effAmbientRecipeMap,
+        priceMap, priceNameByCode,
+        aAmount: Number(aAmount.replace(/[^\d.]/g, '')) || undefined,
+        bAmount: Number(bAmount.replace(/[^\d.]/g, '')) || undefined,
+        appTotalA: sum(aResult.rows), appTotalB: sum(bResult.rows),
+        highCostTerms: ['한우', '전복', '게살', '관자'],
+        highCostExcludes: ['사골육수'],
+      });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = `원재료비_계산서_${monthA}_vs_${monthB}.xlsx`; a.click();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      console.error('[formula xlsx]', e);
+      alert('엑셀 생성 실패: ' + (e?.message || e));
+    } finally { setWbBusy(false); }
+  };
+
   const missing = useMemo(() => {
     if (!aResult || !bResult) return null;
     const cold = Array.from(new Set([...aResult.missingColdCodes, ...bResult.missingColdCodes]));
@@ -656,6 +689,11 @@ export default function MaterialAnalysis() {
         <div className="ml-auto flex items-center gap-1.5">
           <button onClick={() => runAnalysis(true)} disabled={running} title="캐시 무시" className="px-2.5 py-1 text-xs rounded border hover:bg-gray-50 disabled:opacity-50">🔄</button>
           <button onClick={downloadXlsx} disabled={!aResult || !bResult} className="px-3 py-1.5 text-xs rounded bg-emerald-600 text-white font-semibold hover:bg-emerald-700 disabled:bg-gray-300">📥 엑셀</button>
+          <button onClick={downloadFormulaXlsx} disabled={!aResult || !bResult || !aProd || !bProd || wbBusy}
+            title="레시피·단가·생산량 DB가 수식으로 연결된 엑셀. 생산개수/단가를 바꾸면 자동 재계산됩니다"
+            className="px-3 py-1.5 text-xs rounded bg-indigo-600 text-white font-semibold hover:bg-indigo-700 disabled:bg-gray-300">
+            {wbBusy ? '만드는 중...' : '🧮 수식 엑셀'}
+          </button>
           <button onClick={clearAll} className="px-3 py-1.5 text-xs rounded bg-red-600 text-white font-semibold hover:bg-red-700">🗑️ 분석결과 삭제</button>
           <button onClick={() => runAnalysis(false)} disabled={running}
             className="px-4 py-1.5 text-sm rounded bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:bg-gray-300 shadow-sm">
