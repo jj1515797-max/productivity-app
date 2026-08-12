@@ -311,6 +311,42 @@ export default function MaterialAnalysis2() {
     return { maxPct, totalActual, totalSum, offenders };
   }, [verifyRows]);
 
+  // 레시피 미등록 = 이론사용량 0 → 그 제품 원재료가 통째로 빠짐. 반드시 눈에 보여야 함.
+  const recipeCoverage = useMemo(() => {
+    if (!raw || !prod) return null;
+    const nameByCode = new Map<string, string>();
+    raw.items.forEach((it) => { const k = canonicalShort(it.code || ''); if (k && it.name) nameByCode.set(k, it.name); });
+    const normRecipe = new Set<string>();
+    effRecipeMap.forEach((r) => { const k = canonicalShort(r.code || ''); if (k) normRecipe.add(k); });
+    const coldMissing: { label: string; qty: number }[] = [];
+    let coldTot = 0, coldMissQty = 0;
+    prod.coldByCode.forEach((qty, code) => {
+      if (qty <= 0) return;
+      coldTot += qty;
+      if (!normRecipe.has(code)) { coldMissQty += qty; coldMissing.push({ label: `${nameByCode.get(code) || code}(${code})`, qty }); }
+    });
+    const ambSum = new Map<string, { name: string; qty: number }>();
+    raw.ambient.forEach((a) => {
+      const pname = a.productName || ''; if (!pname) return;
+      const k = normalizeMaterialName(pname);
+      const cur = ambSum.get(k);
+      if (cur) cur.qty += a.qty || 0; else ambSum.set(k, { name: pname, qty: a.qty || 0 });
+    });
+    const ambMissing: { label: string; qty: number }[] = [];
+    let ambTot = 0, ambMissQty = 0;
+    ambSum.forEach((v, k) => {
+      if (v.qty <= 0) return;
+      ambTot += v.qty;
+      if (!effAmbientRecipeMap.has(k)) { ambMissQty += v.qty; ambMissing.push({ label: v.name, qty: v.qty }); }
+    });
+    coldMissing.sort((a, b) => b.qty - a.qty); ambMissing.sort((a, b) => b.qty - a.qty);
+    const tot = coldTot + ambTot, missQty = coldMissQty + ambMissQty;
+    return {
+      coldMissing, ambMissing, missQty, tot,
+      coveredPct: tot > 0 ? ((tot - missQty) / tot) * 100 : 100,
+    };
+  }, [raw, prod, effRecipeMap, effAmbientRecipeMap]);
+
   const filteredPerIng = useMemo(() => {
     if (!result) return [];
     const q = search.trim().toLowerCase();
@@ -727,6 +763,32 @@ export default function MaterialAnalysis2() {
               </tbody>
             </table>
           </div>
+        </div>
+      )}
+
+      {/* 레시피 커버리지 — 미등록 제품은 이론사용량이 0이라 조용히 빠진다 */}
+      {recipeCoverage && (
+        <div className={`border-2 rounded-lg p-3 text-sm ${recipeCoverage.missQty === 0 ? 'bg-emerald-50 border-emerald-200' : 'bg-red-50 border-red-300'}`}>
+          <div className="font-bold text-gray-800 mb-1">🧾 레시피 커버리지</div>
+          {recipeCoverage.missQty === 0 ? (
+            <div className="text-xs text-emerald-700">
+              ✓ 생산된 전 제품({recipeCoverage.tot.toLocaleString()} EA)에 레시피가 등록되어 있습니다 (100.0%)
+            </div>
+          ) : (
+            <div className="text-xs text-red-700 space-y-1">
+              <div>
+                ⚠️ 생산 {recipeCoverage.tot.toLocaleString()} EA 중 <b>{Math.round(recipeCoverage.missQty).toLocaleString()} EA</b>
+                {' '}({(100 - recipeCoverage.coveredPct).toFixed(1)}%) 는 레시피가 없어 <b>원재료 사용량이 0으로 빠져 있습니다</b>.
+                아래 수치는 그만큼 과소계상입니다 — 설정에서 레시피를 등록해 주세요.
+              </div>
+              {recipeCoverage.coldMissing.length > 0 && (
+                <div>· 냉장 미등록 {recipeCoverage.coldMissing.length}종: {recipeCoverage.coldMissing.slice(0, 12).map((x) => `${x.label} ${Math.round(x.qty).toLocaleString()}EA`).join(', ')}{recipeCoverage.coldMissing.length > 12 ? ' …' : ''}</div>
+              )}
+              {recipeCoverage.ambMissing.length > 0 && (
+                <div>· 실온 미등록 {recipeCoverage.ambMissing.length}종: {recipeCoverage.ambMissing.slice(0, 12).map((x) => `${x.label} ${Math.round(x.qty).toLocaleString()}EA`).join(', ')}{recipeCoverage.ambMissing.length > 12 ? ' …' : ''}</div>
+              )}
+            </div>
+          )}
         </div>
       )}
 

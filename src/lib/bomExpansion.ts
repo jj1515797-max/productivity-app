@@ -123,12 +123,14 @@ export function expandRecipeMap(
   return out;
 }
 
-/** AmbientRecipe 펼치기 — 실온도 개당(1EA) 기준이라 반제품(gPerPiece)과 단위가 일치한다.
- *  (과거 배합당 기준 데이터가 남아 있으면 단위가 어긋나므로 개당으로 재등록 필요) */
+/** AmbientRecipe 펼치기 — 반제품 레시피는 개당(1EA) 기준이므로 실온 레시피도 개당으로 맞춘 뒤 합친다.
+ *  과거 배합당 기준(batchPieces>1) 데이터가 남아 있어도 여기서 개당으로 환산하고 batchPieces=1 로 반환하므로
+ *  단위가 어긋나지 않는다. (환산 안 하면 반제품 몫이 batchPieces 배만큼 과소계상됨) */
 export function expandAmbientRecipe(recipe: AmbientRecipe, subRecipeMap: Map<string, Recipe>): AmbientRecipe {
   if (!subRecipeMap || subRecipeMap.size === 0) return recipe;
-  // 실온 gPerBatch(=개당 g, batchPieces=1) 를 gPerPiece 로 그대로 사용
-  const ings = (recipe.ingredients || []).map((i) => ({ name: i.name, code: i.code, gPerPiece: i.gPerBatch || 0 }));
+  const bp = recipe.batchPieces || 1;
+  // 개당 g 로 환산해서 반제품(gPerPiece)과 단위를 맞춘다
+  const ings = (recipe.ingredients || []).map((i) => ({ name: i.name, code: i.code, gPerPiece: (i.gPerBatch || 0) / bp }));
   const { expanded } = expandIngredients(ings, subRecipeMap);
   const merged = new Map<string, { name: string; code?: string; gPerBatch: number; seq: number }>();
   expanded.forEach((x) => {
@@ -137,7 +139,8 @@ export function expandAmbientRecipe(recipe: AmbientRecipe, subRecipeMap: Map<str
     if (prev) prev.gPerBatch += x.gPerPiece;
     else merged.set(k, { name: x.name, code: x.code, gPerBatch: x.gPerPiece, seq: merged.size + 1 });
   });
-  return { ...recipe, ingredients: Array.from(merged.values()).map((x, i) => ({ seq: i + 1, name: x.name, code: x.code, gPerBatch: x.gPerBatch })) };
+  // 개당 기준으로 환산했으므로 나눔 계수는 1
+  return { ...recipe, batchPieces: 1, ingredients: Array.from(merged.values()).map((x, i) => ({ seq: i + 1, name: x.name, code: x.code, gPerBatch: x.gPerBatch })) };
 }
 
 export function expandAmbientRecipeMap(

@@ -27,6 +27,15 @@ export interface UsageResult {
   missingAmbientNames: string[];
   /** 단가 미입력 원재료 (key 기준) */
   missingPrices: string[];
+  /** 레시피 커버리지 — 미등록 제품은 사용량 0으로 빠지므로 과소계상 폭을 알려준다 */
+  coverage: {
+    /** 그 달 총생산 EA (냉장+실온) */
+    totalQty: number;
+    /** 레시피 미등록으로 계산에서 빠진 EA */
+    missingQty: number;
+    /** 레시피가 있는 비율 % */
+    coveredPct: number;
+  };
 }
 
 /** 그 달 제품코드별 실제 생산수
@@ -118,10 +127,12 @@ export function computeMonthlyUsage(
   });
   const coldByCode = computeColdProductionByCode(entries, items, logisticsByDay);
   const missingColdCodes: string[] = [];
+  let totalQty = 0, missingQty = 0;
   coldByCode.forEach((count, code) => {
     if (count <= 0) return;
+    totalQty += count;
     const recipe = normRecipeMap.get(code); // code 는 이미 canonicalShort
-    if (!recipe) { missingColdCodes.push(code); return; }
+    if (!recipe) { missingColdCodes.push(code); missingQty += count; return; }
     recipe.ingredients.forEach((ing) => {
       addUsage(ing.name, ing.code, (ing.gPerPiece || 0) * count);
     });
@@ -134,9 +145,11 @@ export function computeMonthlyUsage(
     const pname = a.productName || '';
     if (!pname) return;
     const key = normalizeMaterialName(pname);
+    totalQty += a.qty || 0;
     const recipe = ambientRecipeMap.get(key);
     if (!recipe) {
       if (!missingAmbientNames.includes(pname)) missingAmbientNames.push(pname);
+      missingQty += a.qty || 0;
       return;
     }
     // 개당 환산: 배합당g ÷ 1회배합포장수 × 생산량 (반올림 없음 → 냉장과 동일한 정확도)
@@ -165,7 +178,13 @@ export function computeMonthlyUsage(
   // 사용량 내림차순
   rows.sort((a, b) => b.grams - a.grams);
 
-  return { rows, missingColdCodes, missingAmbientNames, missingPrices };
+  return {
+    rows, missingColdCodes, missingAmbientNames, missingPrices,
+    coverage: {
+      totalQty, missingQty,
+      coveredPct: totalQty > 0 ? ((totalQty - missingQty) / totalQty) * 100 : 100,
+    },
+  };
 }
 
 /** 두 월 결과 합치기 (원재료별 비교 row) */

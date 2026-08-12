@@ -2187,6 +2187,13 @@ function AmbientRecipeDB({ onCountChange }: { onCountChange: (n: number) => void
           </button>
         )}
       </div>
+      {recipes.some((r) => r.batchPieces !== 1) && (
+        <div className="mb-2 text-xs bg-amber-50 border border-amber-300 rounded px-3 py-2 text-amber-900">
+          ⚠️ 예전 <b>배합당 투입량</b> 방식으로 등록된 레시피 <b>{recipes.filter((r) => r.batchPieces !== 1).length}개</b>가 남아 있습니다
+          (총 {recipes.length}개). 분석은 배합 포장수로 나눠 개당으로 환산하므로 계산은 맞지만,
+          개당(1EA) 기준으로 재등록하면 값을 눈으로 검증하기 쉽습니다.
+        </div>
+      )}
       {recipes.length === 0 ? (
         <div className="p-12 text-center text-gray-400 text-sm border rounded-lg">등록된 실온 레시피가 없습니다 — 📋 일괄 입력으로 추가하세요</div>
       ) : (
@@ -2204,8 +2211,14 @@ function AmbientRecipeDB({ onCountChange }: { onCountChange: (n: number) => void
               <tbody>
                 {filtered.map((r) => (
                   <Fragment key={r.id}>
-                    <tr className="border-t hover:bg-slate-50">
-                      <td className="px-3 py-1.5">{r.name}</td>
+                    <tr className={`border-t hover:bg-slate-50 ${r.batchPieces !== 1 ? 'bg-amber-50' : ''}`}>
+                      <td className="px-3 py-1.5">
+                        {r.name}
+                        {r.batchPieces !== 1 && (
+                          <span className="ml-2 px-1.5 py-0.5 rounded bg-amber-200 text-amber-900 text-[10px] font-bold"
+                            title="예전 '배합당 투입량' 방식으로 등록된 레시피입니다. 개당(1EA) 기준으로 다시 등록하면 배합 포장수가 1이 됩니다.">구(舊) 배합기준</span>
+                        )}
+                      </td>
                       <td className="px-3 py-1 text-right">
                         <input type="number" key={`${r.id}-${r.batchPieces}`} defaultValue={r.batchPieces}
                           onBlur={(e) => {

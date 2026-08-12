@@ -160,6 +160,7 @@ export default function MaterialAnalysis() {
   });
   useEffect(() => { try { localStorage.setItem('matAnalysis:expandSub', JSON.stringify(expandSub)); } catch {} }, [expandSub]);
   const [priceMap, setPriceMap] = useState<Map<string, number>>(new Map());
+  const [priceNameByCode, setPriceNameByCode] = useState<Map<string, string>>(new Map());
 
   useEffect(() => {
     return onSnapshot(collection(db, 'recipes'), (snap) => {
@@ -197,15 +198,22 @@ export default function MaterialAnalysis() {
     // 단가: 재고평가현황(materialPricesInventory) — 출고금액÷출고수량 실측 평균단가
     return onSnapshot(collection(db, 'materialPricesInventory'), (snap) => {
       const m = new Map<string, number>();
+      const nm = new Map<string, string>();   // 코드키 → 단가표상 정식 원재료명
       snap.forEach((d) => {
         const data = d.data() as { month?: string; name?: string; pricePerGram?: number; code?: string };
         const month = data.month || '';
         if (!month) return;
         const price = Number(data.pricePerGram) || 0;
         if (data.name) m.set(monthPriceKey(month, normalizeMaterialName(data.name)), price);
-        if (data.code) m.set(monthPriceKey(month, CODE_KEY_PREFIX + normalizeCode(data.code)), price);
+        if (data.code) {
+          const ck = CODE_KEY_PREFIX + normalizeCode(data.code);
+          m.set(monthPriceKey(month, ck), price);
+          // 레시피엔 뭉뚱그린 이름(예: 한우(익,민찌))이 들어가도, 표시는 단가표의 정식명 사용
+          if (data.name && !nm.has(ck)) nm.set(ck, data.name);
+        }
       });
       setPriceMap(m);
+      setPriceNameByCode(nm);
     });
   }, []);
 
@@ -851,6 +859,7 @@ export default function MaterialAnalysis() {
           recipeMap={effRecipeMap} ambientRecipeMap={effAmbientRecipeMap}
           rawDiff={mixSplit?.byScope.all.full || []}
           flexedDiff={mixSplit?.byScopeFlexed.all.full || []}
+          priceNameByCode={priceNameByCode}
         />
       )}
 
@@ -1247,6 +1256,22 @@ export default function MaterialAnalysis() {
             </div>
           </div>
 
+          {/* 레시피 커버리지 — 미등록 제품은 사용량 0으로 빠져 과소계상된다 */}
+          {aResult && bResult && (
+            <div className={`border-2 rounded-lg p-3 text-sm ${aResult.coverage.missingQty === 0 && bResult.coverage.missingQty === 0 ? 'bg-emerald-50 border-emerald-200' : 'bg-red-50 border-red-300'}`}>
+              <div className="font-bold text-gray-800 mb-1">🧾 레시피 커버리지</div>
+              <div className="text-xs text-gray-700 flex flex-wrap gap-x-5 gap-y-1">
+                {[{ m: monthA, c: aResult.coverage }, { m: monthB, c: bResult.coverage }].map(({ m, c }) => (
+                  <span key={m}>
+                    <b>{m}</b> 생산 {Math.round(c.totalQty).toLocaleString()} EA 중 레시피 반영{' '}
+                    <b className={c.missingQty === 0 ? 'text-emerald-700' : 'text-red-700'}>{c.coveredPct.toFixed(1)}%</b>
+                    {c.missingQty > 0 && <span className="text-red-700"> (미반영 {Math.round(c.missingQty).toLocaleString()} EA → 그만큼 원재료비 과소계상)</span>}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* 매칭 실패 안내 */}
           {missing && (missing.cold.length > 0 || missing.ambient.length > 0 || missing.prices.length > 0) && (
             <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 text-sm space-y-2">
@@ -1362,7 +1387,7 @@ function ProductionPanel({ month, prod, accent, expandStages, toggle }: {
                       {prod.ambient.map((a) => (
                         <tr key={a.productName} className="border-t border-gray-200">
                           <td className="px-2 py-1">{a.productName}</td>
-                          <td className="px-2 py-1 text-right text-gray-500 w-16">{a.count}회</td>
+                          <td className="px-2 py-1 text-right text-gray-400 w-16" title="해당 월에 이 제품을 생산 등록한 날짜 수 (원재료 계산과 무관)">{a.count}일</td>
                           <td className="px-2 py-1 text-right font-semibold w-20">{a.qty.toLocaleString()}</td>
                           <td className="px-2 py-1 text-gray-400 w-8">EA</td>
                         </tr>
@@ -1390,7 +1415,7 @@ function ProductionPanel({ month, prod, accent, expandStages, toggle }: {
                 {prod.ambient.map((a) => (
                   <tr key={a.productName} className="border-t border-gray-200">
                     <td className="px-2 py-1">{a.productName}</td>
-                    <td className="px-2 py-1 text-right text-gray-500 w-16">{a.count}회</td>
+                    <td className="px-2 py-1 text-right text-gray-400 w-16" title="해당 월에 이 제품을 생산 등록한 날짜 수 (원재료 계산과 무관)">{a.count}일</td>
                     <td className="px-2 py-1 text-right font-semibold w-20">{a.qty.toLocaleString()}</td>
                     <td className="px-2 py-1 text-gray-400 w-8">EA</td>
                   </tr>
@@ -2008,13 +2033,14 @@ function CostDriverPanel({
    "전체 생산량 중 한우가 들어간 품목 비중이 몇%에서 몇%로 바뀌었나"
    ============================================================ */
 function MaterialSharePanel({
-  monthA, monthB, aP, bP, recipeMap, ambientRecipeMap, rawDiff, flexedDiff,
+  monthA, monthB, aP, bP, recipeMap, ambientRecipeMap, rawDiff, flexedDiff, priceNameByCode,
 }: {
   monthA: string; monthB: string;
   aP: ProductCostRow[]; bP: ProductCostRow[];
   recipeMap: Map<string, Recipe>; ambientRecipeMap: Map<string, AmbientRecipe>;
   rawDiff: DiffRow[];      // 각 월 실제 단가 기준
   flexedDiff: DiffRow[];   // A월 사용량도 B월 단가로 재평가 (단가효과 제거)
+  priceNameByCode: Map<string, string>;   // ERP코드 → 재고평가현황(단가표)상 정식명
 }) {
   const [q, setQ] = useState('한우, -사골육수');
   const [applied, setApplied] = useState('한우, -사골육수');
@@ -2211,19 +2237,25 @@ function MaterialSharePanel({
                   }
                   return byName.get(normalizeMaterialName(m.name)) ?? null;
                 };
+                // 레시피엔 뭉뚱그린 이름(예: 한우(익,민찌))이 들어가 있어도 표시는 단가표의 정식명으로
+                const officialName = (m: { name: string; code?: string }) => {
+                  if (!m.code) return m.name;
+                  return priceNameByCode.get(CODE_KEY_PREFIX + normalizeCode(m.code)) || m.name;
+                };
                 const list = (res.matchedMaterials || [])
-                  .map((m) => ({ nm: m.name, code: m.code, p: lookup(m) }))
+                  .map((m) => ({ nm: officialName(m), raw: m.name, code: m.code, p: lookup(m) }))
                   .sort((a, b) => (b.p ?? -1) - (a.p ?? -1));
-                // 같은 이름인데 코드가 여러 개면 레시피 DB 중복 등록 의심
+                // 레시피 이름은 같은데 코드가 여러 개 = 실제로 다른 자재일 수도, 중복 등록일 수도 있음
                 const byNm = new Map<string, number>();
-                list.forEach((x) => byNm.set(x.nm, (byNm.get(x.nm) || 0) + 1));
+                list.forEach((x) => byNm.set(x.raw, (byNm.get(x.raw) || 0) + 1));
                 const dupNames = [...byNm.entries()].filter(([, c]) => c > 1);
                 if (list.length === 0) return null;
                 return (
                   <div className="mt-1.5">
                   <div className="flex flex-wrap gap-1">
                     {list.slice(0, 24).map((x) => (
-                      <span key={(x.code || '') + x.nm} className={`px-1.5 py-0.5 rounded bg-white text-[11px] border ${(byNm.get(x.nm) || 0) > 1 ? 'border-rose-300' : 'border-teal-200'}`}>
+                      <span key={(x.code || '') + x.nm} title={x.nm !== x.raw ? `레시피 등록명: ${x.raw}` : undefined}
+                        className={`px-1.5 py-0.5 rounded bg-white text-[11px] border ${(byNm.get(x.raw) || 0) > 1 ? 'border-amber-300' : 'border-teal-200'}`}>
                         {x.nm}
                         {x.code && <span className="ml-1 font-mono text-gray-400">{x.code}</span>}
                         <b className="ml-1 text-teal-700 tabular-nums">
@@ -2234,10 +2266,10 @@ function MaterialSharePanel({
                     {list.length > 24 && <span className="text-[11px] text-teal-600 self-center">외 {list.length - 24}종</span>}
                   </div>
                   {dupNames.length > 0 && (
-                    <div className="mt-1.5 text-[11px] text-rose-700 bg-rose-50 border border-rose-200 rounded px-2 py-1">
-                      ⚠ 같은 이름에 <b>ERP 코드가 여러 개</b> 등록된 원재료 {dupNames.length}건 —
+                    <div className="mt-1.5 text-[11px] text-amber-800 bg-amber-50 border border-amber-200 rounded px-2 py-1">
+                      ℹ️ 레시피에 <b>같은 이름</b>으로 등록됐지만 ERP 코드가 다른 원재료 {dupNames.length}건 —
                       {dupNames.map(([n, c]) => ` ${n}(${c}개)`).join(',')}
-                      <br />레시피 DB에서 코드가 제각각이면 사용량이 나뉘어 집계됩니다. 하나로 통일하는 게 좋습니다.
+                      <br />단가·사용량은 <b>코드 기준</b>으로 각각 정확히 계산됩니다(위 배지는 단가표상 정식명). 실제로 같은 자재였다면 코드를 하나로 통일해 주세요.
                     </div>
                   )}
                   </div>
