@@ -139,10 +139,12 @@ export function computeMonthlyUsage(
       if (!missingAmbientNames.includes(pname)) missingAmbientNames.push(pname);
       return;
     }
+    // 개당 환산: 배합당g ÷ 1회배합포장수 × 생산량 (반올림 없음 → 냉장과 동일한 정확도)
+    //   배합 단위로 반올림하면 소량 생산 시 최대 200% 이상 과대계상됨
     const bp = recipe.batchPieces || 1;
-    const batchCount = Math.max(1, Math.round((a.qty || 0) / bp));
+    const qty = a.qty || 0;
     recipe.ingredients.forEach((ing) => {
-      addUsage(ing.name, ing.code, (ing.gPerBatch || 0) * batchCount);
+      addUsage(ing.name, ing.code, ((ing.gPerBatch || 0) / bp) * qty);
     });
   });
 
@@ -343,9 +345,8 @@ export function computeIngredientStageUsage(
     if (!pname) return;
     const recipe = ambientRecipeMap.get(normalizeMaterialName(pname));
     if (!recipe) return;
-    const bp = recipe.batchPieces || 1;
-    const batchCount = Math.max(1, Math.round((a.qty || 0) / bp));
-    recipe.ingredients.forEach((ing) => add(ing.name, ing.code, null, (ing.gPerBatch || 0) * batchCount, true));
+    const bp = recipe.batchPieces || 1;   // 개당 환산 (반올림 없음)
+    recipe.ingredients.forEach((ing) => add(ing.name, ing.code, null, ((ing.gPerBatch || 0) / bp) * (a.qty || 0), true));
   });
 
   const out: IngredientStageRow[] = [];
@@ -426,9 +427,10 @@ export function computeProductCosts(
     const recipe = ambientRecipeMap.get(key);
     let cost = 0;
     if (recipe) {
+      // 개당 환산 (반올림 없음)
       const bp = recipe.batchPieces || 1;
-      const batchCount = Math.max(1, Math.round((a.qty || 0) / bp));
-      cost = recipe.ingredients.reduce((s, ing) => s + (ing.gPerBatch || 0) * batchCount * priceOf(ing.name, ing.code), 0);
+      const qty = a.qty || 0;
+      cost = recipe.ingredients.reduce((s, ing) => s + ((ing.gPerBatch || 0) / bp) * qty * priceOf(ing.name, ing.code), 0);
     }
     const prev = ambAgg.get(key);
     if (prev) { prev.qty += a.qty || 0; prev.cost += cost; prev.hasRecipe = prev.hasRecipe || !!recipe; }

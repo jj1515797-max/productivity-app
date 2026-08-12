@@ -76,10 +76,10 @@ export function computeTheoreticalByProduct(
     if (qty <= 0) return;
     const recipe = ambientRecipeMap.get(key);
     if (!recipe) return;
+    // 개당 환산 (반올림 없음 — computeMonthlyUsage 와 동일 규칙)
     const bp = recipe.batchPieces || 1;
-    const batchCount = Math.max(1, Math.round(qty / bp));
     recipe.ingredients.forEach((ing) => {
-      const g = (ing.gPerBatch || 0) * batchCount;
+      const g = ((ing.gPerBatch || 0) / bp) * qty;
       addContribution(ing.name, ing.code, g, {
         code: key, productName: ambDisplay.get(key) || key, isAmbient: true, productionQty: qty, grams: g,
       });
