@@ -2293,7 +2293,7 @@ function AmbientRecipeImportModal({ onClose }: { onClose: () => void }) {
     const NAME_CANDIDATES = ['제품명', '품목명', '품명'];
     const SEQ_CANDIDATES = ['순서', '순번', 'seq'];
     const ING_CANDIDATES = ['원재료명', '원재료', '재료명'];
-    const G_CANDIDATES = ['개당투입량', '개당', '개당g', '1개당', '1개당g', '투입량', 'g/개', '배합비1세트', '배합비', '배합비g', '1세트', '1회배합', '1회배합g', '배합량'];
+    const G_CANDIDATES = ['원물중량', '원물중량g', '중량', '중량g', '개당투입량', '개당', '개당g', '1개당', '1개당g', '투입량', 'g/개', '배합비1세트', '배합비', '배합비g', '1세트', '1회배합', '1회배합g', '배합량'];
     const CODE_CANDIDATES = ['원재료코드', '원재료erp코드', 'erp코드', '자재코드', '품목코드', '재료코드', '코드'];
 
     const findCol = (cells: string[], cands: string[]) => {
@@ -2386,12 +2386,13 @@ function AmbientRecipeImportModal({ onClose }: { onClose: () => void }) {
         </div>
         <div className="flex-1 overflow-y-auto p-5 space-y-3">
           <div className="text-xs text-gray-600 bg-slate-50 p-3 rounded border">
-            형식: <b>제품명 / 순서 / 원재료명 / 개당 투입량(g) / 원재료코드</b> (탭 구분). <b>헤더 줄은 없어도 됩니다</b> — 데이터만 붙여도 인식.<br />
+            형식: <b>제품명 / 원재료명 / 원물중량(g) / 원재료코드</b> (탭 구분). <b>헤더 줄은 없어도 됩니다</b>.<br />
+            순번은 <b>위에서부터 자동</b>으로 1,2,3… 매겨집니다. (제품명/순서/원재료명/중량/코드 5열도 그대로 인식)<br />
             <b className="text-blue-700">5번째 원재료코드</b>를 넣으면 단가 매칭 시 <b>코드 우선</b>(없으면 원재료명)으로 계산돼요. 투입량은 g 단위(콤마·소수점 OK).<br />
-            같은 제품명의 여러 행이 한 레시피로 자동 묶입니다. <b className="text-rose-600">제품 1개(1EA)당 투입량</b>으로 넣어주세요 — 냉장 레시피와 동일 기준입니다.
+            같은 제품명의 여러 행이 한 레시피로 자동 묶입니다. <b className="text-rose-600">제품 1개(1EA)당 원물중량</b>으로 넣어주세요 — 냉장 레시피와 동일 기준입니다.
           </div>
           <textarea value={text} onChange={(e) => setText(e.target.value)}
-            placeholder={'제품명\t순서\t원재료명\t개당투입량(g)\t원재료코드\n순수본_한우야채진밥\t1\t백미\t45.5\t10110001\n순수본_한우야채진밥\t2\t한우(슬라이스)\t4.5\t10620045'}
+            placeholder={'제품명\t원재료명\t원물중량(g)\t원재료코드\n순수본_한우야채진밥\t백미\t45.5\t10110001\n순수본_한우야채진밥\t한우(슬라이스)\t4.5\t10620045\n순수본_게살보리진밥\t보리\t30\t10110005'}
             className="w-full h-48 border rounded p-2 text-xs font-mono" />
           {text.trim() && (() => {
             const totalIng = preview.recipes.reduce((s, r) => s + r.ingredients.length, 0);
