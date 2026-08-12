@@ -645,6 +645,12 @@ export default function MaterialAnalysis() {
         const k = canonicalShort(it.code || '');
         if (k && it.name && it.name !== it.code) productNameByCode.set(k, it.name);
       }));
+      // 제품 DB(productSettings) 에서 전체 ERP 코드(A-001-01) 를 가져와 품목코드 표기에 사용
+      const psSnap = await getDocs(collection(db, 'productSettings'));
+      const productCodes = psSnap.docs.map((d) => {
+        const v = d.data() as { code?: string; name?: string };
+        return { code: v.code || d.id, name: v.name };
+      });
       const sum = (rows: { cost: number }[]) => rows.reduce((s2, x) => s2 + x.cost, 0);
       const blob = await buildMaterialWorkbook({
         monthA, monthB, aProd, bProd, productNameByCode,
@@ -653,7 +659,7 @@ export default function MaterialAnalysis() {
         aAmount: Number(aAmount.replace(/[^\d.]/g, '')) || undefined,
         bAmount: Number(bAmount.replace(/[^\d.]/g, '')) || undefined,
         appTotalA: sum(aResult.rows), appTotalB: sum(bResult.rows),
-        supplyPrices,
+        supplyPrices, productCodes,
         highCostTerms: ['한우', '전복', '게살', '관자'],
         highCostExcludes: ['사골육수'],
       });

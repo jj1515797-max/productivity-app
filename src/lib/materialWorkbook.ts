@@ -43,10 +43,17 @@ export interface WorkbookInput {
   highCostExcludes: string[];
   /** 제품 공급가 (원/EA). 키 = 냉장 canonicalShort 코드 / 실온 normalizeName(제품명) */
   supplyPrices?: Record<string, number>;
+  /** 제품 DB(productSettings) 의 전체 ERP 코드 목록 — 품목키를 A-001-01 형태로 표시하는 데 사용 */
+  productCodes?: { code: string; name?: string }[];
 }
 
 interface ProductRow {
-  key: string;        // 냉장=코드(canonicalShort), 실온=제품명
+  /** 시트에서 쓰는 표시·매칭 키. 냉장=제품DB 전체코드(A-001-01), 실온=제품명 */
+  key: string;
+  /** 냉장 단축코드(A01) — 앱 내부 매칭용. 실온은 빈값 */
+  shortCode: string;
+  /** 같은 단축코드를 쓰는 다른 전체코드들 (있으면 표시) */
+  altCodes: string;
   name: string;
   kind: '냉장' | '실온';
   qtyA: number;
@@ -60,6 +67,11 @@ function ingKey(name: string, code?: string): string {
   return code ? normalizeCode(code) : normalizeMaterialName(name);
 }
 
+/** 전체 ERP 코드처럼 생겼는지 (A-001-01) */
+function isFullErpCode(c: string): boolean {
+  return /^[A-Za-z]-\d+-\d+$/.test((c || '').trim());
+}
+
 function buildProducts(inp: WorkbookInput): ProductRow[] {
   const { aProd, bProd, productNameByCode, recipeMap, ambientRecipeMap } = inp;
 
@@ -68,6 +80,36 @@ function buildProducts(inp: WorkbookInput): ProductRow[] {
     const k = canonicalShort(r.code || '');
     if (k && !normRecipe.has(k)) normRecipe.set(k, r);
   });
+
+  // 단축코드(A01) → 제품DB 전체코드 후보들 (A-001-01, A-001-51 …)
+  const fullByShort = new Map<string, { code: string; name?: string }[]>();
+  (inp.productCodes || []).forEach((p) => {
+    if (!isFullErpCode(p.code)) return;
+    const k = canonicalShort(p.code);
+    if (!k) return;
+    const arr = fullByShort.get(k) || [];
+    arr.push(p);
+    fullByShort.set(k, arr);
+  });
+  fullByShort.forEach((arr) => arr.sort((a, b) => a.code.localeCompare(b.code)));
+
+  /** 단축코드에 대응하는 표시용 전체코드 고르기
+   *  1) 레시피 문서 ID 가 전체코드면 그것 (실제 계산에 쓰인 코드)
+   *  2) 제품DB 후보 중 생산 제품명과 일치하는 것
+   *  3) 제품DB 후보 첫 번째
+   *  4) 없으면 단축코드 그대로 */
+  const pickFull = (short: string, prodName: string, recipeCode?: string): { code: string; alts: string } => {
+    const cands = fullByShort.get(short) || [];
+    const altList = cands.map((c) => c.code);
+    const alts = altList.length > 1 ? altList.join(' / ') : '';
+    if (recipeCode && isFullErpCode(recipeCode)) return { code: recipeCode.trim().toUpperCase(), alts };
+    if (cands.length > 0) {
+      const nm = normalizeMaterialName(prodName);
+      const hit = cands.find((c) => c.name && normalizeMaterialName(c.name) === nm);
+      return { code: (hit || cands[0]).code.trim().toUpperCase(), alts };
+    }
+    return { code: short, alts };
+  };
 
   const out: ProductRow[] = [];
 
@@ -78,9 +120,13 @@ function buildProducts(inp: WorkbookInput): ProductRow[] {
     const qtyB = bProd.coldByCode.get(code) || 0;
     if (qtyA <= 0 && qtyB <= 0) return;
     const r = normRecipe.get(code);
+    const nm = productNameByCode.get(code) || r?.name || code;
+    const { code: fullCode, alts } = pickFull(code, nm, r?.code);
     out.push({
-      key: code,
-      name: productNameByCode.get(code) || r?.name || code,
+      key: fullCode,
+      shortCode: code,
+      altCodes: alts,
+      name: nm,
       kind: '냉장',
       qtyA, qtyB,
       hasRecipe: !!r,
@@ -110,6 +156,8 @@ function buildProducts(inp: WorkbookInput): ProductRow[] {
     const bp = r?.batchPieces || 1;
     out.push({
       key: v.name,
+      shortCode: '',
+      altCodes: '',
       name: v.name,
       kind: '실온',
       qtyA: v.a, qtyB: v.b,
@@ -185,13 +233,15 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
   /* ================= 생산량 ================= */
   const wsQty = wb.addWorksheet('생산량');
   wsQty.columns = [
-    { header: '품목키', width: 26 },
+    { header: '품목코드', width: 16 },
     { header: '품목명', width: 34 },
     { header: '구분', width: 8 },
     { header: `${monthA} 생산(EA)`, width: 16 },
     { header: `${monthB} 생산(EA)`, width: 16 },
     { header: '레시피', width: 10 },
     { header: '고단가 포함', width: 12 },
+    { header: '단축코드', width: 10 },
+    { header: '같은 단축코드 (합산됨)', width: 26 },
   ];
   styleHeader(wsQty, 1, 'FF1F4E79');
   products.forEach((p, i) => {
@@ -201,6 +251,7 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     const r = wsQty.addRow([
       p.key, p.name, p.kind, p.qtyA, p.qtyB, p.hasRecipe ? 'O' : '없음',
       { formula: `IF(COUNTIFS(레시피계산!$A$2:$A$${calcLast},$A${R},레시피계산!$O$2:$O$${calcLast},"고단가")>0,"O","")` },
+      p.shortCode, p.altCodes,
     ]);
     r.getCell(4).fill = INPUT_FILL; r.getCell(4).numFmt = '#,##0';
     r.getCell(5).fill = INPUT_FILL; r.getCell(5).numFmt = '#,##0';
@@ -208,7 +259,13 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     if (!p.hasRecipe) r.getCell(6).font = { color: { argb: 'FFC00000' }, bold: true };
   });
   wsQty.views = [{ state: 'frozen', ySplit: 1 }];
-  if (products.length > 0) wsQty.autoFilter = { from: 'A1', to: `G${qtyLast}` };
+  products.forEach((p, i) => {
+    if (p.altCodes) {
+      const c = wsQty.getRow(i + 2).getCell(9);
+      c.font = { size: 9, color: { argb: 'FFB45309' } };
+    }
+  });
+  if (products.length > 0) wsQty.autoFilter = { from: 'A1', to: `I${qtyLast}` };
 
   /* ================= 단가 ================= */
   const wsPrice = wb.addWorksheet('단가');
@@ -236,7 +293,7 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
   /* ================= 레시피계산 ================= */
   const wsCalc = wb.addWorksheet('레시피계산');
   wsCalc.columns = [
-    { header: '품목키', width: 26 },
+    { header: '품목코드', width: 16 },
     { header: '품목명', width: 30 },
     { header: '구분', width: 7 },
     { header: '원재료키', width: 18 },
@@ -281,7 +338,7 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
   /* ================= 제품수익성 ================= */
   const wsPro = wb.addWorksheet('제품수익성');
   wsPro.columns = [
-    { header: '품목키', width: 26 },
+    { header: '품목코드', width: 16 },
     { header: '품목명', width: 34 },
     { header: '구분', width: 7 },
     { header: '공급가(원/EA) ← 입력', width: 18 },
@@ -298,6 +355,7 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     { header: `${monthB} 매출비중`, width: 12 },
     { header: '믹스기준(A원가율×B비중)', width: 20 },
     { header: `${monthB} 한계이익`, width: 16 },
+    { header: '단축코드', width: 10 },
   ];
   styleHeader(wsPro, 1, 'FFC55A11');
   const supplyOf = (p: ProductRow): number | null => {
@@ -325,6 +383,7 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
       { formula: `IF(SUM($L$2:$L$${profitLast})=0,"",$L${R}/SUM($L$2:$L$${profitLast}))` },
       { formula: `IF(OR($M${R}="",$O${R}=""),0,$M${R}*$O${R})` },
       { formula: `IF($L${R}=0,"",$L${R}-$H${R})` },
+      p.shortCode,
     ]);
     row.getCell(4).fill = INPUT_FILL; row.getCell(4).numFmt = '#,##0';
     [5, 6, 7, 8, 11, 12, 17].forEach((c) => { row.getCell(c).numFmt = '#,##0'; });
@@ -332,7 +391,7 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     [13, 14, 15, 16].forEach((c) => { row.getCell(c).numFmt = '0.00%'; });
   });
   wsPro.views = [{ state: 'frozen', ySplit: 1 }];
-  if (products.length > 0) wsPro.autoFilter = { from: 'A1', to: `Q${profitLast}` };
+  if (products.length > 0) wsPro.autoFilter = { from: 'A1', to: `R${profitLast}` };
 
   /* ================= 원재료집계 ================= */
   const wsAgg = wb.addWorksheet('원재료집계');
