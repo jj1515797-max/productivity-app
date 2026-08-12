@@ -5,6 +5,7 @@ import type { Material, ProductSetting } from '../types';
 import { runBackup, downloadSql } from '../lib/dbBackup';
 import type { BackupProgress, BackupResult } from '../lib/dbBackup';
 import { canonicalShort, convertErpCode } from '../lib/codeUtil';
+import { looseKey } from '../lib/ambientProducts';
 import { CODE_KEY_PREFIX, normalizeCode, normalizeMaterialName } from '../lib/wasteCompute';
 import type { NotifySettings } from '../lib/productionNotify';
 
@@ -2765,10 +2766,9 @@ function SupplierCodeBulkModal({ onClose }: { onClose: () => void }) {
 function supplyKeyOf(raw: string): string {
   const t = (raw || '').trim();
   if (!t) return '';
-  // 코드처럼 보이면 canonicalShort 로, 아니면 제품명 그대로(정규화)
-  const asCode = canonicalShort(t);
-  if (asCode && /^[A-Z]\d{2,}$/.test(asCode)) return asCode;
-  return normalizeName(t);
+  // 냉장 전체코드(A-001-01)만 단축코드로 통일. 그 외(실온 ERP코드·제품명)는 느슨한 키로.
+  if (/^[A-Za-z]-\d+-\d+$/.test(t)) return canonicalShort(t);
+  return looseKey(t);
 }
 
 function SupplyPricePanel({ onCountChange }: { onCountChange: (n: number) => void }) {
@@ -2797,7 +2797,7 @@ function SupplyPricePanel({ onCountChange }: { onCountChange: (n: number) => voi
       if (!(price > 0)) { errors.push(`${i + 1}행: 공급가를 못 읽음 (${t})`); return; }
       // 앞쪽 열 중 코드처럼 생긴 걸 우선 키로, 없으면 첫 열(제품명)
       const head = cols.slice(0, -1);
-      const codeCol = head.find((c) => /^[A-Za-z][-_]?\d/.test(c));
+      const codeCol = head.find((c) => /^[A-Za-z]-\d+-\d+$/.test(c) || /^SSB\d+$/i.test(c));
       const keySrc = codeCol || head[0];
       const key = supplyKeyOf(keySrc);
       if (!key) { errors.push(`${i + 1}행: 품목을 못 읽음`); return; }
@@ -2842,7 +2842,8 @@ function SupplyPricePanel({ onCountChange }: { onCountChange: (n: number) => voi
       <div className="bg-amber-50 border border-amber-200 rounded p-2.5 text-xs text-amber-900">
         제품별 <b>공급가(원/EA)</b>를 넣어두면 <b>원재료분석 → 🧮 수식 엑셀</b>의 제품수익성 시트에 자동으로 채워집니다.<br/>
         그러면 <b>제품별 원가율 · 한계이익 · 제품구성(믹스) 효과 / 제품별 원가율 효과 분해</b>까지 엑셀에서 바로 나옵니다.<br/>
-        형식: <code className="bg-white px-1 rounded">품목코드(또는 제품명)  공급가</code> — 탭·쉼표·공백 구분. 실온은 <code className="bg-white px-1 rounded">순수본_한우야채진밥</code> 처럼 제품명으로.
+        형식: <code className="bg-white px-1 rounded">품목코드(또는 제품명)  공급가</code> — 탭·쉼표·공백 구분.<br/>
+        냉장은 <code className="bg-white px-1 rounded">A-001-01</code>, 실온은 <code className="bg-white px-1 rounded">SSB55130016</code> 또는 제품명 아무거나 됩니다.
       </div>
 
       <textarea

@@ -46,6 +46,8 @@ export function computeColdProductionByCode(
   entries: MachineEntry[],
   items: Item[],
   logisticsByDay: Record<string, number>,
+  /** 일자 → 품목코드(canonicalShort) → 잔여량. 주면 비례배분 대신 품목별 실제값을 쓴다 */
+  logisticsByDayCode?: Record<string, Record<string, number>>,
 ): Map<string, number> {
   const qty = (e: MachineEntry) => (e.actualProduction || 0) + (e.additionalProduction || 0);
 
@@ -75,8 +77,16 @@ export function computeColdProductionByCode(
     ...Object.keys(logisticsByDay),
   ]);
   allDates.forEach((d) => {
-    if (logisticsByDay[d] !== undefined) {
-      // 잔여량 수정일: 계획(totalQty) + 잔여량조정을 totalQty 비율로 분배
+    const perCode = logisticsByDayCode?.[d];
+    if (perCode) {
+      // 품목별 잔여량이 있으면 정확히: 생산 = 계획(totalQty) + 그 품목의 잔여량
+      const dayItems = itemsByDateCode[d] || {};
+      const codes = new Set<string>([...Object.keys(dayItems), ...Object.keys(perCode)]);
+      codes.forEach((code) => {
+        out.set(code, (out.get(code) || 0) + (dayItems[code] || 0) + (perCode[code] || 0));
+      });
+    } else if (logisticsByDay[d] !== undefined) {
+      // 품목별 잔여량이 없을 때만 계획 비율로 안분 (추정치 — 소수점이 생김)
       const dayItems = itemsByDateCode[d] || {};
       const plannedTot = Object.values(dayItems).reduce((s, v) => s + v, 0);
       const adj = logisticsByDay[d];

@@ -78,10 +78,20 @@ export default function ContainerAnalysis() {
         const dates = Array.from({ length: lastDay }, (_, i) => `${month}-${String(i + 1).padStart(2, '0')}`);
         const logSnaps = await Promise.all(dates.map((d) => getDocs(collection(db, 'days', d, 'logistics'))));
         const logisticsByDay: Record<string, number> = {};
+        const logisticsByDayCode: Record<string, Record<string, number>> = {};
         logSnaps.forEach((s, i) => {
           if (s.empty) return;
-          let sum = 0; s.forEach((d) => { sum += (d.data().qty as number) || 0; });
+          let sum = 0;
+          const perCode: Record<string, number> = {};
+          s.forEach((d) => {
+            const data = d.data() as { code?: string; qty?: number };
+            const q = data.qty || 0;
+            sum += q;
+            const k = canonicalShort(data.code || d.id);
+            if (k) perCode[k] = (perCode[k] || 0) + q;
+          });
           logisticsByDay[dates[i]] = sum;
+          logisticsByDayCode[dates[i]] = perCode;
         });
         if (cancelled) return;
 
@@ -112,7 +122,7 @@ export default function ContainerAnalysis() {
           if (data.name) nameByShort.set(short, data.name);
         });
 
-        const prod = computeMonthlyProduction(entries, items, [], logisticsByDay);
+        const prod = computeMonthlyProduction(entries, items, [], logisticsByDay, logisticsByDayCode);
         const list: Row[] = [];
         prod.coldByCode.forEach((qty, short) => {
           if (Math.round(qty) === 0) return;

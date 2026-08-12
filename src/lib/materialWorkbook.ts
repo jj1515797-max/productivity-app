@@ -15,6 +15,7 @@ import ExcelJS from 'exceljs';
 import type { AmbientRecipe, Recipe } from './wasteCompute';
 import { CODE_KEY_PREFIX, monthPriceKey, normalizeCode, normalizeMaterialName } from './wasteCompute';
 import { canonicalShort } from './codeUtil';
+import { findAmbientErp, looseKey } from './ambientProducts';
 import type { MonthlyProduction } from './monthlyProduction';
 
 export interface WorkbookInput {
@@ -50,7 +51,7 @@ export interface WorkbookInput {
 interface ProductRow {
   /** 시트에서 쓰는 표시·매칭 키. 냉장=제품DB 전체코드(A-001-01), 실온=제품명 */
   key: string;
-  /** 냉장 단축코드(A01) — 앱 내부 매칭용. 실온은 빈값 */
+  /** 냉장 단축코드(A01) / 실온 앱 내부 제품명(순수본_한우야채진밥) — 앱 내부 매칭용 */
   shortCode: string;
   /** 같은 단축코드를 쓰는 다른 전체코드들 (있으면 표시) */
   altCodes: string;
@@ -154,11 +155,13 @@ function buildProducts(inp: WorkbookInput): ProductRow[] {
     if (v.a <= 0 && v.b <= 0) return;
     const r = ambientRecipeMap.get(k);
     const bp = r?.batchPieces || 1;
+    // 실온도 ERP 품목코드/등록명으로 표기 (없으면 내부 제품명 그대로)
+    const erp = findAmbientErp(v.name);
     out.push({
-      key: v.name,
-      shortCode: '',
+      key: erp ? erp.code : v.name,
+      shortCode: v.name,
       altCodes: '',
-      name: v.name,
+      name: erp ? erp.name : v.name,
       kind: '실온',
       qtyA: v.a, qtyB: v.b,
       hasRecipe: !!r,
@@ -233,14 +236,14 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
   /* ================= 생산량 ================= */
   const wsQty = wb.addWorksheet('생산량');
   wsQty.columns = [
-    { header: '품목코드', width: 16 },
+    { header: '품목코드', width: 18 },
     { header: '품목명', width: 34 },
     { header: '구분', width: 8 },
     { header: `${monthA} 생산(EA)`, width: 16 },
     { header: `${monthB} 생산(EA)`, width: 16 },
     { header: '레시피', width: 10 },
     { header: '고단가 포함', width: 12 },
-    { header: '단축코드', width: 10 },
+    { header: '앱 내부키', width: 24 },
     { header: '같은 단축코드 (합산됨)', width: 26 },
   ];
   styleHeader(wsQty, 1, 'FF1F4E79');
@@ -293,7 +296,7 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
   /* ================= 레시피계산 ================= */
   const wsCalc = wb.addWorksheet('레시피계산');
   wsCalc.columns = [
-    { header: '품목코드', width: 16 },
+    { header: '품목코드', width: 18 },
     { header: '품목명', width: 30 },
     { header: '구분', width: 7 },
     { header: '원재료키', width: 18 },
@@ -338,7 +341,7 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
   /* ================= 제품수익성 ================= */
   const wsPro = wb.addWorksheet('제품수익성');
   wsPro.columns = [
-    { header: '품목코드', width: 16 },
+    { header: '품목코드', width: 18 },
     { header: '품목명', width: 34 },
     { header: '구분', width: 7 },
     { header: '공급가(원/EA) ← 입력', width: 18 },
@@ -355,15 +358,19 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     { header: `${monthB} 매출비중`, width: 12 },
     { header: '믹스기준(A원가율×B비중)', width: 20 },
     { header: `${monthB} 한계이익`, width: 16 },
-    { header: '단축코드', width: 10 },
+    { header: '앱 내부키', width: 24 },
   ];
   styleHeader(wsPro, 1, 'FFC55A11');
   const supplyOf = (p: ProductRow): number | null => {
     const m = inp.supplyPrices || {};
-    const v = p.kind === '냉장'
-      ? m[canonicalShort(p.key)] ?? m[p.key]
-      : m[normalizeMaterialName(p.name)] ?? m[p.name];
-    return v && v > 0 ? v : null;
+    const cands = p.kind === '냉장'
+      ? [canonicalShort(p.key), p.key, looseKey(p.key), looseKey(p.name)]
+      : [looseKey(p.key), looseKey(p.name), looseKey(p.shortCode), normalizeMaterialName(p.name), p.key];
+    for (const c of cands) {
+      const v = c ? m[c] : undefined;
+      if (v && v > 0) return v;
+    }
+    return null;
   };
   products.forEach((p, i) => {
     const R = i + 2;

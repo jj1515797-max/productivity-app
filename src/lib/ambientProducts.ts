@@ -55,3 +55,52 @@ export const CATEGORY_STYLES: Record<AmbientCategory, { chip: string; soft: stri
 export function productSlug(name: string): string {
   return name;
 }
+
+/** 느슨한 매칭 키: 대소문자·하이픈·언더스코어·공백 무시
+ *  '순수본_한우야채진밥' / '순수본-한우야채진밥' / 'TOGO_..' vs 'togo-..' 를 같은 것으로 본다 */
+export function looseKey(s: string): string {
+  return (s || '').toLowerCase().replace(/[\s_\-]/g, '');
+}
+
+/** 실온이유식 ERP 품목코드 마스터 (ERP 등록명 그대로) */
+export const AMBIENT_ERP: { code: string; name: string }[] = [
+  { code: 'SSB55120014', name: 'togo-한우참깨애호박죽' },
+  { code: 'SSB55120015', name: 'togo-닭고기버섯죽' },
+  { code: 'SSB55120016', name: 'togo-한우야채진밥' },
+  { code: 'SSB55120017', name: 'togo-닭고기양송이진밥' },
+  { code: 'SSB55120045', name: 'togo-한우과일죽' },
+  { code: 'SSB55120046', name: 'togo-닭고기애호박미역죽' },
+  { code: 'SSB55120051', name: '본죽키즈 모둠야채죽' },
+  { code: 'SSB55120052', name: '본죽키즈 영양닭죽' },
+  { code: 'SSB55120053', name: '본죽키즈 튼튼전복죽' },
+  { code: 'SSB55120054', name: '본죽키즈 한우야채죽' },
+  { code: 'SSB55130014', name: '순수본-한우참깨애호박죽' },
+  { code: 'SSB55130015', name: '순수본-닭고기버섯죽' },
+  { code: 'SSB55130016', name: '순수본-한우야채진밥' },
+  { code: 'SSB55130017', name: '순수본-닭고기양송이진밥' },
+  { code: 'SSB55130018', name: '순수본-한우과일죽' },
+  { code: 'SSB55130019', name: '순수본-닭고기애호박미역죽' },
+  { code: 'SSB55130020', name: '순수본-한우불고기진밥' },
+  { code: 'SSB55130021', name: '순수본-닭고기알밤진밥' },
+  { code: 'SSB55130022', name: '순수본-한우뿌리채소죽' },
+  { code: 'SSB55130023', name: '순수본-찹쌀누룽지닭죽' },
+  { code: 'SSB55130024', name: '순수본-한우버섯무죽' },
+  { code: 'SSB55130025', name: '순수본-오트밀버섯전복죽' },
+  { code: 'SSB55130026', name: '순수본-한우사골진밥' },
+  { code: 'SSB55130027', name: '순수본-전복영양진밥' },
+  { code: 'SSB55130028', name: '순수본-흰살생선채소죽' },
+  { code: 'SSB55130029', name: '순수본-퀴노아미역전복죽' },
+  { code: 'SSB55130030', name: '순수본-게살보리진밥' },
+  { code: 'SSB55130031', name: '순수본-가리비치즈진밥' },
+  { code: 'SSB55130032', name: '순수본-한우치즈영양밥' },
+  { code: 'SSB55130033', name: '순수본-닭살들깨버섯영양밥' },
+  { code: 'SSB55130034', name: '순수본-전복버터영양밥' },
+  { code: 'SSB55130035', name: '순수본-미트카레영양밥' },
+];
+
+const AMBIENT_ERP_BY_KEY = new Map(AMBIENT_ERP.map((x) => [looseKey(x.name), x]));
+
+/** 앱 내부 실온 제품명(순수본_한우야채진밥) → ERP 품목코드/등록명 */
+export function findAmbientErp(internalName: string): { code: string; name: string } | null {
+  return AMBIENT_ERP_BY_KEY.get(looseKey(internalName)) || null;
+}

@@ -43,19 +43,33 @@ function shiftMonth(m: string, delta: number): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
 
-async function fetchMonthLogistics(month: string): Promise<Record<string, number>> {
+/** 일자별 잔여량 합계 + 품목별 잔여량.
+ *  품목별 값이 있으면 생산량을 계획비율로 안분하지 않고 품목별로 정확히 더할 수 있다. */
+async function fetchMonthLogistics(month: string): Promise<{
+  byDay: Record<string, number>;
+  byDayCode: Record<string, Record<string, number>>;
+}> {
   const [yy, mm] = month.split('-').map(Number);
   const lastDay = new Date(yy, mm, 0).getDate();
   const dates = Array.from({ length: lastDay }, (_, i) => `${month}-${String(i + 1).padStart(2, '0')}`);
   const snaps = await Promise.all(dates.map((d) => getDocs(collection(db, 'days', d, 'logistics'))));
-  const map: Record<string, number> = {};
+  const byDay: Record<string, number> = {};
+  const byDayCode: Record<string, Record<string, number>> = {};
   snaps.forEach((s, i) => {
     if (s.empty) return;
     let sum = 0;
-    s.forEach((d) => { sum += (d.data().qty as number) || 0; });
-    map[dates[i]] = sum;
+    const perCode: Record<string, number> = {};
+    s.forEach((d) => {
+      const data = d.data() as { code?: string; qty?: number };
+      const q = data.qty || 0;
+      sum += q;
+      const k = canonicalShort(data.code || d.id);
+      if (k) perCode[k] = (perCode[k] || 0) + q;
+    });
+    byDay[dates[i]] = sum;
+    byDayCode[dates[i]] = perCode;
   });
-  return map;
+  return { byDay, byDayCode };
 }
 
 interface RawMonth {
@@ -63,6 +77,7 @@ interface RawMonth {
   items: Item[];
   ambient: AmbientEntry[];
   logistics: Record<string, number>;
+  logisticsByCode: Record<string, Record<string, number>>;
 }
 async function fetchMonth(month: string): Promise<RawMonth> {
   const start = `${month}-01`;
@@ -81,7 +96,7 @@ async function fetchMonth(month: string): Promise<RawMonth> {
   });
   const items: Item[] = its.docs.map((d) => d.data() as Item);
   const ambient: AmbientEntry[] = amb.docs.map((d) => d.data() as AmbientEntry);
-  return { entries, items, ambient, logistics: log };
+  return { entries, items, ambient, logistics: log.byDay, logisticsByCode: log.byDayCode };
 }
 
 export default function MaterialAnalysis2() {
@@ -219,16 +234,16 @@ export default function MaterialAnalysis2() {
       const fetchOrCache = async (): Promise<RawMonth> => {
         const ttl = month === tm ? TTL_CURRENT : TTL_PAST;
         if (!bustCache) {
-          const c = getCache<RawMonth>(`raw:${month}`, ttl);
+          const c = getCache<RawMonth>(`raw2:${month}`, ttl);
           if (c) return c;
         }
         const r = await fetchMonth(month);
-        setCache(`raw:${month}`, r);
+        setCache(`raw2:${month}`, r);
         return r;
       };
       const r = await fetchOrCache();
       setRaw(r);
-      const p = computeMonthlyProduction(r.entries, r.items, r.ambient, r.logistics);
+      const p = computeMonthlyProduction(r.entries, r.items, r.ambient, r.logistics, r.logisticsByCode);
       setProd(p);
       // 코드 → 표시명 매핑 (items 우선)
       const nameByCode = new Map<string, string>();

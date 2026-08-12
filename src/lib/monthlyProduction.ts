@@ -60,6 +60,8 @@ export function computeMonthlyProduction(
   items: Item[],
   ambient: AmbientEntry[],
   logisticsByDay: Record<string, number>,
+  /** 일자 → 품목코드(canonicalShort) → 잔여량. 주면 비례배분 대신 품목별 실제값을 쓴다 */
+  logisticsByDayCode?: Record<string, Record<string, number>>,
 ): MonthlyProduction {
   // 코드는 canonicalShort 로 통일 (대문자/소문자/하이픈/ERP풀코드 → A01 형태)
   // 4월처럼 잔여수정일은 items코드(I07), 비수정일은 entries코드(i07)로 들어와도 같은 키로 묶임
@@ -90,7 +92,19 @@ export function computeMonthlyProduction(
     ...Object.keys(logisticsByDay),
   ]);
   allDays.forEach((d) => {
-    if (logisticsByDay[d] !== undefined) {
+    const perCode = logisticsByDayCode?.[d];
+    if (perCode) {
+      // 품목별 잔여량이 있으면 정확히: 생산 = 계획(totalQty) + 그 품목의 잔여량
+      const dayItems = itemsByDay[d] || [];
+      const planned = new Map<string, number>();
+      dayItems.forEach((it) => planned.set(it.code, (planned.get(it.code) || 0) + it.totalQty));
+      const codes = new Set<string>([...planned.keys(), ...Object.keys(perCode)]);
+      codes.forEach((code) => {
+        codeQty.set(code, (codeQty.get(code) || 0) + (planned.get(code) || 0) + (perCode[code] || 0));
+        if (!codeName.has(code)) codeName.set(code, code);
+      });
+    } else if (logisticsByDay[d] !== undefined) {
+      // 품목별 잔여량이 없을 때만 계획 비율로 안분 (추정치 — 소수점이 생김)
       const dayItems = itemsByDay[d] || [];
       const plannedTot = dayItems.reduce((s, it) => s + it.totalQty, 0);
       const adj = logisticsByDay[d];
