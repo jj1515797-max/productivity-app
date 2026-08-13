@@ -551,25 +551,31 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     () => ({ formula: `SUM(원재료집계!K2:K${aggLast})` }),
     () => ({ formula: `SUM(원재료집계!M2:M${aggLast})` }),
     dBC, '원재료집계의 ERP 실제 금액 합계 — 0이면 실제 출고 데이터가 없는 것');
-  const rAct = put('⑦ ERP 실제 원재료비 (원)  ← 입력',
-    () => ({ formula: `IF(B${rActAuto}=0,"",B${rActAuto})` }),
-    () => ({ formula: `IF(C${rActAuto}=0,"",C${rActAuto})` }),
-    dBC, '기본값은 ⑦-0. ERP 총액을 직접 넣고 싶으면 덮어쓰세요', '#,##0', true);
-  const rYield = put('⑧ 실제 ÷ 이론',
-    () => ({ formula: `IF(N(B${rAct})=0,"",B${rAct}/B${rMat})` }),
-    () => ({ formula: `IF(N(C${rAct})=0,"",C${rAct}/C${rMat})` }),
+  // 비워두면 ⑦-0(자동 합계)을 쓰고, 값을 넣으면 그 값이 우선한다
+  const rAct = put('⑦ ERP 실제 원재료비 (원)  ← 직접 넣을 때만',
+    () => null, () => null, dBC,
+    '비워두면 ⑦-0 을 그대로 사용합니다. ERP 총액이 따로 있으면 여기에 넣으세요', '#,##0', true);
+  const actB = `IF(N(B${rAct})>0,B${rAct},B${rActAuto})`;
+  const actC = `IF(N(C${rAct})>0,C${rAct},C${rActAuto})`;
+  const rYield = put('⑧ 실제 ÷ 이론 (금액)',
+    () => ({ formula: `IF(N(${actB})=0,"",${actB}/B${rMat})` }),
+    () => ({ formula: `IF(N(${actC})=0,"",${actC}/C${rMat})` }),
     dBC, '100% 미만 = 레시피보다 덜 투입 (수율↑ 또는 재고 영향)', '0.0%');
   const rActG = put('⑧-1 실제 출고량 (g)',
     () => ({ formula: `SUM(원재료집계!J2:J${aggLast})` }),
     () => ({ formula: `SUM(원재료집계!L2:L${aggLast})` }),
     dBC, '원재료집계의 ERP 실제 출고량 합계');
+  put('⑧-1b 실제 ÷ 이론 (수량)',
+    () => ({ formula: `IF(OR(B${rActG}=0,B${rGram}=0),"",B${rActG}/B${rGram})` }),
+    () => ({ formula: `IF(OR(C${rActG}=0,C${rGram}=0),"",C${rActG}/C${rGram})` }),
+    dBC, '⑧(금액)과 크게 다르면 출고 단위(g/kg)나 반제품 펼침 차이를 의심하세요', '0.0%');
   put('⑧-2 실제 원단위 (g/EA)',
     () => ({ formula: `IF(OR(B${rActG}=0,B${rQty}=0),"",B${rActG}/B${rQty})` }),
     () => ({ formula: `IF(OR(C${rActG}=0,C${rQty}=0),"",C${rActG}/C${rQty})` }),
     dBC, '실제 출고량 ÷ 생산량 — 이론 원단위(③-2)와 비교', '#,##0.00');
   put('⑨ 실제 기준 원재료비율',
-    () => ({ formula: `IF(OR(N(B${rAct})=0,N(B${rAmt})=0),"",B${rAct}/B${rAmt})` }),
-    () => ({ formula: `IF(OR(N(C${rAct})=0,N(C${rAmt})=0),"",C${rAct}/C${rAmt})` }),
+    () => ({ formula: `IF(OR(N(${actB})=0,N(B${rAmt})=0),"",${actB}/B${rAmt})` }),
+    () => ({ formula: `IF(OR(N(${actC})=0,N(C${rAmt})=0),"",${actC}/C${rAmt})` }),
     dBC, '⑦ ÷ ①  — ERP 보고 수치와 같아야 합니다', '0.00%');
 
   ws.addRow([]);
@@ -787,7 +793,7 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
   const interp = [
     `="① 개당 재료비(이론)  "&TEXT(B${rUnit},"#,##0.0")&"원 → "&TEXT(C${rUnit},"#,##0.0")&"원  ("&${sgn(`D${rUnit}`, '#,##0.0')}&"원)"`,
     `=IF(N(B${rAmt})=0,"② 원재료비율 — ① 생산금액을 넣으면 계산됩니다","② 원재료비율(이론)  "&TEXT(B${rRate},"0.00%")&" → "&TEXT(C${rRate},"0.00%")&"  ("&${sgn(`D${rRate}`, '0.00%')}&"p)  ※ 분모는 ① 생산금액")`,
-    `=IF(N(B${rAct})=0,"③ 이론 대비 실제 — ⑦ 실제 원재료비가 있어야 계산됩니다","③ 실제÷이론  "&TEXT(B${rYield},"0.0%")&" → "&TEXT(C${rYield},"0.0%")&"  ("&${sgn(`D${rYield}`, '0.0%')}&"p)   100%보다 낮으면 레시피 이론치보다 실제로 덜 나간 것(수율·재고 영향)")`,
+    `=IF(N(${actB})=0,"③ 이론 대비 실제 — ⑦ 실제 원재료비가 있어야 계산됩니다","③ 실제÷이론  "&TEXT(B${rYield},"0.0%")&" → "&TEXT(C${rYield},"0.0%")&"  ("&${sgn(`D${rYield}`, '0.0%')}&"p)   100%보다 낮으면 레시피 이론치보다 실제로 덜 나간 것(수율·재고 영향)")`,
     `="④ 고단가 사용 강도  "&TEXT(B${rIntG},"0.00")&" → "&TEXT(C${rIntG},"0.00")&" g/EA ("&${sgn(`D${rIntG}`, '0.00')}&"),  "&TEXT(B${rIntW},"#,##0.0")&" → "&TEXT(C${rIntW},"#,##0.0")&" 원/EA ("&${sgn(`D${rIntW}`, '0.0')}&")   ※ 전체 생산 1EA 기준"`,
     `=IF(B${rHiPrice}="","⑤ 고단가 제품 판매단가 — 제품수익성 E열에 공급가를 넣어야 계산됩니다","⑤ 고단가 제품 평균 공급가  "&TEXT(B${rHiPrice},"#,##0")&" → "&TEXT(C${rHiPrice},"#,##0")&" 원/EA ("&${sgn(`D${rHiPrice}`, '#,##0')}&", "&${sgn(`IF(N(B${rHiPrice})=0,0,D${rHiPrice}/B${rHiPrice})`, '0.0%')}&")")`,
     // 판정 — 각 축이 1% 이상 움직였을 때만 방향으로 인정 (미세 변동을 성과로 읽지 않기)
