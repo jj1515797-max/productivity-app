@@ -44,6 +44,8 @@ export interface WorkbookInput {
   highCostExcludes: string[];
   /** 제품 DB(productSettings) 의 전체 ERP 코드 목록 — 품목키를 A-001-01 형태로 표시하는 데 사용 */
   productCodes?: { code: string; name?: string }[];
+  /** 그 두 달에 실제 생산 데이터로 등장한 원본 전체코드 (A-001-51 등) — 변형 코드 선택 1순위 */
+  producedCodes?: string[];
   /** ERP 마감 실제 출고 (materialOutflow/{month}) — 원재료별 실제 사용량·금액 */
   outflowA?: { grams: Record<string, number>; amounts: Record<string, number> };
   outflowB?: { grams: Record<string, number>; amounts: Record<string, number> };
@@ -95,15 +97,30 @@ function buildProducts(inp: WorkbookInput): ProductRow[] {
   });
   fullByShort.forEach((arr) => arr.sort((a, b) => a.code.localeCompare(b.code)));
 
+  // 그 달 생산 데이터에 실제로 찍힌 전체코드 (단축코드 → 전체코드들)
+  const producedByShort = new Map<string, string[]>();
+  (inp.producedCodes || []).forEach((raw) => {
+    const c = (raw || '').trim().toUpperCase();
+    if (!isFullErpCode(c)) return;
+    const k = canonicalShort(c);
+    if (!k) return;
+    const arr = producedByShort.get(k) || [];
+    if (!arr.includes(c)) arr.push(c);
+    producedByShort.set(k, arr);
+  });
+
   /** 단축코드에 대응하는 표시용 전체코드 고르기
-   *  1) 레시피 문서 ID 가 전체코드면 그것 (실제 계산에 쓰인 코드)
-   *  2) 제품DB 후보 중 생산 제품명과 일치하는 것
-   *  3) 제품DB 후보 첫 번째
-   *  4) 없으면 단축코드 그대로 */
+   *  1) 그 달 생산에 실제로 찍힌 전체코드가 딱 하나면 그것 (가장 신뢰도 높음)
+   *  2) 레시피 문서 ID 가 전체코드면 그것
+   *  3) 제품DB 후보 중 생산 제품명과 일치하는 것
+   *  4) 제품DB 후보 첫 번째 / 없으면 단축코드 */
   const pickFull = (short: string, prodName: string, recipeCode?: string): { code: string; alts: string } => {
     const cands = fullByShort.get(short) || [];
-    const altList = cands.map((c) => c.code);
-    const alts = altList.length > 1 ? altList.join(' / ') : '';
+    const produced = producedByShort.get(short) || [];
+    // 합쳐진 변형이 있으면 알려준다 (생산에 찍힌 것 우선으로 표기)
+    const altSource = produced.length > 1 ? produced : cands.map((c) => c.code);
+    const alts = altSource.length > 1 ? altSource.join(' / ') : '';
+    if (produced.length === 1) return { code: produced[0], alts };
     if (recipeCode && isFullErpCode(recipeCode)) return { code: recipeCode.trim().toUpperCase(), alts };
     if (cands.length > 0) {
       const nm = normalizeMaterialName(prodName);
@@ -141,22 +158,30 @@ function buildProducts(inp: WorkbookInput): ProductRow[] {
   });
 
   // ===== 실온 =====
-  const ambQty = new Map<string, { name: string; a: number; b: number }>();
-  aProd.ambient.forEach((x) => {
-    const k = normalizeMaterialName(x.productName);
-    const cur = ambQty.get(k) || { name: x.productName, a: 0, b: 0 };
-    cur.a += x.qty; ambQty.set(k, cur);
-  });
-  bProd.ambient.forEach((x) => {
-    const k = normalizeMaterialName(x.productName);
-    const cur = ambQty.get(k) || { name: x.productName, a: 0, b: 0 };
-    cur.b += x.qty; ambQty.set(k, cur);
-  });
-  Array.from(ambQty.entries()).sort((x, y) => x[1].name.localeCompare(y[1].name)).forEach(([k, v]) => {
+  // 그룹 키를 최종 품목키(ERP코드)와 같은 입도로 잡는다.
+  // normalizeMaterialName 은 '_'/'-' 를 남기고 findAmbientErp 는 지우므로,
+  // 표기가 다른 같은 제품이 두 줄로 갈라져 VLOOKUP/SUMIF 가 깨지는 것을 막는다.
+  const ambQty = new Map<string, { name: string; recipeKey: string; a: number; b: number }>();
+  const addAmb = (x: { productName: string; qty: number }, which: 'a' | 'b') => {
+    const pname = x.productName || '';
+    if (!pname) return;
+    const erp = findAmbientErp(pname);
+    const k = erp ? erp.code : normalizeMaterialName(pname);
+    const recipeKey = normalizeMaterialName(pname);
+    let cur = ambQty.get(k);
+    if (!cur) { cur = { name: pname, recipeKey, a: 0, b: 0 }; ambQty.set(k, cur); }
+    // 레시피가 등록된 표기를 우선 채택 (오타 표기가 대표가 되지 않도록)
+    if (!ambientRecipeMap.has(cur.recipeKey) && ambientRecipeMap.has(recipeKey)) {
+      cur.recipeKey = recipeKey; cur.name = pname;
+    }
+    cur[which] += x.qty || 0;
+  };
+  aProd.ambient.forEach((x) => addAmb(x, 'a'));
+  bProd.ambient.forEach((x) => addAmb(x, 'b'));
+  Array.from(ambQty.entries()).sort((x, y) => x[1].name.localeCompare(y[1].name)).forEach(([, v]) => {
     if (v.a <= 0 && v.b <= 0) return;
-    const r = ambientRecipeMap.get(k);
+    const r = ambientRecipeMap.get(v.recipeKey);
     const bp = r?.batchPieces || 1;
-    // 실온도 ERP 품목코드/등록명으로 표기 (없으면 내부 제품명 그대로)
     const erp = findAmbientErp(v.name);
     out.push({
       key: erp ? erp.code : v.name,
@@ -174,6 +199,18 @@ function buildProducts(inp: WorkbookInput): ProductRow[] {
     });
   });
 
+  // 품목키 중복은 시트 간 VLOOKUP/SUMIF 를 통째로 망가뜨리므로 반드시 분리한다
+  const seenKeys = new Map<string, number>();
+  out.forEach((p) => {
+    const n = (seenKeys.get(p.key) || 0) + 1;
+    seenKeys.set(p.key, n);
+    if (n > 1) {
+      console.warn('[materialWorkbook] 품목키 중복', p.key, p.name);
+      p.altCodes = `${p.altCodes ? `${p.altCodes} · ` : ''}중복키 분리됨`;
+      p.key = `${p.key}#${n}`;
+    }
+  });
+
   return out;
 }
 
@@ -182,19 +219,29 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
   const products = buildProducts(inp);
 
   // ===== 원재료 마스터 =====
-  const ingMaster = new Map<string, { key: string; name: string; code: string }>();
+  // name = 표시용(단가표 정식명), matchName = 매칭용(레시피에 적힌 이름).
+  // 앱은 항상 레시피명으로 이름 폴백을 하므로 매칭에는 matchName 을 써야 앱과 결과가 같다.
+  const ingMaster = new Map<string, { key: string; name: string; matchName: string; code: string }>();
   products.forEach((p) => p.ings.forEach((ing) => {
     if (ingMaster.has(ing.key)) return;
     const official = priceNameByCode.get(CODE_KEY_PREFIX + ing.key);
     const looksLikeCode = official !== undefined || /^[0-9A-Z\-]{4,}$/.test(ing.key);
-    ingMaster.set(ing.key, { key: ing.key, name: official || ing.name, code: looksLikeCode ? ing.key : '' });
+    ingMaster.set(ing.key, {
+      key: ing.key,
+      name: official || ing.name,
+      matchName: ing.name,
+      code: looksLikeCode ? ing.key : '',
+    });
   }));
 
-  const priceOf = (month: string, m: { code: string; name: string }): number => {
+  const priceOf = (month: string, m: { code: string; name: string; matchName: string }): number => {
     if (m.code) {
       const v = priceMap.get(monthPriceKey(month, CODE_KEY_PREFIX + normalizeCode(m.code)));
       if (v !== undefined) return v;
     }
+    // 레시피명 우선(앱과 동일) → 그래도 없으면 단가표 정식명으로 2차 시도
+    const byRecipe = priceMap.get(monthPriceKey(month, normalizeMaterialName(m.matchName)));
+    if (byRecipe !== undefined) return byRecipe;
     return priceMap.get(monthPriceKey(month, normalizeMaterialName(m.name))) ?? 0;
   };
 
@@ -226,13 +273,13 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     r.height = 22;
   };
 
-  const qtyLast = products.length + 1;
+  const qtyLast = Math.max(2, products.length + 1);
   const ingList = Array.from(ingMaster.values()).sort((a, b) => a.name.localeCompare(b.name));
-  const priceLast = ingList.length + 1;
-  const aggLast = ingList.length + 1;
+  const priceLast = Math.max(2, ingList.length + 1);
+  const aggLast = Math.max(2, ingList.length + 1);
   // 레시피계산 행수 미리 계산 (다른 시트 수식이 참조)
-  const calcLast = 1 + products.reduce((s, p) => s + p.ings.length, 0);
-  const profitLast = products.length + 1;
+  const calcLast = Math.max(2, 1 + products.reduce((s, p) => s + p.ings.length, 0));
+  const profitLast = Math.max(2, products.length + 1);
 
   /* ================= 생산량 ================= */
   const wsQty = wb.addWorksheet('생산량');
@@ -257,8 +304,9 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
       { formula: `IF(COUNTIFS(레시피계산!$A$2:$A$${calcLast},$A${R},레시피계산!$O$2:$O$${calcLast},"고단가")>0,"O","")` },
       p.shortCode, p.altCodes,
     ]);
-    r.getCell(4).fill = INPUT_FILL; r.getCell(4).numFmt = '#,##0';
-    r.getCell(5).fill = INPUT_FILL; r.getCell(5).numFmt = '#,##0';
+    // 잔여량 안분일에는 소수가 섞인다. 보이는 대로 다시 입력해 값이 절사되는 것을 막기 위해 소수를 표시.
+    r.getCell(4).fill = INPUT_FILL; r.getCell(4).numFmt = '#,##0.##';
+    r.getCell(5).fill = INPUT_FILL; r.getCell(5).numFmt = '#,##0.##';
     r.getCell(7).alignment = { horizontal: 'center' };
     if (!p.hasRecipe) r.getCell(6).font = { color: { argb: 'FFC00000' }, bold: true };
   });
@@ -390,6 +438,8 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     { header: `${monthA} 고단가 재료비`, width: 16 },
     { header: `${monthB} 고단가 재료비`, width: 16 },
     { header: '앱 내부키', width: 24 },
+    { header: '⚠ 합쳐진 코드', width: 24 },
+    { header: '믹스 유효가중치', width: 14 },
   ];
   styleHeader(wsPro, 1, 'FFC55A11');
   products.forEach((p, i) => {
@@ -415,7 +465,14 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
       { formula: `SUMIFS(레시피계산!$M$2:$M$${calcLast},레시피계산!$A$2:$A$${calcLast},$A${R},레시피계산!$O$2:$O$${calcLast},"고단가")` },
       { formula: `SUMIFS(레시피계산!$N$2:$N$${calcLast},레시피계산!$A$2:$A$${calcLast},$A${R},레시피계산!$O$2:$O$${calcLast},"고단가")` },
       p.shortCode,
+      p.altCodes,
+      { formula: `IF(AND(ISNUMBER($O${R}),ISNUMBER($Q${R})),$Q${R},0)` },
     ]);
+    row.getCell(24).numFmt = '0.00%';
+    if (p.altCodes) {
+      row.getCell(23).font = { size: 9, bold: true, color: { argb: 'FFC00000' } };
+      row.getCell(5).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFDE2E2' } };
+    }
     row.getCell(4).alignment = { horizontal: 'center' };
     [5, 6].forEach((c) => { row.getCell(c).fill = INPUT_FILL; row.getCell(c).numFmt = '#,##0'; });
     [7, 8, 9, 10, 13, 14, 19, 20, 21].forEach((c) => { row.getCell(c).numFmt = '#,##0'; });
@@ -423,18 +480,34 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     [15, 16, 17, 18].forEach((c) => { row.getCell(c).numFmt = '0.00%'; });
   });
   wsPro.views = [{ state: 'frozen', ySplit: 1 }];
-  if (products.length > 0) wsPro.autoFilter = { from: 'A1', to: `V${profitLast}` };
+  if (products.length > 0) wsPro.autoFilter = { from: 'A1', to: `X${profitLast}` };
 
-  /** ERP 실제 출고 조회 — 저장 키가 코드접두사/이름 두 형태라 둘 다 시도 */
+  /** ERP 실제 출고 조회.
+   *  materialOutflow 의 저장 키는 '단가표에 코드가 있었는지'로 갈린다(코드키 또는 단가표 이름).
+   *  워크북 키는 레시피 기준이라, 코드키 → 레시피명 → 단가표 정식명 순으로 모두 시도한다.
+   *  금액은 0(무상·단가0 원재료)도 유효값이므로 수량과 다르게 취급한다. */
   const outOf = (
     src: { grams: Record<string, number>; amounts: Record<string, number> } | undefined,
-    key: string,
+    m: { key: string; name: string; matchName: string },
     which: 'grams' | 'amounts',
   ): number | null => {
     if (!src) return null;
-    const m = src[which] || {};
-    const v = m[CODE_KEY_PREFIX + key] ?? m[key] ?? m[normalizeMaterialName(key)];
-    return v && v > 0 ? v : null;
+    const table = src[which] || {};
+    const cands = [
+      CODE_KEY_PREFIX + m.key,
+      m.key,
+      normalizeMaterialName(m.matchName),
+      normalizeMaterialName(m.name),
+    ];
+    for (const c of cands) {
+      if (!c) continue;
+      if (!Object.prototype.hasOwnProperty.call(table, c)) continue;
+      const v = table[c];
+      if (typeof v !== 'number' || Number.isNaN(v)) continue;
+      if (which === 'grams') { if (v > 0) return v; continue; }
+      if (v >= 0) return v;
+    }
+    return null;
   };
 
   /* ================= 원재료집계 ================= */
@@ -469,10 +542,10 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
       { formula: `SUMIF(레시피계산!$D$2:$D$${calcLast},$A${R},레시피계산!$N$2:$N$${calcLast})` },
       { formula: `$G${R}-$F${R}` },
       { formula: `IF($F${R}=0,"",$G${R}/$F${R}-1)` },
-      outOf(inp.outflowA, m.key, 'grams'),
-      outOf(inp.outflowA, m.key, 'amounts'),
-      outOf(inp.outflowB, m.key, 'grams'),
-      outOf(inp.outflowB, m.key, 'amounts'),
+      outOf(inp.outflowA, m, 'grams'),
+      outOf(inp.outflowA, m, 'amounts'),
+      outOf(inp.outflowB, m, 'grams'),
+      outOf(inp.outflowB, m, 'amounts'),
       { formula: `IF(OR(N($D${R})=0,N($J${R})=0),"",$J${R}/$D${R})` },
       { formula: `IF(OR(N($E${R})=0,N($L${R})=0),"",$L${R}/$E${R})` },
       { formula: `IF(OR(N($K${R})=0,N($M${R})=0),"",$M${R}-$K${R})` },
@@ -557,8 +630,12 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
   const rActAuto = put('⑦-0 실제 출고 합계 (원재료집계 자동)',
     () => ({ formula: `SUM(원재료집계!K2:K${aggLast})` }),
     () => ({ formula: `SUM(원재료집계!M2:M${aggLast})` }),
-    dBC, '원재료집계의 ERP 실제 금액 합계 — 0이면 실제 출고 데이터가 없는 것');
+    dBC, 'BOM 에 매칭된 원재료만 더한 부분합입니다 (부재료·포장재·미매칭 제외). ⑦-0b 커버리지를 같이 보세요');
   // 비워두면 ⑦-0(자동 합계)을 쓰고, 값을 넣으면 그 값이 우선한다
+  put('⑦-0b 실제 출고 입력 커버리지',
+    () => ({ formula: `IF(COUNTA(원재료집계!$A$2:$A$${aggLast})=0,"",COUNT(원재료집계!$K$2:$K$${aggLast})/COUNTA(원재료집계!$A$2:$A$${aggLast}))` }),
+    () => ({ formula: `IF(COUNTA(원재료집계!$A$2:$A$${aggLast})=0,"",COUNT(원재료집계!$M$2:$M$${aggLast})/COUNTA(원재료집계!$A$2:$A$${aggLast}))` }),
+    dBC, '실제 출고가 채워진 원재료 비율. 100% 미만이면 ⑦-0 은 부분합입니다', '0.0%');
   const rAct = put('⑦ ERP 실제 원재료비 (원)  ← 직접 넣을 때만',
     () => null, () => null, dBC,
     '비워두면 ⑦-0 을 그대로 사용합니다. ERP 총액이 따로 있으면 여기에 넣으세요', '#,##0', true);
@@ -583,7 +660,7 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
   put('⑨ 실제 기준 원재료비율',
     () => ({ formula: `IF(OR(N(${actB})=0,N(B${rAmt})=0),"",${actB}/B${rAmt})` }),
     () => ({ formula: `IF(OR(N(${actC})=0,N(C${rAmt})=0),"",${actC}/C${rAmt})` }),
-    dBC, '⑦ ÷ ①  — ERP 보고 수치와 같아야 합니다', '0.00%');
+    dBC, '⑦ ÷ ①  — ⑦에 ERP 총액을 직접 넣었을 때만 ERP 보고 수치와 일치합니다', '0.00%');
 
   ws.addRow([]);
   section(`고단가 원재료 (${inp.highCostTerms.join('·')})`, 'FF7030A0');
@@ -628,8 +705,15 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     () => ({ formula: `IF(B${rSup}=0,"",B${rMat}/B${rSup})` }),
     () => ({ formula: `IF(C${rSup}=0,"",C${rMat}/C${rSup})` }),
     dBC, '③ ÷ ⑯', '0.00%');
+  // A월 원가율이 없는 품목(신제품·공급가 미입력)의 B월 매출비중이 분모에 남으면
+  // 믹스효과가 구조적으로 좋게 나온다 → 유효 가중치로 재정규화한다.
+  const mixW = `SUM(제품수익성!$X$2:$X$${profitLast})`;
+  put('⑲-0 믹스 계산 제외 매출비중',
+    () => ({ formula: `IF(B${rSup}=0,"",1-${mixW})` }),
+    () => null, null,
+    `${monthA} 원가율이 없는 품목(신제품·공급가 미입력)의 ${monthB} 매출비중 — 클수록 ⑳ 신뢰도 낮음`, '0.00%');
   const rMix = put('⑲ 믹스 기준 원가율',
-    () => ({ formula: `IF(B${rSup}=0,"",SUM(제품수익성!$R$2:$R$${profitLast}))` }),
+    () => ({ formula: `IF(OR(B${rSup}=0,${mixW}=0),"",SUM(제품수익성!$R$2:$R$${profitLast})/${mixW})` }),
     () => null,
     null, `${monthA} 제품별 원가율을 ${monthB} 제품구성에 적용한 값`, '0.00%');
   const rMixEff = put('⑳ 제품구성(믹스) 효과',
@@ -839,18 +923,18 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     `=IF(N(B${rAmt})=0,"② 원재료비율 — ① 생산금액을 넣으면 계산됩니다","② 원재료비율(이론)  "&TEXT(B${rRate},"0.00%")&" → "&TEXT(C${rRate},"0.00%")&"  ("&${sgn(`D${rRate}`, '0.00%')}&"p)  ※ 분모는 ① 생산금액")`,
     `=IF(N(${actB})=0,"③ 이론 대비 실제 — ⑦ 실제 원재료비가 있어야 계산됩니다","③ 실제÷이론  "&TEXT(B${rYield},"0.0%")&" → "&TEXT(C${rYield},"0.0%")&"  ("&${sgn(`D${rYield}`, '0.0%')}&"p)   100%보다 낮으면 레시피 이론치보다 실제로 덜 나간 것(수율·재고 영향)")`,
     `="④ 고단가 사용 강도  "&TEXT(B${rIntG},"0.00")&" → "&TEXT(C${rIntG},"0.00")&" g/EA ("&${sgn(`D${rIntG}`, '0.00')}&"),  "&TEXT(B${rIntW},"#,##0.0")&" → "&TEXT(C${rIntW},"#,##0.0")&" 원/EA ("&${sgn(`D${rIntW}`, '0.0')}&")   ※ 전체 생산 1EA 기준"`,
-    `=IF(B${rHiPrice}="","⑤ 고단가 제품 판매단가 — 제품수익성 E열에 공급가를 넣어야 계산됩니다","⑤ 고단가 제품 평균 공급가  "&TEXT(B${rHiPrice},"#,##0")&" → "&TEXT(C${rHiPrice},"#,##0")&" 원/EA ("&${sgn(`D${rHiPrice}`, '#,##0')}&", "&${sgn(`IF(N(B${rHiPrice})=0,0,D${rHiPrice}/B${rHiPrice})`, '0.0%')}&")")`,
+    `=IF(OR(B${rHiPrice}="",C${rHiPrice}=""),"⑤ 고단가 제품 판매단가 — 제품수익성 E열에 공급가를 넣어야 계산됩니다","⑤ 고단가 제품 평균 공급가  "&TEXT(B${rHiPrice},"#,##0")&" → "&TEXT(C${rHiPrice},"#,##0")&" 원/EA ("&${sgn(`D${rHiPrice}`, '#,##0')}&", "&${sgn(`IF(N(B${rHiPrice})=0,0,D${rHiPrice}/B${rHiPrice})`, '0.0%')}&")")`,
     // 판정 — 각 축이 1% 이상 움직였을 때만 방향으로 인정 (미세 변동을 성과로 읽지 않기)
-    `=IF(B${rHiPrice}="","",` +
+    `=IF(OR(B${rHiPrice}="",C${rHiPrice}=""),"",` +
       `LET_PLACEHOLDER)`,
     `=IF(B${rMsrp}="","","⑦ 공급가율(공급가÷권장소비자가)  "&TEXT(B${rMsrp},"0.0%")&" → "&TEXT(C${rMsrp},"0.0%")&IF(OR(B${rMsrp}>1,C${rMsrp}>1)," ⚠ 100%를 넘습니다 — 제품수익성 E열(공급가)과 F열(권장소비자가)이 바뀐 것 같습니다",""))`,
     `=IF(OR(N(B${rSup})=0,N(B${rAmt})=0),"","⑧ 검산: 공급가액 합계 "&TEXT(B${rSup},"#,##0")&" vs ① 생산금액 "&TEXT(B${rAmt},"#,##0")&"  → 차이 "&TEXT(ABS(B${rSup}/B${rAmt}-1),"0.0%")&IF(ABS(B${rSup}/B${rAmt}-1)>0.05," ⚠ 5% 넘게 벌어집니다. 공급가 단위(1EA인지)와 열 위치를 확인하세요"," ✓ 정상 범위"))`,
-    `=IF(B${rSup}=0,"","⑨ 원가율 "&TEXT(B${rRateS},"0.00%")&" → "&TEXT(C${rRateS},"0.00%")&"  =  제품구성(믹스) "&${sgn(`B${rMixEff}`, '0.00%')}&"p  +  제품별 원가율 "&${sgn(`C${rRateS}-B${rMix}`, '0.00%')}&"p")`,
+    `=IF(OR(B${rSup}=0,C${rRateS}="",B${rMix}=""),"","⑨ 원가율 "&TEXT(B${rRateS},"0.00%")&" → "&TEXT(C${rRateS},"0.00%")&"  =  제품구성(믹스) "&${sgn(`B${rMixEff}`, '0.00%')}&"p  +  제품별 원가율 "&${sgn(`C${rRateS}-B${rMix}`, '0.00%')}&"p")`,
   ];
 
   // 판정문: 사용 강도(㉕)와 판매단가(㉘) 변화율을 각각 ±1% 기준으로 판단
-  const relW = `IF(N(B${rIntW})=0,0,D${rIntW}/B${rIntW})`;
-  const relP = `IF(N(B${rHiPrice})=0,0,D${rHiPrice}/B${rHiPrice})`;
+  const relW = `IFERROR(IF(N(B${rIntW})=0,0,N(D${rIntW})/N(B${rIntW})),0)`;
+  const relP = `IFERROR(IF(N(B${rHiPrice})=0,0,N(D${rHiPrice})/N(B${rHiPrice})),0)`;
   const verdict =
     `IF(AND(ABS(${relW})<0.01,ABS(${relP})<0.01),"⑥ 판정: 두 지표 모두 사실상 변화 없음 (±1% 이내) — 고단가 쪽 요인은 아닙니다",` +
     `IF(AND(${relW}<=-0.01,${relP}>=0.01),"⑥ 판정: 고단가를 덜 쓰면서 판매단가가 높은 제품을 더 만들었습니다 (원가율 개선의 질이 좋음)",` +

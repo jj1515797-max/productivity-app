@@ -527,13 +527,20 @@ export default function MaterialAnalysis() {
         const d = snap.exists() ? (snap.data() as { outflowGrams?: Record<string, number>; outflowAmounts?: Record<string, number> }) : {};
         return { grams: d.outflowGrams || {}, amounts: d.outflowAmounts || {} };
       };
+      // 그 두 달 생산 데이터에 실제로 찍힌 원본 전체코드 (변형 -01/-51 구분용)
+      const producedCodes = Array.from(new Set([
+        ...(aRaw?.items || []).map((it) => it.code || ''),
+        ...(bRaw?.items || []).map((it) => it.code || ''),
+        ...(aRaw?.entries || []).map((e) => e.code || ''),
+        ...(bRaw?.entries || []).map((e) => e.code || ''),
+      ].filter(Boolean)));
       const sum = (rows: { cost: number }[]) => rows.reduce((s2, x) => s2 + x.cost, 0);
       const blob = await buildMaterialWorkbook({
         monthA, monthB, aProd, bProd, productNameByCode,
         recipeMap: effRecipeMap, ambientRecipeMap: effAmbientRecipeMap,
         priceMap, priceNameByCode,
         appTotalA: sum(aResult.rows), appTotalB: sum(bResult.rows),
-        productCodes,
+        productCodes, producedCodes,
         outflowA: outflowOf(outA), outflowB: outflowOf(outB),
         highCostTerms: ['한우', '전복', '게살', '관자'],
         highCostExcludes: ['사골육수'],

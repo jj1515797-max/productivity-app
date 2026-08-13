@@ -5,6 +5,7 @@ import type { AmbientEntry, Item, MachineEntry } from '../types';
 import AmbientInputModal from '../components/AmbientInputModal';
 import LogisticsInputModal from '../components/LogisticsInputModal';
 import { todayKey } from '../lib/dateUtil';
+import { canonicalShort } from '../lib/codeUtil';
 
 const MACHINES: MachineEntry['machine'][] = ['1호기', '2호기', '3호기'];
 
@@ -465,11 +466,29 @@ export default function AnalyticsMonthly() {
       ? dailyItemCounts.reduce((s, v) => s + v, 0) / dailyItemCounts.length
       : 0;
 
-    const byMachine = MACHINES.map((m) => ({
-      machine: m,
-      total: entries.filter((e) => e.machine === m).reduce((s, e) => s + qty(e), 0),
-      count: entries.filter((e) => e.machine === m).length,
-    }));
+    const byMachine = MACHINES.map((m) => {
+      const mEntries = entries.filter((e) => e.machine === m);
+      // 일별 고유 품목수 — 같은 코드를 하루에 여러 번 입력해도 1품목
+      const codesByDay: Record<string, Set<string>> = {};
+      mEntries.forEach((e) => {
+        if (!e.code) return;
+        if (qty(e) <= 0) return;
+        if (!codesByDay[e.date]) codesByDay[e.date] = new Set();
+        codesByDay[e.date].add(canonicalShort(e.code));
+      });
+      const daily = Object.values(codesByDay).map((x) => x.size);
+      const workDays = daily.length;
+      const uniqueCodes = new Set<string>();
+      Object.values(codesByDay).forEach((x) => x.forEach((c) => uniqueCodes.add(c)));
+      return {
+        machine: m,
+        total: mEntries.reduce((s, e) => s + qty(e), 0),
+        count: mEntries.length,
+        workDays,
+        avgItems: workDays > 0 ? daily.reduce((s, v) => s + v, 0) / workDays : 0,
+        totalItems: uniqueCodes.size,
+      };
+    });
 
     const [yy, mm] = month.split('-').map(Number);
     const lastDay = new Date(yy, mm, 0).getDate();
@@ -613,7 +632,7 @@ export default function AnalyticsMonthly() {
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
         <div className="lg:col-span-5 bg-white border rounded-lg overflow-hidden flex flex-col">
           <div className="px-4 py-3 border-b bg-slate-50 font-semibold text-gray-800 text-sm flex items-center justify-between">
-            <span>호기별 생산량 <span className="text-xs text-gray-500 font-normal">(냉장)</span></span>
+            <span>호기별 생산량 <span className="text-xs text-gray-500 font-normal">(냉장) · 일평균 품목수</span></span>
             <span className="text-xs text-gray-500 font-normal">합계 <span className="font-bold text-blue-700">{stats.coldTotal.toLocaleString()}</span> EA</span>
           </div>
           <div className="p-4 space-y-3">
@@ -649,6 +668,15 @@ export default function AnalyticsMonthly() {
                     </div>
                     <div className="font-bold text-gray-900 text-sm">{row.total.toLocaleString()}<span className="text-[10px] text-gray-500 ml-1 font-normal">EA</span></div>
                     <div className="text-[10px] text-gray-400 mt-0.5">{row.count}건 입력</div>
+                    <div className="mt-1.5 pt-1.5 border-t border-gray-100">
+                      <div className="flex items-baseline gap-1">
+                        <span className="font-bold text-gray-800 text-sm">{row.avgItems.toFixed(1)}</span>
+                        <span className="text-[10px] text-gray-500">품목/일</span>
+                      </div>
+                      <div className="text-[10px] text-gray-400 mt-0.5">
+                        {row.workDays}일 가동 · 총 {row.totalItems}품목
+                      </div>
+                    </div>
                   </div>
                 );
               })}
