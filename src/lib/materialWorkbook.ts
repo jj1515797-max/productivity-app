@@ -286,6 +286,9 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     { header: '사용량 순위', width: 11 },
     { header: '금액 순위', width: 10 },
     { header: '★ 적용 그룹', width: 13 },
+    { header: '고단가 순번', width: 11 },
+    { header: `${monthA} 단가 출처`, width: 13 },
+    { header: `${monthB} 단가 출처`, width: 13 },
   ];
   styleHeader(wsPrice, 1, 'FF7030A0');
   ingList.forEach((m, i) => {
@@ -300,10 +303,14 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
       { formula: `IF($G${R}=0,"",RANK($G${R},$G$2:$G$${priceLast},0))` },
       { formula: `IF($H${R}=0,"",RANK($H${R},$H$2:$H$${priceLast},0))` },
       { formula: `IF(요약!$H$2="수동",$F${R},IF(요약!$H$2="단가 상위N",IF(N($I${R})>0,IF($I${R}<=요약!$H$3,"고단가",""),""),IF(요약!$H$2="사용량 상위N",IF(N($J${R})>0,IF($J${R}<=요약!$H$3,"고단가",""),""),IF(요약!$H$2="금액 상위N",IF(N($K${R})>0,IF($K${R}<=요약!$H$3,"고단가",""),""),""))))` },
+      { formula: `IF($L${R}="고단가",COUNTIF($L$2:$L${R},"고단가"),"")` },
+      { formula: `IF(N(IFERROR(VLOOKUP($A${R},원재료집계!$A$2:$L$${aggLast},10,FALSE),0))>0,"실측","기초")` },
+      { formula: `IF(N(IFERROR(VLOOKUP($A${R},원재료집계!$A$2:$L$${aggLast},12,FALSE),0))>0,"실측","기초")` },
     ]);
     r.getCell(4).fill = INPUT_FILL; r.getCell(4).numFmt = '#,##0.000';
     r.getCell(5).fill = INPUT_FILL; r.getCell(5).numFmt = '#,##0.000';
     r.getCell(6).fill = INPUT_FILL; r.getCell(6).alignment = { horizontal: 'center' };
+    [13, 14, 15].forEach((c) => { r.getCell(c).alignment = { horizontal: 'center' }; r.getCell(c).font = { size: 9, color: { argb: 'FF808080' } }; });
     [7, 8].forEach((c) => { r.getCell(c).numFmt = '#,##0'; });
     [9, 10, 11].forEach((c) => { r.getCell(c).numFmt = '#,##0'; r.getCell(c).alignment = { horizontal: 'center' }; });
     r.getCell(12).alignment = { horizontal: 'center' };
@@ -311,7 +318,7 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     if (pa === 0 || pb === 0) r.getCell(3).font = { color: { argb: 'FFC00000' } };
   });
   wsPrice.views = [{ state: 'frozen', ySplit: 1 }];
-  if (ingList.length > 0) wsPrice.autoFilter = { from: 'A1', to: `L${priceLast}` };
+  if (ingList.length > 0) wsPrice.autoFilter = { from: 'A1', to: `O${priceLast}` };
 
   /* ================= 레시피계산 ================= */
   const wsCalc = wb.addWorksheet('레시피계산');
@@ -768,18 +775,55 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     };
     put4(8, cr.all[0]); put4(9, cr.all[1]); put4(10, cr.hi[0]); put4(11, cr.hi[1]);
     const shareCell = gc(R, 12);
-    shareCell.value = cr.share
-      ? { formula: `IF(N(${cr.all[1]})=0,"",${cr.hi[1]}/${cr.all[1]})` }
-      : { formula: `IF(OR(N(${cr.all[1]})=0,N(${cr.hi[1]})=0),"",${cr.hi[1]}/${cr.all[1]}-1)` };
+    shareCell.value = { formula: `IF(N(${cr.all[1]})=0,"",${cr.hi[1]}/${cr.all[1]})` };
     shareCell.numFmt = '0.0%';
     shareCell.font = { size: 10, color: { argb: 'FF7030A0' } };
     for (let c = 7; c <= 12; c += 1) gc(R, c).border = BORDER;
   });
   const noteR = 7 + cmpRows.length;
   ws.mergeCells(noteR, 7, noteR, 12);
-  gc(noteR, 7).value = '※ 마지막 열 — 재료비·사용량·생산량·공급가액은 [고단가 ÷ 전체] 비중, 원단위·평균공급가·원가율은 [고단가가 전체보다 몇 % 높은가]';
+  gc(noteR, 7).value = '※ 마지막 열 = 고단가 ÷ 전체 (모든 행 동일 기준). 원가율·평균공급가 행은 100%보다 크면 고단가 쪽이 더 높다는 뜻입니다.';
   gc(noteR, 7).font = NOTE;
   gc(noteR, 7).alignment = { wrapText: true };
+
+  // ── 지금 고단가로 잡힌 원재료 목록 (선택 방식이 바뀌면 같이 바뀜)
+  const LIST_TOP = noteR + 2;
+  const LIST_N = 25;
+  panelHead(LIST_TOP, 7, 12, '지금 고단가로 잡힌 원재료', 'FF7030A0');
+  ws.mergeCells(LIST_TOP + 1, 7, LIST_TOP + 1, 12);
+  gc(LIST_TOP + 1, 7).value = {
+    formula: `"총 "&COUNTIF(단가!$L$2:$L$${priceLast},"고단가")&"개 · 선택 방식: "&$H$2&IF($H$2="수동",""," (상위 "&$H$3&"개)")&"   — 아래 "&${LIST_N}&"개까지 표시"`,
+  };
+  gc(LIST_TOP + 1, 7).font = { size: 10, bold: true, color: { argb: 'FF7030A0' } };
+  const listHdr = ['#', '원재료명', `${monthB} 단가(원/g)`, `${monthB} 사용량(g)`, `${monthB} 금액(원)`, '전체 재료비 대비'];
+  listHdr.forEach((h, i) => {
+    const cell = gc(LIST_TOP + 2, 7 + i);
+    cell.value = h;
+    cell.font = { bold: true, size: 10, color: { argb: 'FFFFFFFF' } };
+    cell.fill = headFill('FF7030A0');
+    cell.alignment = { horizontal: 'center', wrapText: true };
+    cell.border = BORDER;
+  });
+  for (let i = 0; i < LIST_N; i += 1) {
+    const R = LIST_TOP + 3 + i;
+    const n = i + 1;
+    const pick = (col: string) => `IFERROR(INDEX(단가!$${col}$2:$${col}$${priceLast},MATCH(${n},단가!$M$2:$M$${priceLast},0)),"")`;
+    gc(R, 7).value = { formula: `IF(${n}>COUNTIF(단가!$L$2:$L$${priceLast},"고단가"),"",${n})` };
+    gc(R, 8).value = { formula: pick('C') };
+    gc(R, 9).value = { formula: pick('E') };
+    gc(R, 10).value = { formula: pick('G') };
+    gc(R, 11).value = { formula: pick('H') };
+    gc(R, 12).value = { formula: `IF(OR(N(C${rMat})=0,N(${pick('H')})=0),"",${pick('H')}/C${rMat})` };
+    gc(R, 7).alignment = { horizontal: 'center' };
+    gc(R, 9).numFmt = '#,##0.000';
+    [10, 11].forEach((c) => { gc(R, c).numFmt = '#,##0'; });
+    gc(R, 12).numFmt = '0.00%';
+    for (let c = 7; c <= 12; c += 1) gc(R, c).border = BORDER;
+  }
+  const listEnd = LIST_TOP + 3 + LIST_N;
+  ws.mergeCells(listEnd, 7, listEnd, 12);
+  gc(listEnd, 7).value = '※ 바꾸려면 위 H2(선택 방식)·H3(상위 N개)를 조정하거나, [단가] 시트 F열에 직접 고단가 라고 적으세요.';
+  gc(listEnd, 7).font = NOTE;
 
   ws.addRow([]);
   const hInt = ws.addRow(['자동 해석 (숫자가 바뀌면 문장도 바뀝니다)']);
