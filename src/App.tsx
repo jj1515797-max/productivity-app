@@ -25,9 +25,12 @@ import InboundHistory from './pages/InboundHistory';
 import Logo from './components/Logo';
 import AnalyticsGate from './components/AnalyticsGate';
 import { useTrackVisit } from './lib/presence';
+import { isAlertOn, toggleAlertByLongPress, watchTodayProgress, handleProgress } from './lib/completionAlert';
+import { useEffect, useRef, useState } from 'react';
 
 export default function App() {
   useTrackVisit();
+  useCompletionAlert();
   return (
     <div className="min-h-screen bg-gray-100 flex flex-col">
       <Header />
@@ -35,6 +38,62 @@ export default function App() {
       <MainContainer />
     </div>
   );
+}
+
+/** 알림을 켠 기기에서만 오늘 진행률을 구독해 100% 도달 시 알림 발사 */
+function useCompletionAlert() {
+  const [on, setOn] = useState(isAlertOn());
+  useEffect(() => {
+    const sync = () => setOn(isAlertOn());
+    window.addEventListener('ssbon:alert-changed', sync);
+    return () => window.removeEventListener('ssbon:alert-changed', sync);
+  }, []);
+  useEffect(() => {
+    if (!on) return;
+    let stop = watchTodayProgress(handleProgress);
+    // 자정 넘어가면 오늘 날짜로 다시 구독
+    let day = new Date().getDate();
+    const id = setInterval(() => {
+      const d = new Date().getDate();
+      if (d !== day) { day = d; stop(); stop = watchTodayProgress(handleProgress); }
+    }, 60_000);
+    return () => { clearInterval(id); stop(); };
+  }, [on]);
+}
+
+/** 5초 롱프레스 훅 — 누르는 동안 진행 표시, 끝나면 콜백 */
+function useLongPress(onLong: () => void, ms = 5000) {
+  const timer = useRef<number | null>(null);
+  const firedRef = useRef(false);
+  const [holding, setHolding] = useState(false);
+
+  const clear = () => {
+    if (timer.current !== null) { window.clearTimeout(timer.current); timer.current = null; }
+    setHolding(false);
+  };
+  const start = () => {
+    firedRef.current = false;
+    setHolding(true);
+    timer.current = window.setTimeout(() => {
+      firedRef.current = true;
+      clear();
+      onLong();
+    }, ms);
+  };
+  return {
+    holding,
+    /** 롱프레스가 발동했으면 이어지는 click 은 막는다 */
+    consumeClick: (e: React.MouseEvent) => {
+      if (firedRef.current) { e.preventDefault(); e.stopPropagation(); firedRef.current = false; }
+    },
+    handlers: {
+      onPointerDown: start,
+      onPointerUp: clear,
+      onPointerLeave: clear,
+      onPointerCancel: clear,
+      onContextMenu: (e: React.MouseEvent) => { if (holding) e.preventDefault(); },
+    },
+  };
 }
 
 function MainContainer() {
@@ -126,6 +185,13 @@ const SUB_TABS: Record<Section, { label: string; to: string; exact?: boolean }[]
 };
 
 function Header() {
+  const [alertOn, setAlertOn] = useState(isAlertOn());
+  const longPress = useLongPress(() => {
+    toggleAlertByLongPress().then((next) => {
+      setAlertOn(next);
+      window.dispatchEvent(new Event('ssbon:alert-changed'));
+    });
+  });
   const today = new Date();
   const days = ['일', '월', '화', '수', '목', '금', '토'];
   const dateLabel = `${today.getMonth() + 1}/${today.getDate()}(${days[today.getDay()]})`;
@@ -169,12 +235,16 @@ function Header() {
                 {showDivider && <span className="w-px h-5 bg-blue-400 mx-1.5" aria-hidden />}
                 <NavLink
                   to={l.to}
-                  className={`px-3 py-1.5 text-sm rounded font-medium transition flex items-center gap-1.5 ${
+                  {...(l.section === 'dashboard' ? longPress.handlers : {})}
+                  onClick={l.section === 'dashboard' ? longPress.consumeClick : undefined}
+                  title={l.section === 'dashboard' ? '5초 꾹 누르면 생산 완료 알림을 켜고 끌 수 있습니다' : undefined}
+                  className={`px-3 py-1.5 text-sm rounded font-medium transition flex items-center gap-1.5 select-none ${
                     active ? 'bg-white text-blue-700' : 'text-blue-100 hover:bg-blue-800'
-                  }`}
+                  } ${l.section === 'dashboard' && longPress.holding ? 'ring-2 ring-amber-300 scale-95' : ''}`}
                 >
                   {l.icon && <span className="text-xs">{l.icon}</span>}
                   {l.label}
+                  {l.section === 'dashboard' && alertOn && <span title="생산 완료 알림 켜짐">🔔</span>}
                 </NavLink>
               </span>
             );
@@ -199,12 +269,14 @@ function Header() {
             <NavLink
               key={l.to}
               to={l.to}
-              className={`px-1 py-1.5 text-xs rounded font-medium transition flex flex-col items-center justify-center gap-0.5 ${
+              {...(l.section === 'dashboard' ? longPress.handlers : {})}
+              onClick={l.section === 'dashboard' ? longPress.consumeClick : undefined}
+              className={`px-1 py-1.5 text-xs rounded font-medium transition flex flex-col items-center justify-center gap-0.5 select-none ${
                 active ? 'bg-white text-blue-700' : 'text-blue-100 active:bg-blue-800'
-              }`}
+              } ${l.section === 'dashboard' && longPress.holding ? 'ring-2 ring-amber-300' : ''}`}
             >
               {l.icon && <span className="text-sm leading-none">{l.icon}</span>}
-              <span className="leading-none">{l.label}</span>
+              <span className="leading-none">{l.label}{l.section === 'dashboard' && alertOn ? ' 🔔' : ''}</span>
             </NavLink>
           );
         })}
