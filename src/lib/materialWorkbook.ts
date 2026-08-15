@@ -300,7 +300,8 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     // 생산량은 반올림하지 않고 원값 그대로 (잔여량 비례배분으로 소수점이 생김).
     // 표시만 정수로 보이게 서식 처리 → 합계가 앱과 정확히 일치한다.
     const r = wsQty.addRow([
-      p.key, p.name, p.kind, p.qtyA, p.qtyB, p.hasRecipe ? 'O' : '없음',
+      p.key, p.name, p.kind, p.qtyA, p.qtyB,
+      p.hasRecipe ? (p.ings.length > 0 ? 'O' : '원재료0') : '없음',
       { formula: `IF(COUNTIFS(레시피계산!$A$2:$A$${calcLast},$A${R},레시피계산!$O$2:$O$${calcLast},"고단가")>0,"O","")` },
       p.shortCode, p.altCodes,
     ]);
@@ -308,7 +309,7 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     r.getCell(4).fill = INPUT_FILL; r.getCell(4).numFmt = '#,##0.##';
     r.getCell(5).fill = INPUT_FILL; r.getCell(5).numFmt = '#,##0.##';
     r.getCell(7).alignment = { horizontal: 'center' };
-    if (!p.hasRecipe) r.getCell(6).font = { color: { argb: 'FFC00000' }, bold: true };
+    if (!p.hasRecipe || p.ings.length === 0) r.getCell(6).font = { color: { argb: 'FFC00000' }, bold: true };
   });
   wsQty.views = [{ state: 'frozen', ySplit: 1 }];
   products.forEach((p, i) => {
@@ -335,8 +336,8 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     { header: '금액 순위', width: 10 },
     { header: '★ 적용 그룹', width: 13 },
     { header: '고단가 순번', width: 11 },
-    { header: `${monthA} 단가 출처`, width: 13 },
-    { header: `${monthB} 단가 출처`, width: 13 },
+    { header: `${monthA} 실제출고`, width: 12 },
+    { header: `${monthB} 실제출고`, width: 12 },
   ];
   styleHeader(wsPrice, 1, 'FF7030A0');
   ingList.forEach((m, i) => {
@@ -347,13 +348,13 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
       m.key, m.code, m.name, pa, pb, isHigh(m.name) ? '고단가' : '',
       { formula: `SUMIF(레시피계산!$D$2:$D$${calcLast},$A${R},레시피계산!$J$2:$J$${calcLast})` },
       { formula: `SUMIF(레시피계산!$D$2:$D$${calcLast},$A${R},레시피계산!$N$2:$N$${calcLast})` },
-      { formula: `IF($E${R}=0,"",RANK($E${R},$E$2:$E$${priceLast},0))` },
-      { formula: `IF($G${R}=0,"",RANK($G${R},$G$2:$G$${priceLast},0))` },
-      { formula: `IF($H${R}=0,"",RANK($H${R},$H$2:$H$${priceLast},0))` },
-      { formula: `IF(요약!$H$2="수동",$F${R},IF(요약!$H$2="단가 상위N",IF(N($I${R})>0,IF($I${R}<=요약!$H$3,"고단가",""),""),IF(요약!$H$2="사용량 상위N",IF(N($J${R})>0,IF($J${R}<=요약!$H$3,"고단가",""),""),IF(요약!$H$2="금액 상위N",IF(N($K${R})>0,IF($K${R}<=요약!$H$3,"고단가",""),""),""))))` },
+      { formula: `IF($E${R}=0,"",RANK($E${R},$E$2:$E$${priceLast},0)+COUNTIF($E$2:$E${R},$E${R})-1)` },
+      { formula: `IF($G${R}=0,"",RANK($G${R},$G$2:$G$${priceLast},0)+COUNTIF($G$2:$G${R},$G${R})-1)` },
+      { formula: `IF($H${R}=0,"",RANK($H${R},$H$2:$H$${priceLast},0)+COUNTIF($H$2:$H${R},$H${R})-1)` },
+      { formula: `IF(요약!$O$2="수동",$F${R},IF(요약!$O$2="단가 상위N",IF(N($I${R})>0,IF($I${R}<=요약!$O$3,"고단가",""),""),IF(요약!$O$2="사용량 상위N",IF(N($J${R})>0,IF($J${R}<=요약!$O$3,"고단가",""),""),IF(요약!$O$2="금액 상위N",IF(N($K${R})>0,IF($K${R}<=요약!$O$3,"고단가",""),""),""))))` },
       { formula: `IF($L${R}="고단가",COUNTIF($L$2:$L${R},"고단가"),"")` },
-      { formula: `IF(N(IFERROR(VLOOKUP($A${R},원재료집계!$A$2:$L$${aggLast},10,FALSE),0))>0,"실측","기초")` },
-      { formula: `IF(N(IFERROR(VLOOKUP($A${R},원재료집계!$A$2:$L$${aggLast},12,FALSE),0))>0,"실측","기초")` },
+      { formula: `IF(N(IFERROR(VLOOKUP($A${R},원재료집계!$A$2:$L$${aggLast},10,FALSE),0))>0,"있음","없음")` },
+      { formula: `IF(N(IFERROR(VLOOKUP($A${R},원재료집계!$A$2:$L$${aggLast},12,FALSE),0))>0,"있음","없음")` },
     ]);
     r.getCell(4).fill = INPUT_FILL; r.getCell(4).numFmt = '#,##0.000';
     r.getCell(5).fill = INPUT_FILL; r.getCell(5).numFmt = '#,##0.000';
@@ -433,13 +434,17 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     { header: `${monthA} 원가율`, width: 12 },
     { header: `${monthB} 원가율`, width: 12 },
     { header: `${monthB} 매출비중`, width: 12 },
-    { header: '믹스기준(A원가율×B비중)', width: 20 },
     { header: `${monthB} 한계이익`, width: 16 },
     { header: `${monthA} 고단가 재료비`, width: 16 },
     { header: `${monthB} 고단가 재료비`, width: 16 },
     { header: '앱 내부키', width: 24 },
     { header: '⚠ 합쳐진 코드', width: 24 },
-    { header: '믹스 유효가중치', width: 14 },
+    { header: `고단가·공급가有 ${monthA} EA`, width: 18 },
+    { header: `고단가·공급가有 ${monthB} EA`, width: 18 },
+    { header: `그외·공급가有 ${monthA} EA`, width: 18 },
+    { header: `그외·공급가有 ${monthB} EA`, width: 18 },
+    { header: `공급가無 ${monthA} EA`, width: 15 },
+    { header: `공급가無 ${monthB} EA`, width: 15 },
   ];
   styleHeader(wsPro, 1, 'FFC55A11');
   products.forEach((p, i) => {
@@ -460,27 +465,40 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
       { formula: `IF($M${R}=0,"",$I${R}/$M${R})` },
       { formula: `IF($N${R}=0,"",$J${R}/$N${R})` },
       { formula: `IF(SUM($N$2:$N$${profitLast})=0,"",$N${R}/SUM($N$2:$N$${profitLast}))` },
-      { formula: `IF(OR($O${R}="",$Q${R}=""),0,$O${R}*$Q${R})` },
       { formula: `IF($N${R}=0,"",$N${R}-$J${R})` },
       { formula: `SUMIFS(레시피계산!$M$2:$M$${calcLast},레시피계산!$A$2:$A$${calcLast},$A${R},레시피계산!$O$2:$O$${calcLast},"고단가")` },
       { formula: `SUMIFS(레시피계산!$N$2:$N$${calcLast},레시피계산!$A$2:$A$${calcLast},$A${R},레시피계산!$O$2:$O$${calcLast},"고단가")` },
       p.shortCode,
       p.altCodes,
-      { formula: `IF(AND(ISNUMBER($O${R}),ISNUMBER($Q${R})),$Q${R},0)` },
+      { formula: `IF(AND($D${R}="O",N($E${R})>0),$G${R},0)` },
+      { formula: `IF(AND($D${R}="O",N($E${R})>0),$H${R},0)` },
+      { formula: `IF(AND($D${R}<>"O",N($E${R})>0),$G${R},0)` },
+      { formula: `IF(AND($D${R}<>"O",N($E${R})>0),$H${R},0)` },
+      { formula: `IF(N($E${R})=0,$G${R},0)` },
+      { formula: `IF(N($E${R})=0,$H${R},0)` },
     ]);
-    row.getCell(24).numFmt = '0.00%';
+    [23, 24, 25, 26, 27, 28].forEach((c) => { row.getCell(c).numFmt = '#,##0'; });
     if (p.altCodes) {
-      row.getCell(23).font = { size: 9, bold: true, color: { argb: 'FFC00000' } };
+      row.getCell(22).font = { size: 9, bold: true, color: { argb: 'FFC00000' } };
       row.getCell(5).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFDE2E2' } };
     }
     row.getCell(4).alignment = { horizontal: 'center' };
-    [5, 6].forEach((c) => { row.getCell(c).fill = INPUT_FILL; row.getCell(c).numFmt = '#,##0'; });
-    [7, 8, 9, 10, 13, 14, 19, 20, 21].forEach((c) => { row.getCell(c).numFmt = '#,##0'; });
+    [5, 6].forEach((c) => {
+      const cell = row.getCell(c);
+      cell.fill = INPUT_FILL; cell.numFmt = '#,##0';
+      // 텍스트가 한 칸이라도 들어가면 요약 전체가 #VALUE! 가 되므로 입력 단계에서 막는다
+      cell.dataValidation = {
+        type: 'decimal', operator: 'greaterThanOrEqual', formulae: [0],
+        allowBlank: true, showErrorMessage: true,
+        errorTitle: '숫자만 입력', error: '공급가·권장소비자가는 숫자(원)만 넣어주세요',
+      };
+    });
+    [7, 8, 9, 10, 13, 14, 18, 19, 20].forEach((c) => { row.getCell(c).numFmt = '#,##0'; });
     [11, 12].forEach((c) => { row.getCell(c).numFmt = '#,##0.0'; });
-    [15, 16, 17, 18].forEach((c) => { row.getCell(c).numFmt = '0.00%'; });
+    [15, 16, 17].forEach((c) => { row.getCell(c).numFmt = '0.00%'; });
   });
   wsPro.views = [{ state: 'frozen', ySplit: 1 }];
-  if (products.length > 0) wsPro.autoFilter = { from: 'A1', to: `X${profitLast}` };
+  if (products.length > 0) wsPro.autoFilter = { from: 'A1', to: `AB${profitLast}` };
 
   /** ERP 실제 출고 조회.
    *  materialOutflow 의 저장 키는 '단가표에 코드가 있었는지'로 갈린다(코드키 또는 단가표 이름).
@@ -529,6 +547,12 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     { header: `${monthA} 실제÷이론`, width: 14 },
     { header: `${monthB} 실제÷이론`, width: 14 },
     { header: '실제 금액 증감', width: 16 },
+    { header: `${monthA} 매칭분 이론금액`, width: 17 },
+    { header: `${monthB} 매칭분 이론금액`, width: 17 },
+    { header: `${monthA} 매칭분 이론량`, width: 17 },
+    { header: `${monthB} 매칭분 이론량`, width: 17 },
+    { header: `${monthA} 단가없음 사용량`, width: 18 },
+    { header: `${monthB} 단가없음 사용량`, width: 18 },
   ];
   styleHeader(wsAgg, 1, 'FF548235');
   ingList.forEach((m, i) => {
@@ -549,14 +573,21 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
       { formula: `IF(OR(N($D${R})=0,N($J${R})=0),"",$J${R}/$D${R})` },
       { formula: `IF(OR(N($E${R})=0,N($L${R})=0),"",$L${R}/$E${R})` },
       { formula: `IF(OR(N($K${R})=0,N($M${R})=0),"",$M${R}-$K${R})` },
+      { formula: `IF(ISNUMBER($K${R}),$F${R},0)` },
+      { formula: `IF(ISNUMBER($M${R}),$G${R},0)` },
+      { formula: `IF(ISNUMBER($J${R}),$D${R},0)` },
+      { formula: `IF(ISNUMBER($L${R}),$E${R},0)` },
+      { formula: `IF(N(IFERROR(VLOOKUP($A${R},단가!$A$2:$E$${priceLast},4,FALSE),0))=0,$D${R},0)` },
+      { formula: `IF(N(IFERROR(VLOOKUP($A${R},단가!$A$2:$E$${priceLast},5,FALSE),0))=0,$E${R},0)` },
     ]);
+    [17, 18, 19, 20, 21, 22].forEach((c) => { row.getCell(c).numFmt = '#,##0'; });
     [4, 5, 6, 7, 8, 10, 11, 12, 13, 16].forEach((c) => { row.getCell(c).numFmt = '#,##0'; });
     row.getCell(9).numFmt = '0.0%';
     [10, 11, 12, 13].forEach((c) => { row.getCell(c).fill = INPUT_FILL; });
     [14, 15].forEach((c) => { row.getCell(c).numFmt = '0.0%'; });
   });
   wsAgg.views = [{ state: 'frozen', ySplit: 1 }];
-  if (ingList.length > 0) wsAgg.autoFilter = { from: 'A1', to: `P${aggLast}` };
+  if (ingList.length > 0) wsAgg.autoFilter = { from: 'A1', to: `V${aggLast}` };
 
   /* ================= 요약 ================= */
   const ws = wb.getWorksheet('요약')!;
@@ -564,6 +595,10 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
 
   ws.addRow(['원재료비 분석 (수식 연동)']).getCell(1).font = { bold: true, size: 16, color: { argb: 'FF1F4E79' } };
   ws.addRow([`비교월: ${monthA} vs ${monthB}   ·   노란칸만 입력하면 아래가 전부 자동 계산됩니다`]).getCell(1).font = NOTE;
+  const warnRow = ws.addRow(['⚠ 값이 0 이나 빈칸으로 보이면 상단의 [편집 사용]을 누르세요. 보호된 보기에서는 수식이 계산되지 않습니다.']);
+  warnRow.getCell(1).font = { bold: true, size: 10, color: { argb: 'FF9C4221' } };
+  warnRow.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF3CD' } };
+  ws.mergeCells(warnRow.number, 1, warnRow.number, 5);
   ws.addRow([]);
 
   const section = (title: string, argb: string) => {
@@ -594,7 +629,7 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
   const rAmt = put('① 생산금액 (원)  ← 입력',
     () => (inp.aAmount && inp.aAmount > 0 ? inp.aAmount : null),
     () => (inp.bAmount && inp.bAmount > 0 ? inp.bAmount : null),
-    dBC, 'ERP 월 생산금액. 제품수익성에 공급가를 넣으면 ⑬으로 자동 검증됩니다', '#,##0', true);
+    dBC, 'ERP 월 생산금액. 제품수익성에 공급가를 넣으면 ⑰로 자동 검증됩니다', '#,##0', true);
   const rQty = put('② 총 생산량 (EA)',
     () => ({ formula: `SUM(생산량!D2:D${qtyLast})` }),
     () => ({ formula: `SUM(생산량!E2:E${qtyLast})` }),
@@ -632,27 +667,40 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     () => ({ formula: `SUM(원재료집계!M2:M${aggLast})` }),
     dBC, 'BOM 에 매칭된 원재료만 더한 부분합입니다 (부재료·포장재·미매칭 제외). ⑦-0b 커버리지를 같이 보세요');
   // 비워두면 ⑦-0(자동 합계)을 쓰고, 값을 넣으면 그 값이 우선한다
-  put('⑦-0b 실제 출고 입력 커버리지',
+  // 커버리지는 건수가 아니라 '금액 비중'으로 본다. 금액 큰 원재료 1건이 빠져도 잡히도록.
+  const matchedTheoA = `SUM(원재료집계!$Q$2:$Q$${aggLast})`;
+  const matchedTheoB = `SUM(원재료집계!$R$2:$R$${aggLast})`;
+  const matchedGramA = `SUM(원재료집계!$S$2:$S$${aggLast})`;
+  const matchedGramB = `SUM(원재료집계!$T$2:$T$${aggLast})`;
+  const rCov = put('⑦-0b 실제 출고 커버리지 (이론금액 기준)',
+    () => ({ formula: `IF(B${rMat}=0,"",${matchedTheoA}/B${rMat})` }),
+    () => ({ formula: `IF(C${rMat}=0,"",${matchedTheoB}/C${rMat})` }),
+    dBC, '실제 출고가 채워진 원재료가 이론 재료비에서 차지하는 비중. 100% 미만이면 ⑦-0 은 부분합', '0.0%');
+  put('⑦-0c 커버리지 (건수 기준)',
     () => ({ formula: `IF(COUNTA(원재료집계!$A$2:$A$${aggLast})=0,"",COUNT(원재료집계!$K$2:$K$${aggLast})/COUNTA(원재료집계!$A$2:$A$${aggLast}))` }),
     () => ({ formula: `IF(COUNTA(원재료집계!$A$2:$A$${aggLast})=0,"",COUNT(원재료집계!$M$2:$M$${aggLast})/COUNTA(원재료집계!$A$2:$A$${aggLast}))` }),
-    dBC, '실제 출고가 채워진 원재료 비율. 100% 미만이면 ⑦-0 은 부분합입니다', '0.0%');
+    dBC, '몇 개 원재료에 실제 출고가 들어왔는지 (참고용)', '0.0%');
   const rAct = put('⑦ ERP 실제 원재료비 (원)  ← 직접 넣을 때만',
     () => null, () => null, dBC,
     '비워두면 ⑦-0 을 그대로 사용합니다. ERP 총액이 따로 있으면 여기에 넣으세요', '#,##0', true);
   const actB = `IF(N(B${rAct})>0,B${rAct},B${rActAuto})`;
   const actC = `IF(N(C${rAct})>0,C${rAct},C${rActAuto})`;
+  // 분자가 부분합(⑦-0)이면 분모도 '그 원재료들의 이론값'으로 맞춘다.
+  // ⑦에 ERP 총액을 직접 넣은 경우에만 전체 이론값(③)을 분모로 쓴다.
+  const denomA = `IF(N(B${rAct})>0,B${rMat},${matchedTheoA})`;
+  const denomB = `IF(N(C${rAct})>0,C${rMat},${matchedTheoB})`;
   const rYield = put('⑧ 실제 ÷ 이론 (금액)',
-    () => ({ formula: `IF(N(${actB})=0,"",${actB}/B${rMat})` }),
-    () => ({ formula: `IF(N(${actC})=0,"",${actC}/C${rMat})` }),
-    dBC, '100% 미만 = 레시피보다 덜 투입 (수율↑ 또는 재고 영향)', '0.0%');
+    () => ({ formula: `IF(OR(N(${actB})=0,N(${denomA})=0),"",${actB}/${denomA})` }),
+    () => ({ formula: `IF(OR(N(${actC})=0,N(${denomB})=0),"",${actC}/${denomB})` }),
+    dBC, '분자·분모를 같은 원재료 집합으로 맞춰 계산. 100% 미만 = 레시피보다 덜 투입(수율·재고)', '0.0%');
   const rActG = put('⑧-1 실제 출고량 (g)',
     () => ({ formula: `SUM(원재료집계!J2:J${aggLast})` }),
     () => ({ formula: `SUM(원재료집계!L2:L${aggLast})` }),
     dBC, '원재료집계의 ERP 실제 출고량 합계');
   put('⑧-1b 실제 ÷ 이론 (수량)',
-    () => ({ formula: `IF(OR(B${rActG}=0,B${rGram}=0),"",B${rActG}/B${rGram})` }),
-    () => ({ formula: `IF(OR(C${rActG}=0,C${rGram}=0),"",C${rActG}/C${rGram})` }),
-    dBC, '⑧(금액)과 크게 다르면 출고 단위(g/kg)나 반제품 펼침 차이를 의심하세요', '0.0%');
+    () => ({ formula: `IF(OR(B${rActG}=0,N(${matchedGramA})=0),"",B${rActG}/${matchedGramA})` }),
+    () => ({ formula: `IF(OR(C${rActG}=0,N(${matchedGramB})=0),"",C${rActG}/${matchedGramB})` }),
+    dBC, '실제 출고가 있는 원재료끼리만 비교. ⑧(금액)과 크게 다르면 출고 단위(g/kg)를 의심하세요', '0.0%');
   put('⑧-2 실제 원단위 (g/EA)',
     () => ({ formula: `IF(OR(B${rActG}=0,B${rQty}=0),"",B${rActG}/B${rQty})` }),
     () => ({ formula: `IF(OR(C${rActG}=0,C${rQty}=0),"",C${rActG}/C${rQty})` }),
@@ -661,6 +709,11 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     () => ({ formula: `IF(OR(N(${actB})=0,N(B${rAmt})=0),"",${actB}/B${rAmt})` }),
     () => ({ formula: `IF(OR(N(${actC})=0,N(C${rAmt})=0),"",${actC}/C${rAmt})` }),
     dBC, '⑦ ÷ ①  — ⑦에 ERP 총액을 직접 넣었을 때만 ERP 보고 수치와 일치합니다', '0.00%');
+
+  put('⑨-1 단가 미입력 원재료 (사용량 비중)',
+    () => ({ formula: `IF(N(B${rGram})=0,"",SUM(원재료집계!$U$2:$U$${aggLast})/B${rGram})` }),
+    () => ({ formula: `IF(N(C${rGram})=0,"",SUM(원재료집계!$V$2:$V$${aggLast})/C${rGram})` }),
+    dBC, '단가가 0인 원재료가 전체 사용량에서 차지하는 비중 — 그만큼 ③이 과소계상입니다', '0.0%');
 
   ws.addRow([]);
   section(`고단가 원재료 (${inp.highCostTerms.join('·')})`, 'FF7030A0');
@@ -682,7 +735,7 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     () => ({ formula: `IF(B${rQty}=0,"",B${rHighQty}/B${rQty})` }),
     () => ({ formula: `IF(C${rQty}=0,"",C${rHighQty}/C${rQty})` }),
     dBC, '⑬ ÷ ②  — 앱 화면의 "투입 품목 생산 비중"과 같은 값', '0.00%');
-  put('⑮ 고단가 평균단가 (원/g)',
+  const rAvgUnit = put('⑮ 고단가 평균단가 (원/g)',
     () => ({ formula: `IF(B${rHighG}=0,"",B${rHigh}/B${rHighG})` }),
     () => ({ formula: `IF(C${rHighG}=0,"",C${rHigh}/C${rHighG})` }),
     dBC, '올라가면 = 고단가 안에서 더 비싼 원재료 쪽으로 이동', '#,##0.00');
@@ -698,37 +751,15 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     () => ({ formula: `IF(OR(N(C${rAmt})=0,C${rSup}=0),"",C${rSup}-C${rAmt})` }),
     null, '공급가 입력이 맞는지 확인용');
   put('⑰-1 공급가 미입력 품목 (EA)',
-    () => ({ formula: `SUMPRODUCT(--(제품수익성!$E$2:$E$${profitLast}=0),제품수익성!$G$2:$G$${profitLast})` }),
-    () => ({ formula: `SUMPRODUCT(--(제품수익성!$E$2:$E$${profitLast}=0),제품수익성!$H$2:$H$${profitLast})` }),
+    () => ({ formula: `SUM(제품수익성!$AA$2:$AA$${profitLast})` }),
+    () => ({ formula: `SUM(제품수익성!$AB$2:$AB$${profitLast})` }),
     null, '공급가를 안 넣은 제품의 생산량 — 0 이어야 ⑯이 완전합니다');
   const rRateS = put('⑱ 원가율 (공급가 기준)',
     () => ({ formula: `IF(B${rSup}=0,"",B${rMat}/B${rSup})` }),
     () => ({ formula: `IF(C${rSup}=0,"",C${rMat}/C${rSup})` }),
     dBC, '③ ÷ ⑯', '0.00%');
-  // A월 원가율이 없는 품목(신제품·공급가 미입력)의 B월 매출비중이 분모에 남으면
-  // 믹스효과가 구조적으로 좋게 나온다 → 유효 가중치로 재정규화한다.
-  const mixW = `SUM(제품수익성!$X$2:$X$${profitLast})`;
-  put('⑲-0 믹스 계산 제외 매출비중',
-    () => ({ formula: `IF(B${rSup}=0,"",1-${mixW})` }),
-    () => null, null,
-    `${monthA} 원가율이 없는 품목(신제품·공급가 미입력)의 ${monthB} 매출비중 — 클수록 ⑳ 신뢰도 낮음`, '0.00%');
-  const rMix = put('⑲ 믹스 기준 원가율',
-    () => ({ formula: `IF(OR(B${rSup}=0,${mixW}=0),"",SUM(제품수익성!$R$2:$R$${profitLast})/${mixW})` }),
-    () => null,
-    null, `${monthA} 제품별 원가율을 ${monthB} 제품구성에 적용한 값`, '0.00%');
-  const rMixEff = put('⑳ 제품구성(믹스) 효과',
-    () => ({ formula: `IF(OR(B${rRateS}="",B${rMix}=""),"",B${rMix}-B${rRateS})` }),
-    () => null, null,
-    '어떤 제품을 많이 만들었나 → 원가율에 준 영향', '0.00%');
-  put('㉑ 제품별 원가율 효과',
-    () => ({ formula: `IF(OR(C${rRateS}="",B${rMix}=""),"",C${rRateS}-B${rMix})` }),
-    () => null, null,
-    '제품 하나하나의 원가율이 변한 효과 (레시피·단가·수율)', '0.00%');
-  put('㉒ 합계 (=⑱ 증감)',
-    () => ({ formula: `IF(OR(B${rRateS}="",C${rRateS}=""),"",C${rRateS}-B${rRateS})` }),
-    () => null, null, '⑳ + ㉑ 과 같아야 정상', '0.00%');
   put(`㉓ ${monthB} 한계이익 (공급가-재료비)`,
-    () => ({ formula: `IF(B${rSup}=0,"",SUM(제품수익성!$S$2:$S$${profitLast}))` }),
+    () => ({ formula: `IF(B${rSup}=0,"",SUM(제품수익성!$R$2:$R$${profitLast}))` }),
     () => null, null, '재료비만 뺀 값 (노무비·경비 제외)');
 
   ws.addRow([]);
@@ -739,14 +770,20 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
       : `SUM(제품수익성!$${col}$2:$${col}$${profitLast})`;
 
   // ── 사용 강도 (얼마나 썼나) : 전체 생산 1EA 당
+  // 분모를 '고단가가 들어간 제품의 생산량'으로 잡는다.
+  // 전체 생산량으로 나누면 비고단가 제품을 더 만든 것만으로 '덜 썼다'가 나온다.
   const rIntG = put('㉔ 고단가 원단위 (g/EA)',
+    () => ({ formula: `IF(B${rHighQty}=0,"",B${rHighG}/B${rHighQty})` }),
+    () => ({ formula: `IF(C${rHighQty}=0,"",C${rHighG}/C${rHighQty})` }),
+    dBC, '고단가 사용량 ÷ 고단가 포함 품목 생산량(⑬) — 내려가면 실제로 덜 쓴 것', '#,##0.00');
+  const rIntW = put('㉕ 고단가 원단위 (원/EA)',
+    () => ({ formula: `IF(B${rHighQty}=0,"",B${rHigh}/B${rHighQty})` }),
+    () => ({ formula: `IF(C${rHighQty}=0,"",C${rHigh}/C${rHighQty})` }),
+    dBC, '고단가 재료비 ÷ ⑬ — 수량(㉔)과 단가(⑮)가 함께 반영된 값', '#,##0.0');
+  put('㉔-b 고단가 원단위 (전체 생산 기준, g/EA)',
     () => ({ formula: `IF(B${rQty}=0,"",B${rHighG}/B${rQty})` }),
     () => ({ formula: `IF(C${rQty}=0,"",C${rHighG}/C${rQty})` }),
-    dBC, '고단가 사용량 ÷ 전체 생산량 — 내려가면 덜 쓴 것', '#,##0.00');
-  const rIntW = put('㉕ 고단가 원단위 (원/EA)',
-    () => ({ formula: `IF(B${rQty}=0,"",B${rHigh}/B${rQty})` }),
-    () => ({ formula: `IF(C${rQty}=0,"",C${rHigh}/C${rQty})` }),
-    dBC, '고단가 재료비 ÷ 전체 생산량', '#,##0.0');
+    dBC, '전체 생산량으로 나눈 값 — 제품 구성 변화까지 섞인 참고치', '#,##0.00');
 
   // ── 판매 가치 (얼마에 파나)
   const rHiSup = put('㉖ 고단가 제품 공급가액',
@@ -756,14 +793,19 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     () => ({ formula: `IF(B${rSup}=0,"",B${rHiSup}/B${rSup})` }),
     () => ({ formula: `IF(C${rSup}=0,"",C${rHiSup}/C${rSup})` }),
     dBC, '㉖ ÷ ⑯ — 생산량 비중(⑭)과 비교해 보세요', '0.00%');
+  // 분자(㉖)는 공급가가 입력된 제품만 잡히므로 분모도 같은 집합으로 맞춘다
+  const hiPricedQtyA = `SUM(제품수익성!$W$2:$W$${profitLast})`;
+  const hiPricedQtyB = `SUM(제품수익성!$X$2:$X$${profitLast})`;
   const rHiPrice = put('㉘ 고단가 제품 평균 공급가 (원/EA)',
-    () => ({ formula: `IF(B${rHighQty}=0,"",B${rHiSup}/B${rHighQty})` }),
-    () => ({ formula: `IF(C${rHighQty}=0,"",C${rHiSup}/C${rHighQty})` }),
-    dBC, '올라가면 = 같은 고단가 제품군 안에서 비싼 제품을 더 만든 것');
+    () => ({ formula: `IF(N(${hiPricedQtyA})=0,"",B${rHiSup}/${hiPricedQtyA})` }),
+    () => ({ formula: `IF(N(${hiPricedQtyB})=0,"",C${rHiSup}/${hiPricedQtyB})` }),
+    dBC, '공급가가 입력된 고단가 제품만으로 계산 — 올라가면 비싼 제품을 더 만든 것');
+  const lowPricedQtyA = `SUM(제품수익성!$Y$2:$Y$${profitLast})`;
+  const lowPricedQtyB = `SUM(제품수익성!$Z$2:$Z$${profitLast})`;
   put('㉙ 그 외 제품 평균 공급가 (원/EA)',
-    () => ({ formula: `IF(B${rQty}-B${rHighQty}=0,"",(B${rSup}-B${rHiSup})/(B${rQty}-B${rHighQty}))` }),
-    () => ({ formula: `IF(C${rQty}-C${rHighQty}=0,"",(C${rSup}-C${rHiSup})/(C${rQty}-C${rHighQty}))` }),
-    dBC, '고단가 제품과 비교용');
+    () => ({ formula: `IF(N(${lowPricedQtyA})=0,"",(B${rSup}-B${rHiSup})/${lowPricedQtyA})` }),
+    () => ({ formula: `IF(N(${lowPricedQtyB})=0,"",(C${rSup}-C${rHiSup})/${lowPricedQtyB})` }),
+    dBC, '공급가가 입력된 비고단가 제품만으로 계산');
 
   // ── 수익성
   const rHiMat = put('㉚ 고단가 제품 총재료비',
@@ -792,8 +834,9 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
 
   /* ===== 자동 해석 문장 ===== */
   /* ===== 우측 패널: 고단가 선택 방식 + 전체 vs 고단가 비교 ===== */
-  ws.getColumn(7).width = 22;   // G
-  [8, 9, 10, 11, 12].forEach((c) => { ws.getColumn(c).width = 17; });
+  const P0 = 14;                    // 우측 패널 시작 열 (N) — A~E 설명글과 겹치지 않게
+  ws.getColumn(P0).width = 24;
+  [1, 2, 3, 4, 5].forEach((k) => { ws.getColumn(P0 + k).width = 17; });
 
   const gc = (r: number, c: number) => ws.getRow(r).getCell(c);
   const panelHead = (r: number, c1: number, c2: number, text: string, argb: string) => {
@@ -807,29 +850,34 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
   };
 
   // 선택 방식 (단가 시트 '적용 그룹' 열이 이 두 칸을 봅니다)
-  panelHead(1, 7, 12, '고단가 원재료 선택 방식', 'FF7030A0');
-  gc(2, 7).value = '선택 방식';
-  gc(3, 7).value = '상위 N개';
-  [2, 3].forEach((r) => { gc(r, 7).font = { bold: true }; gc(r, 7).border = BORDER; });
-  gc(2, 8).value = '수동';
-  gc(3, 8).value = 10;
-  [2, 3].forEach((r) => { gc(r, 8).fill = INPUT_FILL; gc(r, 8).border = BORDER; gc(r, 8).alignment = { horizontal: 'center' }; });
-  gc(2, 8).dataValidation = {
+  panelHead(1, P0, P0 + 5, '고단가 원재료 선택 방식', 'FF7030A0');
+  gc(2, P0).value = '선택 방식';
+  gc(3, P0).value = '상위 N개';
+  [2, 3].forEach((r) => { gc(r, P0).font = { bold: true }; gc(r, P0).border = BORDER; });
+  gc(2, P0 + 1).value = '수동';
+  gc(3, P0 + 1).value = 10;
+  [2, 3].forEach((r) => { gc(r, P0 + 1).fill = INPUT_FILL; gc(r, P0 + 1).border = BORDER; gc(r, P0 + 1).alignment = { horizontal: 'center' }; });
+  gc(3, P0 + 1).dataValidation = {
+    type: 'whole', operator: 'between', formulae: [1, 9999],
+    allowBlank: false, showErrorMessage: true,
+    errorTitle: '숫자만', error: '1 이상의 정수를 넣어주세요',
+  };
+  gc(2, P0 + 1).dataValidation = {
     type: 'list', allowBlank: false, showErrorMessage: true,
     formulae: ['"수동,단가 상위N,사용량 상위N,금액 상위N"'],
   };
-  ws.mergeCells(2, 9, 2, 12);
-  gc(2, 9).value = "수동 = [단가] 시트 '그룹(수동)' 열에 직접 고단가 라고 적은 것만";
-  gc(2, 9).font = NOTE;
-  ws.mergeCells(3, 9, 3, 12);
-  gc(3, 9).value = '상위N = [단가] 시트에서 자동으로 상위 N개를 고단가로 잡음';
-  gc(3, 9).font = NOTE;
+  ws.mergeCells(2, P0 + 2, 2, P0 + 5);
+  gc(2, P0 + 2).value = "수동 = [단가] 시트 '그룹(수동)' 열에 직접 고단가 라고 적은 것만";
+  gc(2, P0 + 2).font = NOTE;
+  ws.mergeCells(3, P0 + 2, 3, P0 + 5);
+  gc(3, P0 + 2).value = '상위N = [단가] 시트에서 자동으로 상위 N개를 고단가로 잡음 (동점이면 N개보다 많아질 수 있음)';
+  gc(3, P0 + 2).font = NOTE;
 
   // 전체 vs 고단가
-  panelHead(5, 7, 12, '전체 vs 고단가 한눈 비교', 'FF203864');
+  panelHead(5, P0, P0 + 5, '전체 vs 고단가 한눈 비교', 'FF203864');
   const cmpHdr = ['구분', `전체 ${monthA}`, `전체 ${monthB}`, `고단가 ${monthA}`, `고단가 ${monthB}`, `고단가 비중 ${monthB}`];
   cmpHdr.forEach((h, i) => {
-    const cell = gc(6, 7 + i);
+    const cell = gc(6, P0 + i);
     cell.value = h;
     cell.font = { bold: true, size: 10, color: { argb: 'FFFFFFFF' } };
     cell.fill = headFill('FF44546A');
@@ -850,38 +898,38 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
   ];
   cmpRows.forEach((cr, i) => {
     const R = 7 + i;
-    gc(R, 7).value = cr.label;
-    gc(R, 7).font = { bold: true, size: 10 };
+    gc(R, P0).value = cr.label;
+    gc(R, P0).font = { bold: true, size: 10 };
     const put4 = (col: number, ref: string) => {
       const cell = gc(R, col);
       cell.value = { formula: ref.includes('(') || ref.includes('/') ? ref : `${ref}` } as ExcelJS.CellValue;
       cell.numFmt = cr.fmt;
     };
-    put4(8, cr.all[0]); put4(9, cr.all[1]); put4(10, cr.hi[0]); put4(11, cr.hi[1]);
-    const shareCell = gc(R, 12);
-    shareCell.value = { formula: `IF(N(${cr.all[1]})=0,"",${cr.hi[1]}/${cr.all[1]})` };
+    put4(P0 + 1, cr.all[0]); put4(P0 + 2, cr.all[1]); put4(P0 + 3, cr.hi[0]); put4(P0 + 4, cr.hi[1]);
+    const shareCell = gc(R, P0 + 5);
+    shareCell.value = { formula: `IFERROR(IF(N(${cr.all[1]})=0,"",N(${cr.hi[1]})/N(${cr.all[1]})),"")` };
     shareCell.numFmt = '0.0%';
     shareCell.font = { size: 10, color: { argb: 'FF7030A0' } };
-    for (let c = 7; c <= 12; c += 1) gc(R, c).border = BORDER;
+    for (let c = P0; c <= P0 + 5; c += 1) gc(R, c).border = BORDER;
   });
   const noteR = 7 + cmpRows.length;
-  ws.mergeCells(noteR, 7, noteR, 12);
-  gc(noteR, 7).value = '※ 마지막 열 = 고단가 ÷ 전체 (모든 행 동일 기준). 원가율·평균공급가 행은 100%보다 크면 고단가 쪽이 더 높다는 뜻입니다.';
-  gc(noteR, 7).font = NOTE;
-  gc(noteR, 7).alignment = { wrapText: true };
+  ws.mergeCells(noteR, P0, noteR, P0 + 5);
+  gc(noteR, P0).value = '※ 마지막 열 = 고단가 ÷ 전체 (모든 행 동일 기준). 원가율·평균공급가 행은 100%보다 크면 고단가 쪽이 더 높다는 뜻입니다.';
+  gc(noteR, P0).font = NOTE;
+  gc(noteR, P0).alignment = { wrapText: true };
 
   // ── 지금 고단가로 잡힌 원재료 목록 (선택 방식이 바뀌면 같이 바뀜)
   const LIST_TOP = noteR + 2;
   const LIST_N = 25;
-  panelHead(LIST_TOP, 7, 12, '지금 고단가로 잡힌 원재료', 'FF7030A0');
-  ws.mergeCells(LIST_TOP + 1, 7, LIST_TOP + 1, 12);
-  gc(LIST_TOP + 1, 7).value = {
-    formula: `"총 "&COUNTIF(단가!$L$2:$L$${priceLast},"고단가")&"개 · 선택 방식: "&$H$2&IF($H$2="수동",""," (상위 "&$H$3&"개)")&"   — 아래 "&${LIST_N}&"개까지 표시"`,
+  panelHead(LIST_TOP, P0, P0 + 5, '지금 고단가로 잡힌 원재료', 'FF7030A0');
+  ws.mergeCells(LIST_TOP + 1, P0, LIST_TOP + 1, P0 + 5);
+  gc(LIST_TOP + 1, P0).value = {
+    formula: `"총 "&COUNTIF(단가!$L$2:$L$${priceLast},"고단가")&"개 · 선택 방식: "&$O$2&IF($O$2="수동",""," (상위 "&$O$3&"개)")&"   — 아래 "&${LIST_N}&"개까지 표시"`,
   };
-  gc(LIST_TOP + 1, 7).font = { size: 10, bold: true, color: { argb: 'FF7030A0' } };
+  gc(LIST_TOP + 1, P0).font = { size: 10, bold: true, color: { argb: 'FF7030A0' } };
   const listHdr = ['#', '원재료명', `${monthB} 단가(원/g)`, `${monthB} 사용량(g)`, `${monthB} 금액(원)`, '전체 재료비 대비'];
   listHdr.forEach((h, i) => {
-    const cell = gc(LIST_TOP + 2, 7 + i);
+    const cell = gc(LIST_TOP + 2, P0 + i);
     cell.value = h;
     cell.font = { bold: true, size: 10, color: { argb: 'FFFFFFFF' } };
     cell.fill = headFill('FF7030A0');
@@ -892,22 +940,22 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     const R = LIST_TOP + 3 + i;
     const n = i + 1;
     const pick = (col: string) => `IFERROR(INDEX(단가!$${col}$2:$${col}$${priceLast},MATCH(${n},단가!$M$2:$M$${priceLast},0)),"")`;
-    gc(R, 7).value = { formula: `IF(${n}>COUNTIF(단가!$L$2:$L$${priceLast},"고단가"),"",${n})` };
-    gc(R, 8).value = { formula: pick('C') };
-    gc(R, 9).value = { formula: pick('E') };
-    gc(R, 10).value = { formula: pick('G') };
-    gc(R, 11).value = { formula: pick('H') };
-    gc(R, 12).value = { formula: `IF(OR(N(C${rMat})=0,N(${pick('H')})=0),"",${pick('H')}/C${rMat})` };
-    gc(R, 7).alignment = { horizontal: 'center' };
-    gc(R, 9).numFmt = '#,##0.000';
-    [10, 11].forEach((c) => { gc(R, c).numFmt = '#,##0'; });
-    gc(R, 12).numFmt = '0.00%';
-    for (let c = 7; c <= 12; c += 1) gc(R, c).border = BORDER;
+    gc(R, P0).value = { formula: `IF(${n}>COUNTIF(단가!$L$2:$L$${priceLast},"고단가"),"",${n})` };
+    gc(R, P0 + 1).value = { formula: pick('C') };
+    gc(R, P0 + 2).value = { formula: pick('E') };
+    gc(R, P0 + 3).value = { formula: pick('G') };
+    gc(R, P0 + 4).value = { formula: pick('H') };
+    gc(R, P0 + 5).value = { formula: `IFERROR(IF(OR(N(C${rMat})=0,N(${pick('H')})=0),"",N(${pick('H')})/N(C${rMat})),"")` };
+    gc(R, P0).alignment = { horizontal: 'center' };
+    gc(R, P0 + 2).numFmt = '#,##0.000';
+    [P0 + 3, P0 + 4].forEach((c) => { gc(R, c).numFmt = '#,##0'; });
+    gc(R, P0 + 5).numFmt = '0.00%';
+    for (let c = P0; c <= P0 + 5; c += 1) gc(R, c).border = BORDER;
   }
   const listEnd = LIST_TOP + 3 + LIST_N;
-  ws.mergeCells(listEnd, 7, listEnd, 12);
-  gc(listEnd, 7).value = '※ 바꾸려면 위 H2(선택 방식)·H3(상위 N개)를 조정하거나, [단가] 시트 F열에 직접 고단가 라고 적으세요.';
-  gc(listEnd, 7).font = NOTE;
+  ws.mergeCells(listEnd, P0, listEnd, P0 + 5);
+  gc(listEnd, P0).value = '※ 바꾸려면 위 O2(선택 방식)·O3(상위 N개)를 조정하거나, [단가] 시트 F열에 직접 고단가 라고 적으세요.';
+  gc(listEnd, P0).font = NOTE;
 
   ws.addRow([]);
   const hInt = ws.addRow(['자동 해석 (숫자가 바뀌면 문장도 바뀝니다)']);
@@ -921,30 +969,33 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
   const interp = [
     `="① 개당 재료비(이론)  "&TEXT(B${rUnit},"#,##0.0")&"원 → "&TEXT(C${rUnit},"#,##0.0")&"원  ("&${sgn(`D${rUnit}`, '#,##0.0')}&"원)"`,
     `=IF(N(B${rAmt})=0,"② 원재료비율 — ① 생산금액을 넣으면 계산됩니다","② 원재료비율(이론)  "&TEXT(B${rRate},"0.00%")&" → "&TEXT(C${rRate},"0.00%")&"  ("&${sgn(`D${rRate}`, '0.00%')}&"p)  ※ 분모는 ① 생산금액")`,
-    `=IF(N(${actB})=0,"③ 이론 대비 실제 — ⑦ 실제 원재료비가 있어야 계산됩니다","③ 실제÷이론  "&TEXT(B${rYield},"0.0%")&" → "&TEXT(C${rYield},"0.0%")&"  ("&${sgn(`D${rYield}`, '0.0%')}&"p)   100%보다 낮으면 레시피 이론치보다 실제로 덜 나간 것(수율·재고 영향)")`,
-    `="④ 고단가 사용 강도  "&TEXT(B${rIntG},"0.00")&" → "&TEXT(C${rIntG},"0.00")&" g/EA ("&${sgn(`D${rIntG}`, '0.00')}&"),  "&TEXT(B${rIntW},"#,##0.0")&" → "&TEXT(C${rIntW},"#,##0.0")&" 원/EA ("&${sgn(`D${rIntW}`, '0.0')}&")   ※ 전체 생산 1EA 기준"`,
+    `=IF(N(${actB})=0,"③ 이론 대비 실제 — ⑦ 실제 원재료비가 있어야 계산됩니다",IF(AND(N(B${rAct})=0,N(B${rCov})<0.999),"③ 실제÷이론 "&TEXT(B${rYield},"0.0%")&" → "&TEXT(C${rYield},"0.0%")&"  ⚠ 실제 출고 커버리지 "&TEXT(B${rCov},"0.0%")&" — 출고가 입력된 원재료끼리만 비교한 값입니다","③ 실제÷이론  "&TEXT(B${rYield},"0.0%")&" → "&TEXT(C${rYield},"0.0%")&"  ("&${sgn(`D${rYield}`, '0.0%')}&"p)   100%보다 낮으면 레시피 이론치보다 실제로 덜 나간 것(수율·재고 영향)"))`,
+    `="④ 고단가 투입량  "&TEXT(B${rIntG},"0.00")&" → "&TEXT(C${rIntG},"0.00")&" g/EA ("&${sgn(`D${rIntG}`, '0.00')}&")   ※ 고단가 포함 품목 1EA 기준"`,
+    `="④-2 고단가 매입단가  "&TEXT(B${rAvgUnit},"0.00")&" → "&TEXT(C${rAvgUnit},"0.00")&" 원/g ("&${sgn(`D${rAvgUnit}`, '0.00')}&")   금액 합산 "&TEXT(B${rIntW},"#,##0.0")&" → "&TEXT(C${rIntW},"#,##0.0")&" 원/EA ("&${sgn(`D${rIntW}`, '0.0')}&") = 투입량 × 매입단가"`,
     `=IF(OR(B${rHiPrice}="",C${rHiPrice}=""),"⑤ 고단가 제품 판매단가 — 제품수익성 E열에 공급가를 넣어야 계산됩니다","⑤ 고단가 제품 평균 공급가  "&TEXT(B${rHiPrice},"#,##0")&" → "&TEXT(C${rHiPrice},"#,##0")&" 원/EA ("&${sgn(`D${rHiPrice}`, '#,##0')}&", "&${sgn(`IF(N(B${rHiPrice})=0,0,D${rHiPrice}/B${rHiPrice})`, '0.0%')}&")")`,
     // 판정 — 각 축이 1% 이상 움직였을 때만 방향으로 인정 (미세 변동을 성과로 읽지 않기)
     `=IF(OR(B${rHiPrice}="",C${rHiPrice}=""),"",` +
       `LET_PLACEHOLDER)`,
-    `=IF(B${rMsrp}="","","⑦ 공급가율(공급가÷권장소비자가)  "&TEXT(B${rMsrp},"0.0%")&" → "&TEXT(C${rMsrp},"0.0%")&IF(OR(B${rMsrp}>1,C${rMsrp}>1)," ⚠ 100%를 넘습니다 — 제품수익성 E열(공급가)과 F열(권장소비자가)이 바뀐 것 같습니다",""))`,
+    `=IF(B${rMsrp}="","","⑦ 공급가율(공급가÷권장소비자가)  "&TEXT(B${rMsrp},"0.0%")&" → "&TEXT(C${rMsrp},"0.0%")&IF(OR(AND(ISNUMBER(B${rMsrp}),B${rMsrp}>1),AND(ISNUMBER(C${rMsrp}),C${rMsrp}>1))," ⚠ 100%를 넘습니다 — 제품수익성 E열(공급가)과 F열(권장소비자가)이 바뀐 것 같습니다",""))`,
     `=IF(OR(N(B${rSup})=0,N(B${rAmt})=0),"","⑧ 검산: 공급가액 합계 "&TEXT(B${rSup},"#,##0")&" vs ① 생산금액 "&TEXT(B${rAmt},"#,##0")&"  → 차이 "&TEXT(ABS(B${rSup}/B${rAmt}-1),"0.0%")&IF(ABS(B${rSup}/B${rAmt}-1)>0.05," ⚠ 5% 넘게 벌어집니다. 공급가 단위(1EA인지)와 열 위치를 확인하세요"," ✓ 정상 범위"))`,
-    `=IF(OR(B${rSup}=0,C${rRateS}="",B${rMix}=""),"","⑨ 원가율 "&TEXT(B${rRateS},"0.00%")&" → "&TEXT(C${rRateS},"0.00%")&"  =  제품구성(믹스) "&${sgn(`B${rMixEff}`, '0.00%')}&"p  +  제품별 원가율 "&${sgn(`C${rRateS}-B${rMix}`, '0.00%')}&"p")`,
   ];
 
   // 판정문: 사용 강도(㉕)와 판매단가(㉘) 변화율을 각각 ±1% 기준으로 판단
-  const relW = `IFERROR(IF(N(B${rIntW})=0,0,N(D${rIntW})/N(B${rIntW})),0)`;
+  // 수량 축은 반드시 g/EA(㉔). 금액(㉕)을 쓰면 단가만 올라도 '더 썼다'로 찍힌다.
+  const relW = `IFERROR(IF(N(B${rIntG})=0,0,N(D${rIntG})/N(B${rIntG})),0)`;
   const relP = `IFERROR(IF(N(B${rHiPrice})=0,0,N(D${rHiPrice})/N(B${rHiPrice})),0)`;
   const verdict =
     `IF(AND(ABS(${relW})<0.01,ABS(${relP})<0.01),"⑥ 판정: 두 지표 모두 사실상 변화 없음 (±1% 이내) — 고단가 쪽 요인은 아닙니다",` +
-    `IF(AND(${relW}<=-0.01,${relP}>=0.01),"⑥ 판정: 고단가를 덜 쓰면서 판매단가가 높은 제품을 더 만들었습니다 (원가율 개선의 질이 좋음)",` +
-    `IF(AND(${relW}<=-0.01,ABS(${relP})<0.01),"⑥ 판정: 고단가 투입만 줄었습니다 (판매단가는 그대로 — 단순 절감 또는 레시피/수율 요인)",` +
-    `IF(AND(${relW}<=-0.01,${relP}<=-0.01),"⑥ 판정: 고단가도 덜 쓰고 판매단가도 낮아졌습니다 (저가 제품 쪽으로 이동 — 원가율은 좋아 보여도 매출은 확인 필요)",` +
-    `IF(AND(${relW}>=0.01,${relP}>=0.01),"⑥ 판정: 고단가를 더 썼지만 판매단가도 같이 올랐습니다 (고급화 — ㉛ 고단가 제품 원가율로 득실 확인)",` +
-    `IF(AND(${relW}>=0.01,${relP}<=-0.01),"⑥ 판정: 고단가를 더 쓰고 판매단가는 낮아졌습니다 (원가 악화)",` +
-    `IF(${relW}>=0.01,"⑥ 판정: 고단가 투입만 늘었습니다 (판매단가는 그대로)",` +
-    `"⑥ 판정: 고단가 투입은 그대로인데 판매단가가 "&IF(${relP}>0,"올랐습니다 (제품 구성 개선)","낮아졌습니다 (제품 구성 악화)"))))))))`;
-  interp[5] = interp[5].replace('LET_PLACEHOLDER', verdict);
+    `IF(AND(${relW}<=-0.01,${relP}>=0.01),"⑥ 판정: 고단가 투입량(g/EA)을 줄이면서 판매단가가 높은 제품을 더 만들었습니다 (원가율 개선의 질이 좋음)",` +
+    `IF(AND(${relW}<=-0.01,ABS(${relP})<0.01),"⑥ 판정: 고단가 투입량만 줄었습니다 (판매단가는 그대로 — 레시피·수율 요인)",` +
+    `IF(AND(${relW}<=-0.01,${relP}<=-0.01),"⑥ 판정: 고단가 투입량도 줄고 판매단가도 낮아졌습니다 (저가 제품 쪽 이동 — 매출 확인 필요)",` +
+    `IF(AND(${relW}>=0.01,${relP}>=0.01),"⑥ 판정: 고단가 투입량이 늘었지만 판매단가도 같이 올랐습니다 (고급화 — ㉛ 로 득실 확인)",` +
+    `IF(AND(${relW}>=0.01,${relP}<=-0.01),"⑥ 판정: 고단가 투입량이 늘고 판매단가는 낮아졌습니다 (원가 악화)",` +
+    `IF(${relW}>=0.01,"⑥ 판정: 고단가 투입량만 늘었습니다 (판매단가는 그대로)",` +
+    `"⑥ 판정: 고단가 투입량은 그대로인데 판매단가가 "&IF(${relP}>0,"올랐습니다 (제품 구성 개선)","낮아졌습니다 (제품 구성 악화)"))))))))`;
+  const vIdx = interp.findIndex((x) => x.includes('LET_PLACEHOLDER'));
+  if (vIdx < 0) throw new Error('판정문 자리표시자를 찾지 못했습니다');
+  interp[vIdx] = interp[vIdx].replace('LET_PLACEHOLDER', verdict);
 
   interp.forEach((f) => {
     const r = ws.addRow([{ formula: f.slice(1) }]);

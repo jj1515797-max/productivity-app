@@ -513,20 +513,21 @@ export default function MaterialAnalysis() {
         if (k && it.name && it.name !== it.code) productNameByCode.set(k, it.name);
       }));
       // 제품 DB(productSettings) 에서 전체 ERP 코드(A-001-01) 를 가져와 품목코드 표기에 사용
-      const psSnap = await getDocs(collection(db, 'productSettings'));
-      const productCodes = psSnap.docs.map((d) => {
-        const v = d.data() as { code?: string; name?: string };
-        return { code: v.code || d.id, name: v.name };
-      });
+      // 부가정보 — 실패해도 워크북 생성은 계속한다
+      const productCodes = await getDocs(collection(db, 'productSettings'))
+        .then((snap) => snap.docs.map((d) => {
+          const v = d.data() as { code?: string; name?: string };
+          return { code: v.code || d.id, name: v.name };
+        }))
+        .catch((e) => { console.warn('[productSettings]', e); return [] as { code: string; name?: string }[]; });
       // ERP 마감 실제 출고 (materialOutflow/{month}) — 원재료별 실제 사용량·금액
-      const [outA, outB] = await Promise.all([
-        getDoc(doc(db, 'materialOutflow', monthA)),
-        getDoc(doc(db, 'materialOutflow', monthB)),
-      ]);
-      const outflowOf = (snap: typeof outA) => {
-        const d = snap.exists() ? (snap.data() as { outflowGrams?: Record<string, number>; outflowAmounts?: Record<string, number> }) : {};
-        return { grams: d.outflowGrams || {}, amounts: d.outflowAmounts || {} };
-      };
+      const fetchOutflow = (m: string) => getDoc(doc(db, 'materialOutflow', m))
+        .then((snap) => {
+          const d = snap.exists() ? (snap.data() as { outflowGrams?: Record<string, number>; outflowAmounts?: Record<string, number> }) : {};
+          return { grams: d.outflowGrams || {}, amounts: d.outflowAmounts || {} };
+        })
+        .catch((e) => { console.warn('[materialOutflow]', m, e); return { grams: {}, amounts: {} }; });
+      const [outA, outB] = await Promise.all([fetchOutflow(monthA), fetchOutflow(monthB)]);
       // 그 두 달 생산 데이터에 실제로 찍힌 원본 전체코드 (변형 -01/-51 구분용)
       const producedCodes = Array.from(new Set([
         ...(aRaw?.items || []).map((it) => it.code || ''),
@@ -541,7 +542,7 @@ export default function MaterialAnalysis() {
         priceMap, priceNameByCode,
         appTotalA: sum(aResult.rows), appTotalB: sum(bResult.rows),
         productCodes, producedCodes,
-        outflowA: outflowOf(outA), outflowB: outflowOf(outB),
+        outflowA: outA, outflowB: outB,
         highCostTerms: ['한우', '전복', '게살', '관자'],
         highCostExcludes: ['사골육수'],
       });
