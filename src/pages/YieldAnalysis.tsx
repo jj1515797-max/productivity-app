@@ -728,41 +728,6 @@ export default function YieldAnalysis() {
 
       {mode === 'cmp' && stat && (
         <>
-          {/* 경고 */}
-          {(stat.noInput > 0 || stat.over100 > 0 || stat.noStd > 0 || !cmpHasData) && (
-            <div className="bg-amber-50 border-2 border-amber-300 rounded-lg p-3 text-sm space-y-1">
-              <div className="font-bold text-amber-900">⚠️ 데이터 점검 (STEP 03 · 배합비·마스터 정합성)</div>
-              {stat.noInput > 0 && (
-                <div className="text-xs text-amber-800">
-                  · <b>{stat.noInput}종</b> — 표준소요는 있는데 <b>실제 투입중량 미입력</b> (수율 계산 제외됨) → 설정에서 입력해 주세요
-                </div>
-              )}
-              {stat.zeroInput > 0 && (
-                <div className="text-xs text-amber-800">
-                  · <b>{stat.zeroInput}종</b> — 실투입 <b>0 으로 입력</b>됨 (그 달 미사용). 표준소요가 있다면 레시피·생산 데이터를 확인해 주세요
-                </div>
-              )}
-              {stat.noStd > 0 && (
-                <div className="text-xs text-amber-800">
-                  · <b>{stat.noStd}종</b> — 실제 투입은 있는데 <b>표준소요량이 0</b> (레시피 미등록 또는 코드 불일치)
-                </div>
-              )}
-              {stat.over100 > 0 && (
-                <div className="text-xs text-amber-800">
-                  · <b>{stat.over100}종</b> — <b>수율 100% 초과</b> · 확인 필요.
-                  BOM 기준과 매입 기준이 다르면(예: 불린 쌀로 등록 / 건조 쌀로 매입) 정상적으로 100%를 넘습니다.
-                  이런 원재료는 <b>절대값보다 전월·전년 대비 증감</b>으로 보세요. 갑자기 넘기 시작했다면 배합비·단위·코드 매핑을 확인해야 합니다.
-                </div>
-              )}
-              {!cmpHasData && (
-                <div className="text-xs text-amber-800">
-                  · <b>{cmpMonth}</b> 실제 투입중량이 없어 <b>비교 지표(⑥⑦)를 낼 수 없습니다</b>
-                  {cmpMode === 'yoy' && ' → 전월 비교로 바꾸거나, 과거 데이터를 입력해 주세요'}
-                </div>
-              )}
-            </div>
-          )}
-
           {/* 요약 카드 */}
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
             <Card label="대상 원재료" value={`${stat.count}`} unit="종" tone="slate" />
@@ -879,6 +844,40 @@ export default function YieldAnalysis() {
               그런 원재료는 절대값이 아니라 <b>증감(%p)</b> 으로 판단하세요.
             </div>
           </div>
+          {/* 경고 */}
+          {(stat.noInput > 0 || stat.over100 > 0 || stat.noStd > 0 || !cmpHasData) && (
+            <div className="bg-amber-50 border-2 border-amber-300 rounded-lg p-3 text-sm space-y-1">
+              <div className="font-bold text-amber-900">⚠️ 데이터 점검 (STEP 03 · 배합비·마스터 정합성)</div>
+              {stat.noInput > 0 && (
+                <div className="text-xs text-amber-800">
+                  · <b>{stat.noInput}종</b> — 표준소요는 있는데 <b>실제 투입중량 미입력</b> (수율 계산 제외됨) → 설정에서 입력해 주세요
+                </div>
+              )}
+              {stat.zeroInput > 0 && (
+                <div className="text-xs text-amber-800">
+                  · <b>{stat.zeroInput}종</b> — 실투입 <b>0 으로 입력</b>됨 (그 달 미사용). 표준소요가 있다면 레시피·생산 데이터를 확인해 주세요
+                </div>
+              )}
+              {stat.noStd > 0 && (
+                <div className="text-xs text-amber-800">
+                  · <b>{stat.noStd}종</b> — 실제 투입은 있는데 <b>표준소요량이 0</b> (레시피 미등록 또는 코드 불일치)
+                </div>
+              )}
+              {stat.over100 > 0 && (
+                <div className="text-xs text-amber-800">
+                  · <b>{stat.over100}종</b> — <b>수율 100% 초과</b> · 확인 필요.
+                  BOM 기준과 매입 기준이 다르면(예: 불린 쌀로 등록 / 건조 쌀로 매입) 정상적으로 100%를 넘습니다.
+                  이런 원재료는 <b>절대값보다 전월·전년 대비 증감</b>으로 보세요. 갑자기 넘기 시작했다면 배합비·단위·코드 매핑을 확인해야 합니다.
+                </div>
+              )}
+              {!cmpHasData && (
+                <div className="text-xs text-amber-800">
+                  · <b>{cmpMonth}</b> 실제 투입중량이 없어 <b>비교 지표(⑥⑦)를 낼 수 없습니다</b>
+                  {cmpMode === 'yoy' && ' → 전월 비교로 바꾸거나, 과거 데이터를 입력해 주세요'}
+                </div>
+              )}
+            </div>
+          )}
         </>
       )}
     </div>
