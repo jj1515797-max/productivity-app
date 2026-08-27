@@ -164,9 +164,11 @@ interface MonthStat {
 interface TrendRow {
   key: string; name: string; code: string;
   byMonth: Record<string, number | null>;   // 월 → 지표(수율)
-  avg: number | null;
+  avg: number | null;         // 전체 평균 (기준선)
+  prevAvg: number | null;     // 최근월을 뺀 이전 평균
   last: number | null;
-  lastVsAvg: number | null;   // %p
+  lastVsAvg: number | null;   // 최근 − 이전평균 (%p)
+  months: number;             // 값이 있는 달 수
   range: number | null;       // 최대-최소 %p
   lossAmtLast: number;
 }
@@ -387,11 +389,17 @@ export default function YieldAnalysis() {
         if (vals.length === 0) return;
         const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
         const last = byMonth[months[months.length - 1]];
+        // 최근월을 뺀 '이전 평균' 과 비교해야 변화폭이 축소되지 않는다.
+        // (평균에 최근월이 섞이면 2개월일 때 하락폭이 정확히 절반으로 보인다)
+        const prior = months.slice(0, -1).map((m) => byMonth[m]).filter((v): v is number => v !== null);
+        const prevAvg = prior.length > 0 ? prior.reduce((a, b) => a + b, 0) / prior.length : null;
         rowsT.push({
-          key: k, name: meta.n, code: meta.c, byMonth, avg,
+          key: k, name: meta.n, code: meta.c, byMonth, avg, prevAvg,
           last,
-          lastVsAvg: last !== null ? (last - avg) * 100 : null,
+          // 비교할 이전 데이터가 없으면(값이 최근월 하나뿐) 판단 불가 → null
+          lastVsAvg: last !== null && prevAvg !== null ? (last - prevAvg) * 100 : null,
           range: vals.length > 1 ? (Math.max(...vals) - Math.min(...vals)) * 100 : null,
+          months: vals.length,
           lossAmtLast,
         });
       });
@@ -526,18 +534,21 @@ export default function YieldAnalysis() {
       { header: 'ERP코드', key: 'c', width: 14 },
       ...trend.months.map((m) => ({ header: m.month.slice(2), key: m.month, width: 10 })),
       { header: '평균', key: 'avg', width: 10 },
-      { header: '최근-평균(%p)', key: 'lv', width: 14 },
+      { header: '이전평균', key: 'pavg', width: 10 },
+      { header: '최근-이전평균(%p)', key: 'lv', width: 18 },
+      { header: '값 있는 달', key: 'mn', width: 10 },
       { header: '변동폭(%p)', key: 'rg', width: 12 },
       { header: '최근월 LOSS금액', key: 'la', width: 16 },
     ];
     ws.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
     ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F3864' } };
     trendView.forEach((r) => {
-      const o: Record<string, unknown> = { n: r.name, c: r.code, avg: r.avg, lv: r.lastVsAvg, rg: r.range, la: Math.round(r.lossAmtLast) };
+      const o: Record<string, unknown> = { n: r.name, c: r.code, avg: r.avg, pavg: r.prevAvg, lv: r.lastVsAvg, mn: r.months, rg: r.range, la: Math.round(r.lossAmtLast) };
       trend.months.forEach((m) => { o[m.month] = r.byMonth[m.month]; });
       const row = ws.addRow(o);
       trend.months.forEach((m) => { row.getCell(m.month).numFmt = '0.0%'; });
       row.getCell('avg').numFmt = '0.0%';
+      row.getCell('pavg').numFmt = '0.0%';
       row.getCell('lv').numFmt = '+0.0;-0.0';
       row.getCell('rg').numFmt = '0.0';
       row.getCell('la').numFmt = '#,##0';
@@ -712,9 +723,10 @@ export default function YieldAnalysis() {
                     <th className="px-3 py-2 text-left sticky left-0 bg-white z-20 min-w-[180px]">원재료</th>
                     {trend.months.map((m) => <th key={m.month} className="px-2 py-2 text-center w-16">{m.month.slice(2)}</th>)}
                     <th className="px-2 py-2 text-center w-16 bg-slate-50">평균</th>
-                    <th className="px-2 py-2 text-center w-20 bg-slate-50">최근−평균</th>
+                    <th className="px-2 py-2 text-center w-20 bg-slate-50">이전평균</th>
+                    <th className="px-2 py-2 text-center w-24 bg-slate-50">최근−이전평균</th>
                     <th className="px-2 py-2 text-center w-16 bg-slate-50">변동폭</th>
-                    <th className="px-2 py-2 text-right w-24 bg-slate-50">최근 LOSS</th>
+                    <th className="px-2 py-2 text-right w-24 bg-slate-50">최근월 LOSS<br /><span className="font-normal text-gray-400">그 달 단가</span></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y tabular-nums">
@@ -731,13 +743,18 @@ export default function YieldAnalysis() {
                           : d >= threshold ? 'bg-violet-100 text-violet-800 font-bold' : '';
                         return (
                           <td key={m.month} className={`px-2 py-1.5 text-center ${bg}`}
-                            title={d === null ? '' : `평균 대비 ${d > 0 ? '+' : ''}${fmt(d, 1)}%p`}>
+                            title={d === null ? '' : `전체 평균 대비 ${d > 0 ? '+' : ''}${fmt(d, 1)}%p`}>
                             {v === null ? <span className="text-gray-300">—</span> : fmt(v * 100)}
                           </td>
                         );
                       })}
-                      <td className="px-2 py-1.5 text-center bg-slate-50 font-semibold">{pct(r.avg)}</td>
-                      <td className={`px-2 py-1.5 text-center bg-slate-50 font-bold ${r.lastVsAvg === null ? 'text-gray-300' : r.lastVsAvg <= -threshold ? 'text-rose-600' : r.lastVsAvg >= threshold ? 'text-violet-700' : 'text-gray-500'}`}>
+                      <td className="px-2 py-1.5 text-center bg-slate-50 font-semibold">
+                        {pct(r.avg)}
+                        <span className="text-[10px] text-gray-400 ml-1">{r.months}개월</span>
+                      </td>
+                      <td className="px-2 py-1.5 text-center bg-slate-50 text-gray-600">{pct(r.prevAvg)}</td>
+                      <td className={`px-2 py-1.5 text-center bg-slate-50 font-bold ${r.lastVsAvg === null ? 'text-gray-300' : r.lastVsAvg <= -threshold ? 'text-rose-600' : r.lastVsAvg >= threshold ? 'text-violet-700' : 'text-gray-500'}`}
+                        title={r.lastVsAvg === null ? '비교할 이전 달 데이터가 없습니다' : undefined}>
                         {r.lastVsAvg === null ? '—' : `${r.lastVsAvg > 0 ? '+' : ''}${fmt(r.lastVsAvg, 1)}`}
                       </td>
                       <td className="px-2 py-1.5 text-center bg-slate-50 text-gray-600">{r.range === null ? '—' : fmt(r.range, 1)}</td>
@@ -783,7 +800,7 @@ export default function YieldAnalysis() {
           {/* TOP3 두 개 */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
             <TopBox title={`이상 원재료 TOP 3 · ${cmpMode === 'yoy' ? '전년동월' : '전월'} 대비 하락폭`}
-              hint="작년보다 나빠진 것 — 원인 규명 대상" accent="rose">
+              hint={`${cmpMode === 'yoy' ? '전년동월' : '전월'}보다 나빠진 것 — 원인 규명 대상`} accent="rose">
               {topDrop.length === 0 ? <Empty text="비교 데이터가 없습니다" /> : topDrop.map((r, i) => (
                 <li key={r.key} className="flex items-center gap-2 py-1">
                   <span className="text-gray-400 w-4">{i + 1}.</span>
@@ -795,7 +812,7 @@ export default function YieldAnalysis() {
               ))}
             </TopBox>
             <TopBox title="LOSS 금액 TOP 3 · 개선 우선순위"
-              hint="지금 제일 많이 새는 것 — 고치면 바로 돈" accent="amber">
+              hint={`지금 제일 많이 새는 것 — ${month} 재고평가 단가 기준`} accent="amber">
               {topLoss.length === 0 ? <Empty text="단가가 입력되어야 계산됩니다" /> : topLoss.map((r, i) => (
                 <li key={r.key} className="flex items-center gap-2 py-1">
                   <span className="text-gray-400 w-4">{i + 1}.</span>
@@ -833,7 +850,7 @@ export default function YieldAnalysis() {
                     <th className="px-2 py-2 text-right w-20">⑦ 증감</th>
                     <th className="px-2 py-2 text-right w-20">④ LOSS<br /><span className="font-normal text-gray-400">kg</span></th>
                     <th className="px-2 py-2 text-right w-20">⑤ LOSS율</th>
-                    <th className="px-2 py-2 text-right w-24">LOSS 금액</th>
+                    <th className="px-2 py-2 text-right w-24">LOSS 금액<br /><span className="font-normal text-gray-400">{month} 단가</span></th>
                     <th className="px-3 py-2 text-left w-56">원인 점검 포인트</th>
                   </tr>
                 </thead>
