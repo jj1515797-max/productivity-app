@@ -20,6 +20,30 @@ import { computeMonthlyUsage } from '../lib/materialUsage';
 import { expandAmbientRecipeMap, expandRecipeMap } from '../lib/bomExpansion';
 
 const EXCLUDE_DEFAULT = ['정제수'];
+const CACHE_PREFIX = 'yieldStd:';
+const TTL_PAST = 30 * 24 * 60 * 60 * 1000;   // 지난 달은 안 바뀜
+const TTL_CURRENT = 5 * 60 * 1000;
+
+interface StdRow { k: string; n: string; c: string; g: number; p: number }
+
+function readCache(month: string): StdRow[] | null {
+  try {
+    const raw = localStorage.getItem(CACHE_PREFIX + month);
+    if (!raw) return null;
+    const o = JSON.parse(raw) as { ts: number; rows: StdRow[] };
+    const ttl = month >= thisMonth() ? TTL_CURRENT : TTL_PAST;
+    if (Date.now() - o.ts > ttl) return null;
+    return o.rows;
+  } catch { return null; }
+}
+function writeCache(month: string, rows: StdRow[]) {
+  try { localStorage.setItem(CACHE_PREFIX + month, JSON.stringify({ ts: Date.now(), rows })); } catch { /* 용량 초과 */ }
+}
+export function clearYieldCache() {
+  try {
+    Object.keys(localStorage).forEach((k) => { if (k.startsWith(CACHE_PREFIX)) localStorage.removeItem(k); });
+  } catch { /* noop */ }
+}
 
 function thisMonth(): string {
   const d = new Date();
@@ -95,6 +119,48 @@ async function fetchInputs(month: string): Promise<{ inputs: Record<string, numb
   return { inputs: d.inputs || {}, names: d.names || {} };
 }
 
+/** 그 달 표준소요량(원재료별 g) — 캐시 우선. force 면 새로 계산 */
+async function stdForMonth(
+  month: string,
+  recipeMap: Map<string, Recipe>,
+  ambientRecipeMap: Map<string, AmbientRecipe>,
+  subRecipeMap: Map<string, Recipe>,
+  priceMap: Map<string, number>,
+  force: boolean,
+): Promise<StdRow[]> {
+  if (!force) {
+    const c = readCache(month);
+    if (c) return c;
+  }
+  const eff = expandRecipeMap(recipeMap, subRecipeMap);
+  const effAmb = expandAmbientRecipeMap(ambientRecipeMap, subRecipeMap);
+  const raw = await fetchMonth(month);
+  const u = computeMonthlyUsage(month, raw.entries, raw.items, raw.ambient, raw.logistics,
+    eff, effAmb, priceMap, undefined, raw.logisticsByCode);
+  const rows: StdRow[] = u.rows.map((r) => ({ k: r.key, n: r.name, c: r.code || '', g: r.grams, p: r.pricePerGram }));
+  writeCache(month, rows);
+  return rows;
+}
+
+interface MonthStat {
+  month: string;
+  hasProd: boolean;     // 표준소요량(=생산+BOM)이 있나
+  hasInput: boolean;    // 실투입을 입력했나
+  stdKg: number;
+  actKg: number;
+  wYield: number | null;
+}
+interface TrendRow {
+  key: string; name: string; code: string;
+  byMonth: Record<string, number | null>;   // 월 → 지표(수율)
+  avg: number | null;
+  last: number | null;
+  lastVsAvg: number | null;   // %p
+  range: number | null;       // 최대-최소 %p
+  lossAmtLast: number;
+}
+interface TrendResult { months: MonthStat[]; rows: TrendRow[] }
+
 interface Row {
   key: string;
   name: string;
@@ -118,6 +184,10 @@ export default function YieldAnalysis() {
   const [cmpMode, setCmpMode] = useState<'yoy' | 'mom'>('yoy');
   const cmpMonth = cmpMode === 'yoy' ? shiftMonth(month, -12) : shiftMonth(month, -1);
 
+  const [mode, setMode] = useState<'cmp' | 'trend'>('cmp');
+  const [fromM, setFromM] = useState(() => shiftMonth(thisMonth(), -6));
+  const [toM, setToM] = useState(() => shiftMonth(thisMonth(), -1));
+  const [trend, setTrend] = useState<TrendResult | null>(null);
   const [running, setRunning] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [rows, setRows] = useState<Row[] | null>(null);
@@ -239,6 +309,93 @@ export default function YieldAnalysis() {
     } finally { setRunning(false); }
   };
 
+  /* ===== 월별 추이 ===== */
+  const runTrend = async (force = false) => {
+    setRunning(true); setErr(null);
+    try {
+      if (fromM > toM) { setErr('시작월이 종료월보다 뒤입니다'); return; }
+      const months: string[] = [];
+      for (let m = fromM; m <= toM && months.length < 24; m = shiftMonth(m, 1)) months.push(m);
+
+      const stds = await Promise.all(months.map((m) => stdForMonth(m, recipeMap, ambientRecipeMap, subRecipeMap, priceMap, force)));
+      const inps = await Promise.all(months.map((m) => fetchInputs(m)));
+
+      // 월별 상태
+      const mstat: MonthStat[] = months.map((m, i) => {
+        const stdMap = new Map(stds[i].map((r) => [r.k, r]));
+        const inp = inps[i].inputs;
+        let sStd = 0, sAct = 0;
+        Object.keys(inp).forEach((k) => {
+          const sr = stdMap.get(k);
+          if (!sr || sr.g <= 0) return;
+          const n = normalizeMaterialName(sr.n);
+          if (excludeTerms.some((t) => n.includes(t))) return;
+          if (!(inp[k] > 0)) return;
+          sStd += sr.g; sAct += inp[k];
+        });
+        return {
+          month: m,
+          hasProd: stds[i].some((r) => r.g > 0),
+          hasInput: Object.keys(inp).length > 0,
+          stdKg: kg(stds[i].reduce((a, r) => a + r.g, 0)),
+          actKg: kg(Object.values(inp).reduce((a: number, v) => a + (v || 0), 0)),
+          wYield: sAct > 0 ? sStd / sAct : null,
+        };
+      });
+
+      // 원재료별 추이
+      const keys = new Set<string>();
+      stds.forEach((rs) => rs.forEach((r) => { if (r.g > 0) keys.add(r.k); }));
+      const nameOf = new Map<string, { n: string; c: string; p: number }>();
+      stds.forEach((rs) => rs.forEach((r) => { if (!nameOf.has(r.k)) nameOf.set(r.k, { n: r.n, c: r.c, p: r.p }); }));
+
+      const rowsT: TrendRow[] = [];
+      keys.forEach((k) => {
+        const meta = nameOf.get(k)!;
+        const n = normalizeMaterialName(meta.n);
+        if (excludeTerms.some((t) => n.includes(t))) return;
+        const byMonth: Record<string, number | null> = {};
+        const vals: number[] = [];
+        let lossAmtLast = 0;
+        months.forEach((m, i) => {
+          const sr = stds[i].find((r) => r.k === k);
+          const act = inps[i].inputs[k] || 0;
+          const v = sr && sr.g > 0 && act > 0 ? sr.g / act : null;
+          byMonth[m] = v;
+          if (v !== null) vals.push(v);
+          if (i === months.length - 1 && sr && act > 0) lossAmtLast = (act - sr.g) * (sr.p || 0);
+        });
+        if (vals.length === 0) return;
+        const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
+        const last = byMonth[months[months.length - 1]];
+        rowsT.push({
+          key: k, name: meta.n, code: meta.c, byMonth, avg,
+          last,
+          lastVsAvg: last !== null ? (last - avg) * 100 : null,
+          range: vals.length > 1 ? (Math.max(...vals) - Math.min(...vals)) * 100 : null,
+          lossAmtLast,
+        });
+      });
+      setTrend({ months: mstat, rows: rowsT });
+    } catch (e: any) {
+      console.error('[YieldTrend]', e);
+      setErr(e?.message || '추이 분석 중 오류가 발생했습니다');
+    } finally { setRunning(false); }
+  };
+
+  const trendView = useMemo(() => {
+    if (!trend) return [];
+    const q = search.trim().toLowerCase();
+    return trend.rows
+      .filter((r) => !q || r.name.toLowerCase().includes(q) || r.code.toLowerCase().includes(q))
+      .sort((a, b) => {
+        if (sortBy === 'lossAmt') return b.lossAmtLast - a.lossAmtLast;
+        if (sortBy === 'delta') return (a.lastVsAvg ?? 999) - (b.lastVsAvg ?? 999);
+        if (sortBy === 'yield') return (a.last ?? 9) - (b.last ?? 9);
+        return (b.range ?? -1) - (a.range ?? -1);
+      });
+  }, [trend, search, sortBy]);
+
   /* ===== 집계 ===== */
   const stat = useMemo(() => {
     if (!rows) return null;
@@ -332,6 +489,40 @@ export default function YieldAnalysis() {
     URL.revokeObjectURL(url);
   };
 
+  const downloadTrendXlsx = async () => {
+    if (!trend) return;
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet(`${fromM}~${toM} 수율추이`);
+    ws.columns = [
+      { header: '원재료', key: 'n', width: 30 },
+      { header: 'ERP코드', key: 'c', width: 14 },
+      ...trend.months.map((m) => ({ header: m.month.slice(2), key: m.month, width: 10 })),
+      { header: '평균', key: 'avg', width: 10 },
+      { header: '최근-평균(%p)', key: 'lv', width: 14 },
+      { header: '변동폭(%p)', key: 'rg', width: 12 },
+      { header: '최근월 LOSS금액', key: 'la', width: 16 },
+    ];
+    ws.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
+    ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F3864' } };
+    trendView.forEach((r) => {
+      const o: Record<string, unknown> = { n: r.name, c: r.code, avg: r.avg, lv: r.lastVsAvg, rg: r.range, la: Math.round(r.lossAmtLast) };
+      trend.months.forEach((m) => { o[m.month] = r.byMonth[m.month]; });
+      const row = ws.addRow(o);
+      trend.months.forEach((m) => { row.getCell(m.month).numFmt = '0.0%'; });
+      row.getCell('avg').numFmt = '0.0%';
+      row.getCell('lv').numFmt = '+0.0;-0.0';
+      row.getCell('rg').numFmt = '0.0';
+      row.getCell('la').numFmt = '#,##0';
+      if ((r.lastVsAvg ?? 0) <= -threshold) row.getCell('lv').font = { bold: true, color: { argb: 'FFC00000' } };
+    });
+    ws.views = [{ state: 'frozen', xSplit: 1, ySplit: 1 }];
+    const buf = await wb.xlsx.writeBuffer();
+    const url = URL.createObjectURL(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+    const a = document.createElement('a');
+    a.href = url; a.download = `원재료수율추이_${fromM}_${toM}.xlsx`; a.click();
+    URL.revokeObjectURL(url);
+  };
+
   const pct = (v: number | null, d = 1) => (v === null ? '—' : `${fmt(v * 100, d)}%`);
 
   return (
@@ -339,21 +530,42 @@ export default function YieldAnalysis() {
       {/* 상단 바 */}
       <div className="bg-white border rounded-lg p-4 flex items-center gap-3 flex-wrap">
         <span className="font-bold text-gray-800 text-lg">📉 원재료수율 분석</span>
-        <span className="text-gray-300">|</span>
-        <span className="text-xs text-gray-500">기준월</span>
-        <input type="month" value={month} onChange={(e) => e.target.value && setMonth(e.target.value)}
-          className="border rounded px-2 py-1 text-sm font-bold" />
         <div className="flex rounded border overflow-hidden text-xs">
-          {([['yoy', '전년동월'], ['mom', '전월']] as const).map(([k, label]) => (
-            <button key={k} onClick={() => setCmpMode(k)}
-              className={`px-3 py-1 font-semibold ${cmpMode === k ? 'bg-blue-600 text-white' : 'bg-white hover:bg-gray-50'}`}>{label}</button>
+          {([['cmp', '월 비교'], ['trend', '월별 추이']] as const).map(([k, label]) => (
+            <button key={k} onClick={() => setMode(k)}
+              className={`px-3 py-1.5 font-bold ${mode === k ? 'bg-slate-800 text-white' : 'bg-white hover:bg-gray-50'}`}>{label}</button>
           ))}
         </div>
-        <span className="text-xs text-gray-400">비교: {cmpMonth}</span>
+        <span className="text-gray-300">|</span>
+        {mode === 'cmp' ? (
+          <>
+            <span className="text-xs text-gray-500">기준월</span>
+            <input type="month" value={month} onChange={(e) => e.target.value && setMonth(e.target.value)}
+              className="border rounded px-2 py-1 text-sm font-bold" />
+            <div className="flex rounded border overflow-hidden text-xs">
+              {([['yoy', '전년동월'], ['mom', '전월']] as const).map(([k, label]) => (
+                <button key={k} onClick={() => setCmpMode(k)}
+                  className={`px-3 py-1 font-semibold ${cmpMode === k ? 'bg-blue-600 text-white' : 'bg-white hover:bg-gray-50'}`}>{label}</button>
+              ))}
+            </div>
+            <span className="text-xs text-gray-400">비교: {cmpMonth}</span>
+          </>
+        ) : (
+          <>
+            <span className="text-xs text-gray-500">기간</span>
+            <input type="month" value={fromM} onChange={(e) => e.target.value && setFromM(e.target.value)}
+              className="border rounded px-2 py-1 text-sm font-bold" />
+            <span className="text-gray-400">~</span>
+            <input type="month" value={toM} onChange={(e) => e.target.value && setToM(e.target.value)}
+              className="border rounded px-2 py-1 text-sm font-bold" />
+            <button onClick={() => { clearYieldCache(); runTrend(true); }} disabled={running}
+              title="캐시 무시하고 다시 계산" className="px-2 py-1 text-xs rounded border hover:bg-gray-50 disabled:opacity-50">🔄</button>
+          </>
+        )}
         <div className="ml-auto flex items-center gap-1.5">
-          <button onClick={downloadXlsx} disabled={!rows}
+          <button onClick={mode === 'cmp' ? downloadXlsx : downloadTrendXlsx} disabled={mode === 'cmp' ? !rows : !trend}
             className="px-3 py-1.5 text-xs rounded bg-emerald-600 text-white font-semibold hover:bg-emerald-700 disabled:bg-gray-300">📥 엑셀</button>
-          <button onClick={run} disabled={running}
+          <button onClick={() => (mode === 'cmp' ? run() : runTrend())} disabled={running}
             className="px-4 py-1.5 text-sm rounded bg-blue-600 text-white font-semibold hover:bg-blue-700 disabled:bg-gray-300 shadow-sm">
             {running ? '분석 중...' : '🚀 분석 시작'}
           </button>
@@ -380,14 +592,141 @@ export default function YieldAnalysis() {
         </div>
       </div>
 
-      {!rows && !running && (
+      {mode === 'trend' && !trend && !running && (
+        <div className="bg-white border border-dashed border-gray-300 rounded-lg p-16 text-center text-gray-400 text-sm">
+          기간을 선택하고 <b className="text-blue-600">🚀 분석 시작</b> 을 눌러주세요.<br />
+          <span className="text-xs">생산 데이터와 실제 투입중량이 <b>둘 다</b> 있는 달만 수율이 계산됩니다.</span>
+        </div>
+      )}
+
+      {mode === 'trend' && trend && (
+        <>
+          {/* 월별 데이터 점검 — 어느 달이 계산 가능한지 */}
+          <div className="bg-white border rounded-lg overflow-hidden">
+            <div className="px-4 py-2.5 border-b bg-slate-50 font-bold text-sm text-gray-800">
+              📅 월별 데이터 점검
+              <span className="ml-2 text-xs font-normal text-gray-500">생산 데이터와 실투입이 둘 다 있어야 수율이 나옵니다</span>
+            </div>
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs">
+                <thead className="bg-white border-b text-gray-600">
+                  <tr>
+                    <th className="px-3 py-2 text-left w-28">구분</th>
+                    {trend.months.map((m) => <th key={m.month} className="px-2 py-2 text-center">{m.month.slice(2)}</th>)}
+                  </tr>
+                </thead>
+                <tbody className="divide-y tabular-nums">
+                  <tr>
+                    <td className="px-3 py-1.5 font-semibold text-gray-700">생산 데이터</td>
+                    {trend.months.map((m) => (
+                      <td key={m.month} className={`px-2 py-1.5 text-center font-bold ${m.hasProd ? 'text-emerald-600' : 'text-red-500'}`}>
+                        {m.hasProd ? 'O' : '없음'}
+                      </td>
+                    ))}
+                  </tr>
+                  <tr>
+                    <td className="px-3 py-1.5 font-semibold text-gray-700">실투입 입력</td>
+                    {trend.months.map((m) => (
+                      <td key={m.month} className={`px-2 py-1.5 text-center font-bold ${m.hasInput ? 'text-emerald-600' : 'text-amber-600'}`}>
+                        {m.hasInput ? 'O' : '없음'}
+                      </td>
+                    ))}
+                  </tr>
+                  <tr className="bg-slate-50">
+                    <td className="px-3 py-1.5 font-semibold text-gray-700">전체 수율</td>
+                    {trend.months.map((m) => (
+                      <td key={m.month} className={`px-2 py-1.5 text-center font-bold ${m.wYield === null ? 'text-gray-300' : 'text-blue-700'}`}>
+                        {m.wYield === null ? '—' : `${fmt(m.wYield * 100)}%`}
+                      </td>
+                    ))}
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+            {trend.months.some((m) => !m.hasProd || !m.hasInput) && (
+              <div className="px-4 py-2 border-t bg-amber-50 text-[11px] text-amber-800">
+                ⚠️ <b>없음</b> 인 달은 수율이 계산되지 않습니다 —
+                생산 데이터가 없으면 그 달은 앱 도입 전이라 표준소요량을 낼 수 없고,
+                실투입이 없으면 설정 › ⚖️ 실제 투입중량 에서 입력하셔야 합니다.
+              </div>
+            )}
+          </div>
+
+          {/* 원재료별 추이 히트맵 */}
+          <div className="bg-white border rounded-lg overflow-hidden">
+            <div className="px-4 py-2.5 border-b bg-slate-50 flex items-center gap-2 flex-wrap">
+              <span className="font-bold text-sm text-gray-800">원재료별 수율 추이</span>
+              <span className="text-xs text-gray-500">{trendView.length}종 · 평균 대비 편차로 음영 표시</span>
+              <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="원재료 검색"
+                className="ml-2 border rounded px-2 py-1 text-sm w-44" />
+              <div className="ml-auto flex rounded border overflow-hidden text-xs">
+                {([['std', '변동폭순'], ['delta', '최근하락순'], ['lossAmt', 'LOSS금액순'], ['yield', '수율낮은순']] as const).map(([k, l]) => (
+                  <button key={k} onClick={() => setSortBy(k)}
+                    className={`px-2.5 py-1 font-medium ${sortBy === k ? 'bg-blue-600 text-white' : 'bg-white hover:bg-gray-50'}`}>{l}</button>
+                ))}
+              </div>
+            </div>
+            <div className="overflow-auto max-h-[640px]">
+              <table className="w-full text-xs">
+                <thead className="bg-white sticky top-0 border-b text-gray-600 z-10">
+                  <tr>
+                    <th className="px-3 py-2 text-left sticky left-0 bg-white z-20 min-w-[180px]">원재료</th>
+                    {trend.months.map((m) => <th key={m.month} className="px-2 py-2 text-center w-16">{m.month.slice(2)}</th>)}
+                    <th className="px-2 py-2 text-center w-16 bg-slate-50">평균</th>
+                    <th className="px-2 py-2 text-center w-20 bg-slate-50">최근−평균</th>
+                    <th className="px-2 py-2 text-center w-16 bg-slate-50">변동폭</th>
+                    <th className="px-2 py-2 text-right w-24 bg-slate-50">최근 LOSS</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y tabular-nums">
+                  {trendView.map((r) => (
+                    <tr key={r.key} className="hover:bg-slate-50">
+                      <td className="px-3 py-1.5 sticky left-0 bg-white">
+                        <div className="font-medium text-gray-800 truncate max-w-[180px]">{r.name}</div>
+                        <div className="text-[10px] text-gray-400 font-mono">{r.code}</div>
+                      </td>
+                      {trend.months.map((m) => {
+                        const v = r.byMonth[m.month];
+                        const d = v !== null && r.avg !== null ? (v - r.avg) * 100 : null;
+                        const bg = d === null ? '' : d <= -threshold ? 'bg-rose-100 text-rose-800 font-bold'
+                          : d >= threshold ? 'bg-violet-100 text-violet-800 font-bold' : '';
+                        return (
+                          <td key={m.month} className={`px-2 py-1.5 text-center ${bg}`}
+                            title={d === null ? '' : `평균 대비 ${d > 0 ? '+' : ''}${fmt(d, 1)}%p`}>
+                            {v === null ? <span className="text-gray-300">—</span> : fmt(v * 100)}
+                          </td>
+                        );
+                      })}
+                      <td className="px-2 py-1.5 text-center bg-slate-50 font-semibold">{pct(r.avg)}</td>
+                      <td className={`px-2 py-1.5 text-center bg-slate-50 font-bold ${r.lastVsAvg === null ? 'text-gray-300' : r.lastVsAvg <= -threshold ? 'text-rose-600' : r.lastVsAvg >= threshold ? 'text-violet-700' : 'text-gray-500'}`}>
+                        {r.lastVsAvg === null ? '—' : `${r.lastVsAvg > 0 ? '+' : ''}${fmt(r.lastVsAvg, 1)}`}
+                      </td>
+                      <td className="px-2 py-1.5 text-center bg-slate-50 text-gray-600">{r.range === null ? '—' : fmt(r.range, 1)}</td>
+                      <td className="px-2 py-1.5 text-right bg-slate-50 font-semibold text-amber-700">
+                        {r.lossAmtLast > 0 ? Math.round(r.lossAmtLast).toLocaleString() : '—'}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            <div className="px-4 py-2 border-t bg-slate-50 text-[11px] text-gray-500">
+              절대값이 100%가 아니어도 됩니다 — BOM 기준과 매입 기준이 다르면 원재료마다 고유한 기준선이 생깁니다.
+              <b className="text-rose-600 ml-1">붉은 칸</b>(평균보다 {threshold}%p 이상 낮음) = 그 달에 표준보다 더 씀,
+              <b className="text-violet-700 ml-1">보라 칸</b> = 덜 씀. <b>변동폭이 큰 원재료부터</b> 보세요.
+            </div>
+          </div>
+        </>
+      )}
+
+      {mode === 'cmp' && !rows && !running && (
         <div className="bg-white border border-dashed border-gray-300 rounded-lg p-16 text-center text-gray-400 text-sm">
           기준월을 선택하고 <b className="text-blue-600">🚀 분석 시작</b> 을 눌러주세요.<br />
           <span className="text-xs">실제 투입중량은 <b>설정 › ⚖️ 실제 투입중량</b> 에서 월별로 입력합니다.</span>
         </div>
       )}
 
-      {stat && (
+      {mode === 'cmp' && stat && (
         <>
           {/* 경고 */}
           {(stat.noInput > 0 || stat.over100 > 0 || stat.noStd > 0 || !cmpHasData) && (
