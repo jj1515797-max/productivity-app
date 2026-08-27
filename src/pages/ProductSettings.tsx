@@ -34,6 +34,7 @@ export default function ProductSettings() {
   const [erpCodeCount, setErpCodeCount] = useState<number | null>(null);
   const [showPurchaseErp, setShowPurchaseErp] = useState(false);
   const [showBackup, setShowBackup] = useState(false);
+  const [showMatInput, setShowMatInput] = useState(false);
   const [materials, setMaterials] = useState<Material[]>([]);
   // 헤더에 표시할 총개수만 가볍게 (count aggregation = 1읽기)
   const [productCount, setProductCount] = useState<number | null>(null);
@@ -336,6 +337,17 @@ export default function ProductSettings() {
             <MaterialPriceDB onCountChange={setInventoryPriceCount} collectionName="materialPricesInventory" />
           </div>
         )}
+      </Section>
+
+      {/* 실제 투입중량 DB — 원재료수율 분석용 (월별) */}
+      <Section
+        icon="⚖️"
+        title="실제 투입중량 (원재료수율용)"
+        badge=""
+        open={showMatInput}
+        onToggle={() => setShowMatInput(!showMatInput)}
+      >
+        {showMatInput && <MaterialInputPanel />}
       </Section>
 
       {/* 생산완료 Gmail 알림 섹션 */}
@@ -2744,6 +2756,177 @@ function SupplierCodeBulkModal({ onClose }: { onClose: () => void }) {
    · 읽기 전용 (운영 데이터 불변)
    · 읽기 상한으로 라이브 앱 쿼터 보호
    ============================================================ */
+/* ===================== 실제 투입중량 DB (원재료수율 분석용) =====================
+   materialInput/{YYYY-MM} = { month, inputs: { 원재료키: g }, names: { 키: 표시명 }, updatedAt }
+   원재료키는 분석 로직과 동일 규칙: 코드가 있으면 CODE_KEY_PREFIX+코드, 없으면 정규화된 이름.
+   저장 단위는 항상 g (입력 시 kg 이면 변환해서 저장). */
+function matInputKey(code: string, name: string): string {
+  const c = (code || '').trim();
+  if (c) return CODE_KEY_PREFIX + normalizeCode(c);
+  return normalizeMaterialName(name);
+}
+
+function MaterialInputPanel() {
+  const [month, setMonth] = useState(() => {
+    const d = new Date();
+    d.setMonth(d.getMonth() - 1);
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+  });
+  const [inputs, setInputs] = useState<Record<string, number>>({});
+  const [names, setNames] = useState<Record<string, string>>({});
+  const [text, setText] = useState('');
+  const [unit, setUnit] = useState<'kg' | 'g'>('kg');
+  const [search, setSearch] = useState('');
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => onSnapshot(doc(db, 'materialInput', month), (snap) => {
+    const d = snap.exists() ? (snap.data() as { inputs?: Record<string, number>; names?: Record<string, string> }) : {};
+    setInputs(d.inputs || {});
+    setNames(d.names || {});
+  }), [month]);
+
+  /** 붙여넣기 파싱 — 마지막 숫자열 = 중량, 코드처럼 보이는 열 = 원재료코드, 나머지 = 이름 */
+  const parsed = useMemo(() => {
+    const rows: { key: string; code: string; name: string; g: number }[] = [];
+    const errors: string[] = [];
+    text.split(/\r?\n/).forEach((line, i) => {
+      const t = line.trim();
+      if (!t) return;
+      const cols = t.split(/\t|,|\s{2,}/).map((c) => c.trim()).filter(Boolean);
+      if (cols.length < 2) { errors.push(`${i + 1}행: 열이 2개 미만`); return; }
+      const num = (x: string) => Number((x || '').replace(/[^\d.-]/g, ''));
+      const w = num(cols[cols.length - 1]);
+      if (!(w > 0)) { errors.push(`${i + 1}행: 중량을 못 읽음 (${t})`); return; }
+      const head = cols.slice(0, -1);
+      const code = head.find((c) => /^\d{6,}$/.test(c.replace(/[-\s]/g, ''))) || '';
+      const name = head.filter((c) => c !== code).join(' ').trim();
+      const key = matInputKey(code, name);
+      if (!key) { errors.push(`${i + 1}행: 원재료를 못 읽음`); return; }
+      rows.push({ key, code, name, g: unit === 'kg' ? w * 1000 : w });
+    });
+    return { rows, errors };
+  }, [text, unit]);
+
+  const save = async () => {
+    if (parsed.rows.length === 0) return;
+    setSaving(true);
+    try {
+      const nextI = { ...inputs }, nextN = { ...names };
+      parsed.rows.forEach((r) => {
+        nextI[r.key] = (nextI[r.key] || 0) + r.g;   // 같은 원재료가 여러 줄이면 합산
+        if (r.name) nextN[r.key] = r.name;
+      });
+      await setDoc(doc(db, 'materialInput', month),
+        { month, inputs: nextI, names: nextN, updatedAt: new Date().toISOString() });
+      setText('');
+      alert(`${month} · ${parsed.rows.length}건 저장됨`);
+    } finally { setSaving(false); }
+  };
+
+  const removeOne = async (key: string) => {
+    const nextI = { ...inputs }, nextN = { ...names };
+    delete nextI[key]; delete nextN[key];
+    await setDoc(doc(db, 'materialInput', month), { month, inputs: nextI, names: nextN, updatedAt: new Date().toISOString() });
+  };
+  const clearAll = async () => {
+    if (!confirm(`${month} 실제 투입중량 ${Object.keys(inputs).length}건을 전부 삭제할까요?`)) return;
+    await setDoc(doc(db, 'materialInput', month), { month, inputs: {}, names: {}, updatedAt: new Date().toISOString() });
+  };
+
+  const list = useMemo(() => {
+    const q = search.trim().toLowerCase();
+    return Object.entries(inputs)
+      .map(([k, g]) => ({ key: k, name: names[k] || k, g }))
+      .filter((x) => !q || x.key.toLowerCase().includes(q) || x.name.toLowerCase().includes(q))
+      .sort((a, b) => b.g - a.g);
+  }, [inputs, names, search]);
+  const totalG = useMemo(() => Object.values(inputs).reduce((s, v) => s + v, 0), [inputs]);
+
+  return (
+    <div className="space-y-3">
+      <div className="bg-teal-50 border border-teal-200 rounded p-2.5 text-xs text-teal-900">
+        ERP 수불현황과 재고실사로 직접 계산하신 <b>월별 실제 투입중량</b>을 넣는 곳입니다.
+        <b className="ml-1">분석 › 원재료수율분석</b> 에서 BOM 표준소요량과 대조해 수율·LOSS 를 계산합니다.<br/>
+        형식: <code className="bg-white px-1 rounded">원재료코드 · 원재료명 · 실투입중량</code> — 탭·쉼표 구분.
+        코드만, 또는 이름만 있어도 됩니다. 같은 원재료가 여러 줄이면 <b>합산</b>됩니다.<br/>
+        ※ 반제품(순수본베이스·디포리육수)과 정제수처럼 <b>매입이 없는 자재는 넣지 마세요</b> — 수율 계산 대상이 아닙니다.
+      </div>
+
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="text-xs font-semibold text-gray-600">기준월</span>
+        <input type="month" value={month} onChange={(e) => e.target.value && setMonth(e.target.value)}
+          className="border rounded px-2 py-1 text-sm font-bold" />
+        <span className="text-xs font-semibold text-gray-600 ml-2">입력 단위</span>
+        <div className="flex rounded border overflow-hidden text-xs">
+          {(['kg', 'g'] as const).map((u) => (
+            <button key={u} onClick={() => setUnit(u)}
+              className={`px-3 py-1 font-semibold ${unit === u ? 'bg-teal-600 text-white' : 'bg-white hover:bg-gray-50'}`}>{u}</button>
+          ))}
+        </div>
+        <span className="text-xs text-gray-400">저장은 항상 g 로 변환됩니다</span>
+        <div className="ml-auto text-xs text-gray-600">
+          등록 <b className="text-teal-700">{Object.keys(inputs).length}</b>종 · 합계 <b>{(totalG / 1000).toLocaleString(undefined, { maximumFractionDigits: 1 })}</b> kg
+        </div>
+      </div>
+
+      <textarea value={text} onChange={(e) => setText(e.target.value)}
+        placeholder={'11320010\t한우(볶음)-초기\t1850\n10010001\t쌀\t20400\n단호박\t980'}
+        className="w-full h-32 border rounded p-2 text-xs font-mono" />
+      <div className="flex items-center gap-2 flex-wrap">
+        <button onClick={save} disabled={saving || parsed.rows.length === 0}
+          className="px-3 py-2 bg-teal-600 text-white rounded text-sm font-medium hover:bg-teal-700 disabled:bg-gray-300">
+          {saving ? '저장중...' : `💾 ${parsed.rows.length}건 저장 (${month})`}
+        </button>
+        {parsed.errors.length > 0 && (
+          <span className="text-xs text-red-600">{parsed.errors.length}행 오류 — {parsed.errors.slice(0, 2).join(' / ')}</span>
+        )}
+        <div className="ml-auto flex items-center gap-2">
+          <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="검색"
+            className="border rounded px-2 py-1 text-sm w-40" />
+          {Object.keys(inputs).length > 0 && (
+            <button onClick={clearAll} className="px-3 py-2 bg-red-600 text-white rounded text-sm font-medium hover:bg-red-700">
+              🗑️ {month} 전체 삭제
+            </button>
+          )}
+        </div>
+      </div>
+
+      {list.length === 0 ? (
+        <div className="p-10 text-center text-gray-400 text-sm border rounded-lg">{month} 에 등록된 실제 투입중량이 없습니다</div>
+      ) : (
+        <div className="border rounded-lg overflow-hidden">
+          <div className="max-h-[420px] overflow-y-auto">
+            <table className="w-full text-sm">
+              <thead className="bg-slate-50 text-xs text-gray-600 sticky top-0 z-10">
+                <tr>
+                  <th className="px-3 py-2 text-left">원재료</th>
+                  <th className="px-3 py-2 text-left w-40">키</th>
+                  <th className="px-3 py-2 text-right w-32">실투입 (kg)</th>
+                  <th className="px-3 py-2 w-16"></th>
+                </tr>
+              </thead>
+              <tbody>
+                {list.map((x) => (
+                  <tr key={x.key} className="border-t hover:bg-slate-50">
+                    <td className="px-3 py-1.5">{x.name}</td>
+                    <td className="px-3 py-1.5 font-mono text-xs text-gray-500">{x.key.replace(CODE_KEY_PREFIX, '')}</td>
+                    <td className="px-3 py-1.5 text-right tabular-nums font-semibold">
+                      {(x.g / 1000).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                    </td>
+                    <td className="px-3 py-1.5 text-right">
+                      <button onClick={() => removeOne(x.key)} className="text-xs text-red-500 hover:underline">삭제</button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function DbBackupPanel() {
   const [running, setRunning] = useState(false);
   const [prog, setProg] = useState<BackupProgress | null>(null);
