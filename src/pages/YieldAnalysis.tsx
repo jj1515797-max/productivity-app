@@ -165,6 +165,7 @@ interface MonthStat {
   stdKg: number;
   actKg: number;
   wYield: number | null;
+  wCommon: number | null;   // 전 기간 계산 가능한 원재료만으로 낸 수율 (월 간 비교용)
   cold: number; ambient: number; total: number;   // 생산량 (월별현황 대조용)
 }
 interface TrendRow {
@@ -178,7 +179,7 @@ interface TrendRow {
   range: number | null;       // 최대-최소 %p
   lossAmtLast: number;
 }
-interface TrendResult { months: MonthStat[]; rows: TrendRow[] }
+interface TrendResult { months: MonthStat[]; rows: TrendRow[]; commonCount: number }
 
 /** 실투입 키를 표준소요 키에 맞춰 재매핑.
  *  BOM 에 코드가 없는 원재료인데 실투입엔 코드를 넣었거나(그 반대) 하면 같은 원재료가
@@ -407,6 +408,7 @@ export default function YieldAnalysis() {
           stdKg: kg(stds[i].rows.reduce((a, r) => a + r.g, 0)),
           actKg: kg(Object.values(inp).reduce((a: number, v) => a + (v || 0), 0)),
           wYield: sAct > 0 ? sStd / sAct : null,
+          wCommon: null,
           cold: stds[i].cold, ambient: stds[i].ambient, total: stds[i].total,
         };
       });
@@ -450,7 +452,25 @@ export default function YieldAnalysis() {
           lossAmtLast,
         });
       });
-      setTrend({ months: mstat, rows: rowsT });
+      // 전 기간 내내 계산 가능한 원재료만 골라 '공통 기준 수율' 을 낸다.
+      // 달마다 모수가 달라지면 월 간 비교가 엄밀하지 않기 때문.
+      const commonKeys = rowsT
+        .filter((r) => months.every((m) => r.byMonth[m] !== null))
+        .map((r) => r.key);
+      const commonSet = new Set(commonKeys);
+      months.forEach((_m, i) => {
+        const stdMap = new Map(stds[i].rows.map((r) => [r.k, r]));
+        let cs = 0, ca = 0;
+        commonSet.forEach((k) => {
+          const sr = stdMap.get(k);
+          const act = inps[i].inputs[k] || 0;
+          if (!sr || sr.g <= 0 || act <= 0) return;
+          cs += sr.g; ca += act;
+        });
+        mstat[i].wCommon = ca > 0 ? cs / ca : null;
+      });
+
+      setTrend({ months: mstat, rows: rowsT, commonCount: commonSet.size });
     } catch (e: any) {
       console.error('[YieldTrend]', e);
       setErr(e?.message || '추이 분석 중 오류가 발생했습니다');
@@ -705,7 +725,9 @@ export default function YieldAnalysis() {
             <div className="px-4 py-2.5 border-b bg-slate-50 font-bold text-sm text-gray-800">
               📅 월별 데이터 점검
               <span className="ml-2 text-xs font-normal text-gray-500">
-                생산 데이터와 실투입이 둘 다 있어야 수율이 나옵니다 · <b>생산량은 월별현황 합계(냉장+실온)와 같아야 정상</b>
+                생산량은 월별현황 합계(냉장+실온)와 같아야 정상 ·
+                <b className="text-indigo-700 ml-1">월 간 비교는 '공통 기준 수율' 로 보세요</b>
+                (전체 수율은 달마다 대상 원재료가 달라질 수 있습니다)
               </span>
             </div>
             <div className="overflow-x-auto">
@@ -743,10 +765,24 @@ export default function YieldAnalysis() {
                     ))}
                   </tr>
                   <tr className="bg-slate-50">
-                    <td className="px-3 py-1.5 font-semibold text-gray-700">전체 수율</td>
+                    <td className="px-3 py-1.5 font-semibold text-gray-700">
+                      전체 수율
+                      <div className="text-[10px] font-normal text-gray-400">그 달 계산 가능한 전 원재료</div>
+                    </td>
                     {trend.months.map((m) => (
                       <td key={m.month} className={`px-2 py-1.5 text-center font-bold ${m.wYield === null ? 'text-gray-300' : 'text-blue-700'}`}>
                         {m.wYield === null ? '—' : `${fmt(m.wYield * 100)}%`}
+                      </td>
+                    ))}
+                  </tr>
+                  <tr className="bg-indigo-50">
+                    <td className="px-3 py-1.5 font-semibold text-gray-800">
+                      공통 기준 수율
+                      <div className="text-[10px] font-normal text-indigo-600">전 기간 계산되는 {trend.commonCount}종 고정 · 월 간 비교용</div>
+                    </td>
+                    {trend.months.map((m) => (
+                      <td key={m.month} className={`px-2 py-1.5 text-center font-bold ${m.wCommon === null ? 'text-gray-300' : 'text-indigo-700'}`}>
+                        {m.wCommon === null ? '—' : `${fmt(m.wCommon * 100)}%`}
                       </td>
                     ))}
                   </tr>
