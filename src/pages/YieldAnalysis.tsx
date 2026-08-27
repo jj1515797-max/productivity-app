@@ -17,27 +17,32 @@ import type { AmbientRecipe, Recipe } from '../lib/wasteCompute';
 import { CODE_KEY_PREFIX, monthPriceKey, normalizeCode, normalizeMaterialName } from '../lib/wasteCompute';
 import { canonicalShort } from '../lib/codeUtil';
 import { computeMonthlyUsage } from '../lib/materialUsage';
+import { computeMonthlyProduction } from '../lib/monthlyProduction';
 import { expandAmbientRecipeMap, expandRecipeMap } from '../lib/bomExpansion';
 
 const EXCLUDE_DEFAULT = ['정제수'];
-const CACHE_PREFIX = 'yieldStd:';
+const CACHE_PREFIX = 'yieldStd2:';
 const TTL_PAST = 30 * 24 * 60 * 60 * 1000;   // 지난 달은 안 바뀜
 const TTL_CURRENT = 5 * 60 * 1000;
 
 interface StdRow { k: string; n: string; c: string; g: number; p: number }
+interface MonthStd { rows: StdRow[]; cold: number; ambient: number; total: number }
+/** 수율이 이 범위를 벗어나면 데이터 이상으로 보고 TOP3 에서 제외 */
+const RANGE_LO = 0.2;
+const RANGE_HI = 2.0;
 
-function readCache(month: string): StdRow[] | null {
+function readCache(month: string): MonthStd | null {
   try {
     const raw = localStorage.getItem(CACHE_PREFIX + month);
     if (!raw) return null;
-    const o = JSON.parse(raw) as { ts: number; rows: StdRow[] };
+    const o = JSON.parse(raw) as { ts: number; v: MonthStd };
     const ttl = month >= thisMonth() ? TTL_CURRENT : TTL_PAST;
     if (Date.now() - o.ts > ttl) return null;
-    return o.rows;
+    return o.v;
   } catch { return null; }
 }
-function writeCache(month: string, rows: StdRow[]) {
-  try { localStorage.setItem(CACHE_PREFIX + month, JSON.stringify({ ts: Date.now(), rows })); } catch { /* 용량 초과 */ }
+function writeCache(month: string, v: MonthStd) {
+  try { localStorage.setItem(CACHE_PREFIX + month, JSON.stringify({ ts: Date.now(), v })); } catch { /* 용량 초과 */ }
 }
 export function clearYieldCache() {
   try {
@@ -127,7 +132,7 @@ async function stdForMonth(
   subRecipeMap: Map<string, Recipe>,
   priceMap: Map<string, number>,
   force: boolean,
-): Promise<StdRow[]> {
+): Promise<MonthStd> {
   if (!force) {
     const c = readCache(month);
     if (c) return c;
@@ -137,9 +142,14 @@ async function stdForMonth(
   const raw = await fetchMonth(month);
   const u = computeMonthlyUsage(month, raw.entries, raw.items, raw.ambient, raw.logistics,
     eff, effAmb, priceMap, undefined, raw.logisticsByCode);
-  const rows: StdRow[] = u.rows.map((r) => ({ k: r.key, n: r.name, c: r.code || '', g: r.grams, p: r.pricePerGram }));
-  writeCache(month, rows);
-  return rows;
+  // 월별현황과 대조할 수 있도록 생산량도 같은 원천으로 계산해 둔다
+  const prod = computeMonthlyProduction(raw.entries, raw.items, raw.ambient, raw.logistics, raw.logisticsByCode);
+  const v: MonthStd = {
+    rows: u.rows.map((r) => ({ k: r.key, n: r.name, c: r.code || '', g: r.grams, p: r.pricePerGram })),
+    cold: prod.coldTotal, ambient: prod.ambientTotal, total: prod.total,
+  };
+  writeCache(month, v);
+  return v;
 }
 
 interface MonthStat {
@@ -149,6 +159,7 @@ interface MonthStat {
   stdKg: number;
   actKg: number;
   wYield: number | null;
+  cold: number; ambient: number; total: number;   // 생산량 (월별현황 대조용)
 }
 interface TrendRow {
   key: string; name: string; code: string;
@@ -174,6 +185,8 @@ interface Row {
   pricePerG: number;
   lossAmt: number | null;
   prevYield: number | null;
+  prevStdG: number;
+  prevActG: number;
   deltaPP: number | null;   // %p
   note: string;
 }
@@ -285,7 +298,8 @@ export default function YieldAnalysis() {
         // 비교월 수율
         const srC = stdCByKey.get(k);
         const actC = inpC.inputs[k] || 0;
-        const py = actC > 0 && (srC?.grams || 0) > 0 ? (srC!.grams) / actC : null;
+        const pStd = srC?.grams || 0;
+        const py = actC > 0 && pStd > 0 ? pStd / actC : null;
 
         out.push({
           key: k,
@@ -298,6 +312,8 @@ export default function YieldAnalysis() {
           pricePerG: sr?.pricePerGram || 0,
           lossAmt: lossG !== null ? lossG * (sr?.pricePerGram || 0) : null,
           prevYield: py,
+          prevStdG: pStd,
+          prevActG: actC,
           deltaPP: y !== null && py !== null ? (y - py) * 100 : null,
           note: '',
         });
@@ -322,7 +338,7 @@ export default function YieldAnalysis() {
 
       // 월별 상태
       const mstat: MonthStat[] = months.map((m, i) => {
-        const stdMap = new Map(stds[i].map((r) => [r.k, r]));
+        const stdMap = new Map(stds[i].rows.map((r) => [r.k, r]));
         const inp = inps[i].inputs;
         let sStd = 0, sAct = 0;
         Object.keys(inp).forEach((k) => {
@@ -331,23 +347,26 @@ export default function YieldAnalysis() {
           const n = normalizeMaterialName(sr.n);
           if (excludeTerms.some((t) => n.includes(t))) return;
           if (!(inp[k] > 0)) return;
+          const y = sr.g / inp[k];
+          if (y < RANGE_LO || y > RANGE_HI) return;   // 데이터 이상 제외
           sStd += sr.g; sAct += inp[k];
         });
         return {
           month: m,
-          hasProd: stds[i].some((r) => r.g > 0),
+          hasProd: stds[i].total > 0,
           hasInput: Object.keys(inp).length > 0,
-          stdKg: kg(stds[i].reduce((a, r) => a + r.g, 0)),
+          stdKg: kg(stds[i].rows.reduce((a, r) => a + r.g, 0)),
           actKg: kg(Object.values(inp).reduce((a: number, v) => a + (v || 0), 0)),
           wYield: sAct > 0 ? sStd / sAct : null,
+          cold: stds[i].cold, ambient: stds[i].ambient, total: stds[i].total,
         };
       });
 
       // 원재료별 추이
       const keys = new Set<string>();
-      stds.forEach((rs) => rs.forEach((r) => { if (r.g > 0) keys.add(r.k); }));
+      stds.forEach((v) => v.rows.forEach((r) => { if (r.g > 0) keys.add(r.k); }));
       const nameOf = new Map<string, { n: string; c: string; p: number }>();
-      stds.forEach((rs) => rs.forEach((r) => { if (!nameOf.has(r.k)) nameOf.set(r.k, { n: r.n, c: r.c, p: r.p }); }));
+      stds.forEach((v) => v.rows.forEach((r) => { if (!nameOf.has(r.k)) nameOf.set(r.k, { n: r.n, c: r.c, p: r.p }); }));
 
       const rowsT: TrendRow[] = [];
       keys.forEach((k) => {
@@ -358,7 +377,7 @@ export default function YieldAnalysis() {
         const vals: number[] = [];
         let lossAmtLast = 0;
         months.forEach((m, i) => {
-          const sr = stds[i].find((r) => r.k === k);
+          const sr = stds[i].rows.find((r) => r.k === k);
           const act = inps[i].inputs[k] || 0;
           const v = sr && sr.g > 0 && act > 0 ? sr.g / act : null;
           byMonth[m] = v;
@@ -399,19 +418,22 @@ export default function YieldAnalysis() {
   /* ===== 집계 ===== */
   const stat = useMemo(() => {
     if (!rows) return null;
-    const valid = rows.filter((r) => r.yield !== null);
+    // 데이터 이상(범위 밖)은 집계에서 제외해야 가중평균·증감이 오염되지 않는다
+    const valid = rows.filter((r) => r.yield !== null && r.yield >= RANGE_LO && r.yield <= RANGE_HI);
     const sumStd = valid.reduce((s, r) => s + r.stdG, 0);
     const sumAct = valid.reduce((s, r) => s + r.actG, 0);
     const wYield = sumAct > 0 ? sumStd / sumAct : 0;
-    const prevValid = valid.filter((r) => r.prevYield !== null);
-    const pStd = prevValid.reduce((s, r) => s + r.stdG, 0);
-    const pAct = prevValid.reduce((s, r) => s + r.actG, 0);
-    // 비교월 가중평균은 비교월 자체 값으로
-    const wPrev = prevValid.length > 0
-      ? prevValid.reduce((s, r) => s + (r.prevYield || 0) * r.actG, 0) / (prevValid.reduce((s, r) => s + r.actG, 0) || 1)
-      : null;
+    // 두 달 모두 정상 범위인 원재료만으로 비교해야 like-for-like 가 된다
+    const prevValid = valid.filter((r) => r.prevYield !== null && r.prevYield >= RANGE_LO && r.prevYield <= RANGE_HI);
+    const cStd = prevValid.reduce((s2, r) => s2 + r.stdG, 0);
+    const cAct = prevValid.reduce((s2, r) => s2 + r.actG, 0);
+    const pStd = prevValid.reduce((s2, r) => s2 + r.prevStdG, 0);
+    const pAct = prevValid.reduce((s2, r) => s2 + r.prevActG, 0);
+    const wCur = cAct > 0 ? cStd / cAct : null;          // 당월 (비교 가능 집합)
+    const wPrev = pAct > 0 ? pStd / pAct : null;         // 비교월 (같은 집합)
     return {
       count: valid.length,
+      excluded: rows.filter((r) => r.yield !== null && (r.yield < RANGE_LO || r.yield > RANGE_HI)).length,
       noInput: rows.filter((r) => r.stdG > 0 && !r.hasInput).length,
       zeroInput: rows.filter((r) => r.stdG > 0 && r.hasInput && r.actG <= 0).length,
       noStd: rows.filter((r) => r.actG > 0 && r.stdG <= 0).length,
@@ -419,17 +441,23 @@ export default function YieldAnalysis() {
       wYield,
       wLoss: 1 - wYield,
       wPrev,
-      deltaPP: wPrev !== null ? (wYield - wPrev) * 100 : null,
+      cmpCount: prevValid.length,
+      deltaPP: wPrev !== null && wCur !== null ? (wCur - wPrev) * 100 : null,
       dropCount: valid.filter((r) => r.deltaPP !== null && r.deltaPP <= -threshold).length,
       lossG: sumAct - sumStd,
       lossAmt: valid.reduce((s, r) => s + (r.lossAmt || 0), 0),
-      pStd, pAct,
+      pStd, pAct, cStd, cAct,
     };
   }, [rows, threshold]);
 
+  const inRange = (v: number | null) => v !== null && v >= RANGE_LO && v <= RANGE_HI;
+  // 데이터 이상(수율 20% 미만·200% 초과)은 TOP3 에서 빼야 진짜 문제가 가려지지 않는다
   const topDrop = useMemo(() => (rows || [])
-    .filter((r) => r.deltaPP !== null)
+    .filter((r) => r.deltaPP !== null && inRange(r.yield) && inRange(r.prevYield))
     .sort((a, b) => (a.deltaPP || 0) - (b.deltaPP || 0)).slice(0, 3), [rows]);
+  const outOfRange = useMemo(() => (rows || [])
+    .filter((r) => (r.yield !== null && !inRange(r.yield)) || (r.prevYield !== null && !inRange(r.prevYield)))
+    .sort((a, b) => (b.yield ?? 0) - (a.yield ?? 0)), [rows]);
   const topLoss = useMemo(() => (rows || [])
     .filter((r) => (r.lossAmt || 0) > 0)
     .sort((a, b) => (b.lossAmt || 0) - (a.lossAmt || 0)).slice(0, 3), [rows]);
@@ -605,7 +633,9 @@ export default function YieldAnalysis() {
           <div className="bg-white border rounded-lg overflow-hidden">
             <div className="px-4 py-2.5 border-b bg-slate-50 font-bold text-sm text-gray-800">
               📅 월별 데이터 점검
-              <span className="ml-2 text-xs font-normal text-gray-500">생산 데이터와 실투입이 둘 다 있어야 수율이 나옵니다</span>
+              <span className="ml-2 text-xs font-normal text-gray-500">
+                생산 데이터와 실투입이 둘 다 있어야 수율이 나옵니다 · <b>생산량은 월별현황 합계(냉장+실온)와 같아야 정상</b>
+              </span>
             </div>
             <div className="overflow-x-auto">
               <table className="w-full text-xs">
@@ -629,6 +659,15 @@ export default function YieldAnalysis() {
                     {trend.months.map((m) => (
                       <td key={m.month} className={`px-2 py-1.5 text-center font-bold ${m.hasInput ? 'text-emerald-600' : 'text-amber-600'}`}>
                         {m.hasInput ? 'O' : '없음'}
+                      </td>
+                    ))}
+                  </tr>
+                  <tr>
+                    <td className="px-3 py-1.5 font-semibold text-gray-700">생산량 (EA)</td>
+                    {trend.months.map((m) => (
+                      <td key={m.month} className="px-2 py-1.5 text-center text-gray-700"
+                        title={`냉장 ${Math.round(m.cold).toLocaleString()} + 실온 ${Math.round(m.ambient).toLocaleString()}`}>
+                        {m.total > 0 ? Math.round(m.total).toLocaleString() : '—'}
                       </td>
                     ))}
                   </tr>
@@ -730,10 +769,11 @@ export default function YieldAnalysis() {
         <>
           {/* 요약 카드 */}
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
-            <Card label="대상 원재료" value={`${stat.count}`} unit="종" tone="slate" />
+            <Card label={stat.excluded > 0 ? `대상 원재료 (이상 ${stat.excluded}종 제외)` : '대상 원재료'}
+              value={`${stat.count}`} unit="종" tone="slate" />
             <Card label="가중평균 수율" value={fmt(stat.wYield * 100)} unit="%" tone="blue" big />
             <Card label="가중평균 LOSS율" value={fmt(stat.wLoss * 100)} unit="%" tone="rose" big />
-            <Card label={`${cmpMode === 'yoy' ? '전년동월' : '전월'} 대비`}
+            <Card label={`${cmpMode === 'yoy' ? '전년동월' : '전월'} 대비 (${stat.cmpCount}종)`}
               value={stat.deltaPP === null ? '—' : `${stat.deltaPP > 0 ? '+' : ''}${fmt(stat.deltaPP, 1)}`}
               unit="%p" tone={stat.deltaPP !== null && stat.deltaPP < 0 ? 'rose' : 'emerald'} />
             <Card label={`${threshold}%p 이상 하락`} value={`${stat.dropCount}`} unit="종" tone="amber" />
@@ -801,6 +841,7 @@ export default function YieldAnalysis() {
                   {view.map((r) => {
                     const bad = r.deltaPP !== null && r.deltaPP <= -threshold;
                     const over = (r.yield || 0) > 1;
+                    const odd = (r.yield !== null && !inRange(r.yield)) || (r.prevYield !== null && !inRange(r.prevYield));
                     return (
                       <tr key={r.key} className={`hover:bg-slate-50 ${over ? 'bg-violet-50' : bad ? 'bg-amber-50' : ''}`}>
                         <td className="px-3 py-1.5">
@@ -818,8 +859,9 @@ export default function YieldAnalysis() {
                           {pct(r.yield)}{over && ' *'}
                         </td>
                         <td className="px-2 py-1.5 text-right text-gray-500">{pct(r.prevYield)}</td>
-                        <td className={`px-2 py-1.5 text-right font-semibold ${r.deltaPP === null ? 'text-gray-300' : r.deltaPP < 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
-                          {r.deltaPP === null ? '—' : `${r.deltaPP > 0 ? '+' : ''}${fmt(r.deltaPP, 1)}`}
+                        <td className={`px-2 py-1.5 text-right font-semibold ${odd ? 'text-gray-400' : r.deltaPP === null ? 'text-gray-300' : r.deltaPP < 0 ? 'text-rose-600' : 'text-emerald-600'}`}
+                          title={odd ? '수율이 정상 범위를 벗어나 집계·TOP3 에서 제외했습니다 — 실투입 값을 확인하세요' : undefined}>
+                          {r.deltaPP === null ? '—' : `${r.deltaPP > 0 ? '+' : ''}${fmt(r.deltaPP, 1)}`}{odd && ' ⚠'}
                         </td>
                         <td className="px-2 py-1.5 text-right">{r.lossG === null ? '—' : fmt(kg(r.lossG))}</td>
                         <td className="px-2 py-1.5 text-right">{pct(r.lossRate)}</td>
@@ -861,6 +903,18 @@ export default function YieldAnalysis() {
               {stat.noStd > 0 && (
                 <div className="text-xs text-amber-800">
                   · <b>{stat.noStd}종</b> — 실제 투입은 있는데 <b>표준소요량이 0</b> (레시피 미등록 또는 코드 불일치)
+                </div>
+              )}
+              {outOfRange.length > 0 && (
+                <div className="text-xs text-red-700">
+                  · <b>{outOfRange.length}종</b> — 수율이 <b>{RANGE_LO * 100}~{RANGE_HI * 100}% 범위를 벗어남</b> · 데이터 이상으로 보고 TOP3 에서 제외했습니다.
+                  <div className="mt-0.5 text-[11px] text-red-600">
+                    {outOfRange.slice(0, 10).map((r) => `${r.name}(${r.yield === null ? '—' : fmt(r.yield * 100)}%${r.prevYield !== null && !inRange(r.prevYield) ? ` / 전월 ${fmt(r.prevYield * 100)}%` : ''})`).join(', ')}
+                    {outOfRange.length > 10 ? ` 외 ${outOfRange.length - 10}종` : ''}
+                  </div>
+                  <div className="mt-0.5 text-[11px] text-red-600">
+                    → 실투입 값이 잘못 저장됐을 가능성이 큽니다. 설정 › ⚖️ 실제 투입중량 에서 해당 월 값을 확인해 주세요.
+                  </div>
                 </div>
               )}
               {stat.over100 > 0 && (
