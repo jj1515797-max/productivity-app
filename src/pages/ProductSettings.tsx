@@ -2811,19 +2811,30 @@ function MaterialInputPanel() {
     return { rows, errors };
   }, [text, unit]);
 
+  // 이미 값이 있는 키를 몇 개 덮어쓰게 되는지 (저장 전 안내용)
+  const overwriteCount = useMemo(
+    () => new Set(parsed.rows.map((r) => r.key).filter((k) => inputs[k] !== undefined)).size,
+    [parsed.rows, inputs],
+  );
+
   const save = async () => {
     if (parsed.rows.length === 0) return;
+    if (overwriteCount > 0
+      && !confirm(`${month} 에 이미 값이 있는 ${overwriteCount}종을 새 값으로 덮어씁니다.\n(더해지지 않고 교체됩니다)\n\n계속할까요?`)) return;
     setSaving(true);
     try {
+      // 이번 붙여넣기 안에서만 합산하고, 기존 저장값은 '덮어쓴다'.
+      // (기존 값에 더하면 같은 목록을 두 번 넣었을 때 실투입이 조용히 2배가 되고,
+      //  실투입은 수율의 분모라 보고 숫자가 그대로 반토막 난다)
+      const pasteSum: Record<string, number> = {};
+      parsed.rows.forEach((r) => { pasteSum[r.key] = (pasteSum[r.key] ?? 0) + r.g; });
       const nextI = { ...inputs }, nextN = { ...names };
-      parsed.rows.forEach((r) => {
-        nextI[r.key] = (nextI[r.key] ?? 0) + r.g;   // 같은 원재료가 여러 줄이면 합산 (0 도 유효값)
-        if (r.name) nextN[r.key] = r.name;
-      });
+      Object.entries(pasteSum).forEach(([k, g]) => { nextI[k] = g; });
+      parsed.rows.forEach((r) => { if (r.name) nextN[r.key] = r.name; });
       await setDoc(doc(db, 'materialInput', month),
         { month, inputs: nextI, names: nextN, updatedAt: new Date().toISOString() });
       setText('');
-      alert(`${month} · ${parsed.rows.length}건 저장됨`);
+      alert(`${month} · ${parsed.rows.length}건 저장됨${overwriteCount > 0 ? `\n(기존 값이 있던 ${overwriteCount}종은 새 값으로 덮어썼습니다)` : ''}`);
     } finally { setSaving(false); }
   };
 
@@ -2852,7 +2863,8 @@ function MaterialInputPanel() {
         ERP 수불현황과 재고실사로 직접 계산하신 <b>월별 실제 투입중량</b>을 넣는 곳입니다.
         <b className="ml-1">분석 › 원재료수율분석</b> 에서 BOM 표준소요량과 대조해 수율·LOSS 를 계산합니다.<br/>
         형식: <code className="bg-white px-1 rounded">원재료코드 · 원재료명 · 실투입중량</code> — 탭·쉼표 구분.
-        코드만, 또는 이름만 있어도 됩니다. 같은 원재료가 여러 줄이면 <b>합산</b>됩니다.<br/>
+        코드만, 또는 이름만 있어도 됩니다. 한 번 붙여넣기 안에서 같은 원재료가 여러 줄이면 합산되고,
+        <b>이미 저장된 값은 더해지지 않고 교체</b>됩니다 (다시 붙여넣어도 2배가 되지 않습니다).<br/>
         ※ 반제품(순수본베이스·디포리육수)과 정제수처럼 <b>매입이 없는 자재는 넣지 마세요</b> — 수율 계산 대상이 아닙니다.
       </div>
 

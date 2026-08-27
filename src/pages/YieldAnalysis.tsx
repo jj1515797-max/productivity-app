@@ -35,14 +35,20 @@ function readCache(month: string): MonthStd | null {
   try {
     const raw = localStorage.getItem(CACHE_PREFIX + month);
     if (!raw) return null;
-    const o = JSON.parse(raw) as { ts: number; v: MonthStd };
+    const o = JSON.parse(raw) as { ts: number; v: MonthStd; partial?: boolean };
+    // 진행 중이던 달에 저장한 캐시는 그 달이 지나도 '부분 데이터' 다.
+    // 쓴 시점 기준으로 판단하지 않으면 미완성 월이 다음 달에 30일짜리로 굳어버린다.
+    if (o.partial && month < thisMonth()) return null;
     const ttl = month >= thisMonth() ? TTL_CURRENT : TTL_PAST;
     if (Date.now() - o.ts > ttl) return null;
     return o.v;
   } catch { return null; }
 }
 function writeCache(month: string, v: MonthStd) {
-  try { localStorage.setItem(CACHE_PREFIX + month, JSON.stringify({ ts: Date.now(), v })); } catch { /* 용량 초과 */ }
+  try {
+    localStorage.setItem(CACHE_PREFIX + month,
+      JSON.stringify({ ts: Date.now(), v, partial: month >= thisMonth() }));
+  } catch { /* 용량 초과 */ }
 }
 export function clearYieldCache() {
   try {
@@ -174,6 +180,35 @@ interface TrendRow {
 }
 interface TrendResult { months: MonthStat[]; rows: TrendRow[] }
 
+/** 실투입 키를 표준소요 키에 맞춰 재매핑.
+ *  BOM 에 코드가 없는 원재료인데 실투입엔 코드를 넣었거나(그 반대) 하면 같은 원재료가
+ *  두 키로 갈라져 '표준소요 0' + '실투입 미입력' 두 행이 되어버린다. 이름으로 2차 매칭한다. */
+function remapInputs(
+  stdRows: { key: string; name: string }[],
+  inputs: Record<string, number>,
+  names: Record<string, string>,
+): { byStdKey: Record<string, number>; remapped: string[] } {
+  const stdKeys = new Set(stdRows.map((r) => r.key));
+  const byName = new Map<string, string>();   // 정규화 이름 → 표준 키
+  stdRows.forEach((r) => {
+    const n = normalizeMaterialName(r.name);
+    if (n && !byName.has(n)) byName.set(n, r.key);
+  });
+  const byStdKey: Record<string, number> = {};
+  const remapped: string[] = [];
+  Object.entries(inputs).forEach(([k, g]) => {
+    let rk = k;
+    if (!stdKeys.has(k)) {
+      const nm = names[k];
+      const hit = (nm && byName.get(normalizeMaterialName(nm)))
+        || (!k.startsWith(CODE_KEY_PREFIX) ? byName.get(k) : undefined);
+      if (hit) { rk = hit; remapped.push(nm || k); }
+    }
+    byStdKey[rk] = (byStdKey[rk] ?? 0) + g;
+  });
+  return { byStdKey, remapped };
+}
+
 interface Row {
   key: string;
   name: string;
@@ -207,6 +242,7 @@ export default function YieldAnalysis() {
   const [err, setErr] = useState<string | null>(null);
   const [rows, setRows] = useState<Row[] | null>(null);
   const [cmpHasData, setCmpHasData] = useState(false);
+  const [remapCount, setRemapCount] = useState(0);
   const [excludeText, setExcludeText] = useState(EXCLUDE_DEFAULT.join(', '));
   const [threshold, setThreshold] = useState(2);
   const [search, setSearch] = useState('');
@@ -282,8 +318,15 @@ export default function YieldAnalysis() {
       const stdCByKey = new Map(stdC.rows.map((r) => [r.key, r]));
       setCmpHasData(Object.keys(inpC.inputs).length > 0);
 
+      // 실투입 키를 표준소요 키에 맞춘다 (코드↔이름 불일치로 갈라지는 것 방지)
+      const mapped = remapInputs(std.rows, inp.inputs, inp.names);
+      const mappedC = remapInputs(stdC.rows, inpC.inputs, inpC.names);
+      setRemapCount(new Set(mapped.remapped).size);
+      const inpNow = mapped.byStdKey;
+      const inpPrev = mappedC.byStdKey;
+
       // 표준소요 또는 실투입 어느 쪽이든 값이 있는 원재료를 모두 대상으로
-      const keys = new Set<string>([...stdByKey.keys(), ...Object.keys(inp.inputs)]);
+      const keys = new Set<string>([...stdByKey.keys(), ...Object.keys(inpNow)]);
       const out: Row[] = [];
       keys.forEach((k) => {
         const sr = stdByKey.get(k);
@@ -292,14 +335,14 @@ export default function YieldAnalysis() {
         if (excludeTerms.some((t) => n.includes(t))) return;   // 정제수 등 제외
 
         const stdG = sr?.grams || 0;
-        const hasInput = Object.prototype.hasOwnProperty.call(inp.inputs, k);
-        const actG = inp.inputs[k] || 0;
+        const hasInput = Object.prototype.hasOwnProperty.call(inpNow, k);
+        const actG = inpNow[k] || 0;
         const y = actG > 0 && stdG > 0 ? stdG / actG : null;
         const lossG = actG > 0 && stdG > 0 ? actG - stdG : null;
 
         // 비교월 수율
         const srC = stdCByKey.get(k);
-        const actC = inpC.inputs[k] || 0;
+        const actC = inpPrev[k] || 0;
         const pStd = srC?.grams || 0;
         const py = actC > 0 && pStd > 0 ? pStd / actC : null;
 
@@ -336,7 +379,11 @@ export default function YieldAnalysis() {
       for (let m = fromM; m <= toM && months.length < 24; m = shiftMonth(m, 1)) months.push(m);
 
       const stds = await Promise.all(months.map((m) => stdForMonth(m, recipeMap, ambientRecipeMap, subRecipeMap, priceMap, force)));
-      const inps = await Promise.all(months.map((m) => fetchInputs(m)));
+      const inpsRaw = await Promise.all(months.map((m) => fetchInputs(m)));
+      const inps = inpsRaw.map((x, i) => ({
+        inputs: remapInputs(stds[i].rows.map((r) => ({ key: r.k, name: r.n })), x.inputs, x.names).byStdKey,
+        names: x.names,
+      }));
 
       // 월별 상태
       const mstat: MonthStat[] = months.map((m, i) => {
@@ -438,7 +485,15 @@ export default function YieldAnalysis() {
     const pStd = prevValid.reduce((s2, r) => s2 + r.prevStdG, 0);
     const pAct = prevValid.reduce((s2, r) => s2 + r.prevActG, 0);
     const wCur = cAct > 0 ? cStd / cAct : null;          // 당월 (비교 가능 집합)
-    const wPrev = pAct > 0 ? pStd / pAct : null;         // 비교월 (같은 집합)
+    const wPrevRaw = pAct > 0 ? pStd / pAct : null;      // 비교월 자체 가중
+    // 원재료마다 기준선이 달라(멥쌀 120% / 채소 80%) 각 달의 자기 가중으로 비교하면
+    // 수율이 하나도 안 변해도 '배합 비중'만 바뀌어 증감이 생긴다(믹스 효과).
+    // → 비교월 수율을 '당월 가중치'로 재평가해 순수 수율효과만 남긴다.
+    const wPrevAdj = cAct > 0
+      ? prevValid.reduce((s2, r) => s2 + (r.prevYield || 0) * r.actG, 0) / cAct
+      : null;
+    const yieldEff = wCur !== null && wPrevAdj !== null ? (wCur - wPrevAdj) * 100 : null;   // 수율효과
+    const mixEff = wPrevAdj !== null && wPrevRaw !== null ? (wPrevAdj - wPrevRaw) * 100 : null; // 배합효과
     return {
       count: valid.length,
       excluded: rows.filter((r) => r.yield !== null && (r.yield < RANGE_LO || r.yield > RANGE_HI)).length,
@@ -448,10 +503,15 @@ export default function YieldAnalysis() {
       over100: valid.filter((r) => (r.yield || 0) > 1).length,
       wYield,
       wLoss: 1 - wYield,
-      wPrev,
+      wPrev: wPrevRaw,
+      wPrevAdj,
       cmpCount: prevValid.length,
-      deltaPP: wPrev !== null && wCur !== null ? (wCur - wPrev) * 100 : null,
-      dropCount: valid.filter((r) => r.deltaPP !== null && r.deltaPP <= -threshold).length,
+      yieldEff,
+      mixEff,
+      // 대표 지표는 '순수 수율 변화' 로 한다 (배합 이동은 따로 보여준다)
+      deltaPP: yieldEff,
+      // TOP3 와 같은 규칙(두 달 모두 정상 범위)이어야 종수와 목록이 어긋나지 않는다
+      dropCount: prevValid.filter((r) => r.deltaPP !== null && r.deltaPP <= -threshold).length,
       lossG: sumAct - sumStd,
       lossAmt: valid.reduce((s, r) => s + (r.lossAmt || 0), 0),
       pStd, pAct, cStd, cAct,
@@ -790,12 +850,25 @@ export default function YieldAnalysis() {
               value={`${stat.count}`} unit="종" tone="slate" />
             <Card label="가중평균 수율" value={fmt(stat.wYield * 100)} unit="%" tone="blue" big />
             <Card label="가중평균 LOSS율" value={fmt(stat.wLoss * 100)} unit="%" tone="rose" big />
-            <Card label={`${cmpMode === 'yoy' ? '전년동월' : '전월'} 대비 (${stat.cmpCount}종)`}
+            <Card label={`${cmpMode === 'yoy' ? '전년동월' : '전월'} 대비 · 수율효과 (${stat.cmpCount}종)`}
               value={stat.deltaPP === null ? '—' : `${stat.deltaPP > 0 ? '+' : ''}${fmt(stat.deltaPP, 1)}`}
               unit="%p" tone={stat.deltaPP !== null && stat.deltaPP < 0 ? 'rose' : 'emerald'} />
             <Card label={`${threshold}%p 이상 하락`} value={`${stat.dropCount}`} unit="종" tone="amber" />
             <Card label="LOSS 금액" value={Math.round(stat.lossAmt).toLocaleString()} unit="원" tone="rose" />
           </div>
+
+          {stat.mixEff !== null && Math.abs(stat.mixEff) >= 0.05 && (
+            <div className="bg-slate-50 border rounded-lg px-4 py-2 text-xs text-gray-700">
+              <b>수율효과 {stat.deltaPP === null ? '—' : `${stat.deltaPP > 0 ? '+' : ''}${fmt(stat.deltaPP, 1)}%p`}</b>
+              <span className="text-gray-400 mx-1">+</span>
+              <b>배합효과 {`${stat.mixEff > 0 ? '+' : ''}${fmt(stat.mixEff, 1)}%p`}</b>
+              <span className="text-gray-400 mx-1">=</span>
+              단순 비교 {stat.wPrev !== null && stat.wYield !== null ? `${((stat.wYield - stat.wPrev) * 100) > 0 ? '+' : ''}${fmt((stat.wYield - stat.wPrev) * 100, 1)}%p` : '—'}
+              <span className="ml-2 text-gray-500">
+                — 배합효과는 원재료별 수율이 그대로여도 <b>어느 원재료를 많이 썼는지</b>가 바뀌어 생기는 몫입니다. 관리 대상은 <b>수율효과</b> 입니다.
+              </span>
+            </div>
+          )}
 
           {/* TOP3 두 개 */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -915,6 +988,12 @@ export default function YieldAnalysis() {
               {stat.zeroInput > 0 && (
                 <div className="text-xs text-amber-800">
                   · <b>{stat.zeroInput}종</b> — 실투입 <b>0 으로 입력</b>됨 (그 달 미사용). 표준소요가 있다면 레시피·생산 데이터를 확인해 주세요
+                </div>
+              )}
+              {remapCount > 0 && (
+                <div className="text-xs text-amber-800">
+                  · <b>{remapCount}종</b> — 실투입 키가 BOM 키와 달라 <b>원재료명으로 매칭</b>했습니다
+                  (실투입은 코드로, BOM 은 이름으로 등록된 경우 등). 코드를 맞춰두시면 더 안전합니다
                 </div>
               )}
               {stat.noStd > 0 && (
