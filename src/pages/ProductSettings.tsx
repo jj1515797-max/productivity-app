@@ -2785,23 +2785,27 @@ function MaterialInputPanel() {
     setNames(d.names || {});
   }), [month]);
 
-  /** 붙여넣기 파싱 — 마지막 숫자열 = 중량, 코드처럼 보이는 열 = 원재료코드, 나머지 = 이름 */
+  /** 붙여넣기 파싱
+   *  · 중량은 줄 끝에서 통째로 읽는다 — 1,234,567.00 처럼 천단위 쉼표가 있어도 안 쪼개진다.
+   *    (쉼표를 구분자로 쓰면 숫자가 조각나고, 원재료명에 쉼표가 든 것도 깨진다)
+   *  · 0 도 유효값으로 받는다 — '그 달에 안 썼다' 와 '입력 안 했다' 는 다르다. */
   const parsed = useMemo(() => {
     const rows: { key: string; code: string; name: string; g: number }[] = [];
     const errors: string[] = [];
     text.split(/\r?\n/).forEach((line, i) => {
       const t = line.trim();
       if (!t) return;
-      const cols = t.split(/\t|,|\s{2,}/).map((c) => c.trim()).filter(Boolean);
-      if (cols.length < 2) { errors.push(`${i + 1}행: 열이 2개 미만`); return; }
-      const num = (x: string) => Number((x || '').replace(/[^\d.-]/g, ''));
-      const w = num(cols[cols.length - 1]);
-      if (!(w > 0)) { errors.push(`${i + 1}행: 중량을 못 읽음 (${t})`); return; }
-      const head = cols.slice(0, -1);
+      const m = /(-?[\d,]*\d(?:\.\d+)?)\s*$/.exec(t);
+      if (!m) { errors.push(`${i + 1}행: 중량을 못 읽음 (${t})`); return; }
+      const w = Number(m[1].replace(/,/g, ''));
+      if (!isFinite(w) || w < 0) { errors.push(`${i + 1}행: 중량이 숫자가 아님 (${t})`); return; }
+      const headRaw = t.slice(0, m.index).replace(/[\t,;\s]+$/, '');
+      const head = headRaw.split(/\t|\s{2,}/).map((c) => c.trim()).filter(Boolean);
+      if (head.length === 0) { errors.push(`${i + 1}행: 원재료를 못 읽음 (${t})`); return; }
       const code = head.find((c) => /^\d{6,}$/.test(c.replace(/[-\s]/g, ''))) || '';
       const name = head.filter((c) => c !== code).join(' ').trim();
       const key = matInputKey(code, name);
-      if (!key) { errors.push(`${i + 1}행: 원재료를 못 읽음`); return; }
+      if (!key) { errors.push(`${i + 1}행: 원재료를 못 읽음 (${t})`); return; }
       rows.push({ key, code, name, g: unit === 'kg' ? w * 1000 : w });
     });
     return { rows, errors };
@@ -2813,7 +2817,7 @@ function MaterialInputPanel() {
     try {
       const nextI = { ...inputs }, nextN = { ...names };
       parsed.rows.forEach((r) => {
-        nextI[r.key] = (nextI[r.key] || 0) + r.g;   // 같은 원재료가 여러 줄이면 합산
+        nextI[r.key] = (nextI[r.key] ?? 0) + r.g;   // 같은 원재료가 여러 줄이면 합산 (0 도 유효값)
         if (r.name) nextN[r.key] = r.name;
       });
       await setDoc(doc(db, 'materialInput', month),
@@ -2877,6 +2881,12 @@ function MaterialInputPanel() {
           className="px-3 py-2 bg-teal-600 text-white rounded text-sm font-medium hover:bg-teal-700 disabled:bg-gray-300">
           {saving ? '저장중...' : `💾 ${parsed.rows.length}건 저장 (${month})`}
         </button>
+        {parsed.rows.length > 0 && (
+          <span className="text-xs text-gray-500">
+            미리보기: {parsed.rows.slice(0, 2).map((r) => `${r.name || r.code} ${(r.g / 1000).toLocaleString(undefined, { maximumFractionDigits: 2 })}kg`).join(' · ')}
+            {parsed.rows.length > 2 ? ' …' : ''}
+          </span>
+        )}
         {parsed.errors.length > 0 && (
           <span className="text-xs text-red-600">{parsed.errors.length}행 오류 — {parsed.errors.slice(0, 2).join(' / ')}</span>
         )}

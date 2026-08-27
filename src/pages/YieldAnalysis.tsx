@@ -104,6 +104,7 @@ interface Row {
   yield: number | null;
   lossG: number | null;
   lossRate: number | null;
+  hasInput: boolean;      // 실투입을 '입력했는가' — 0 입력과 미입력은 다르다
   pricePerG: number;
   lossAmt: number | null;
   prevYield: number | null;
@@ -206,6 +207,7 @@ export default function YieldAnalysis() {
         if (excludeTerms.some((t) => n.includes(t))) return;   // 정제수 등 제외
 
         const stdG = sr?.grams || 0;
+        const hasInput = Object.prototype.hasOwnProperty.call(inp.inputs, k);
         const actG = inp.inputs[k] || 0;
         const y = actG > 0 && stdG > 0 ? stdG / actG : null;
         const lossG = actG > 0 && stdG > 0 ? actG - stdG : null;
@@ -219,7 +221,7 @@ export default function YieldAnalysis() {
           key: k,
           name: nm,
           code: sr?.code || k.replace(CODE_KEY_PREFIX, ''),
-          stdG, actG,
+          stdG, actG, hasInput,
           yield: y,
           lossG,
           lossRate: lossG !== null && actG > 0 ? lossG / actG : null,
@@ -253,7 +255,8 @@ export default function YieldAnalysis() {
       : null;
     return {
       count: valid.length,
-      noInput: rows.filter((r) => r.stdG > 0 && r.actG <= 0).length,
+      noInput: rows.filter((r) => r.stdG > 0 && !r.hasInput).length,
+      zeroInput: rows.filter((r) => r.stdG > 0 && r.hasInput && r.actG <= 0).length,
       noStd: rows.filter((r) => r.actG > 0 && r.stdG <= 0).length,
       over100: valid.filter((r) => (r.yield || 0) > 1).length,
       wYield,
@@ -395,14 +398,21 @@ export default function YieldAnalysis() {
                   · <b>{stat.noInput}종</b> — 표준소요는 있는데 <b>실제 투입중량 미입력</b> (수율 계산 제외됨) → 설정에서 입력해 주세요
                 </div>
               )}
+              {stat.zeroInput > 0 && (
+                <div className="text-xs text-amber-800">
+                  · <b>{stat.zeroInput}종</b> — 실투입 <b>0 으로 입력</b>됨 (그 달 미사용). 표준소요가 있다면 레시피·생산 데이터를 확인해 주세요
+                </div>
+              )}
               {stat.noStd > 0 && (
                 <div className="text-xs text-amber-800">
                   · <b>{stat.noStd}종</b> — 실제 투입은 있는데 <b>표준소요량이 0</b> (레시피 미등록 또는 코드 불일치)
                 </div>
               )}
               {stat.over100 > 0 && (
-                <div className="text-xs text-red-700">
-                  · <b>{stat.over100}종</b> — <b>수율 100% 초과</b>. 좋은 게 아니라 데이터·BOM 오류 신호입니다 (배합비·단위·코드 매핑 확인)
+                <div className="text-xs text-amber-800">
+                  · <b>{stat.over100}종</b> — <b>수율 100% 초과</b> · 확인 필요.
+                  BOM 기준과 매입 기준이 다르면(예: 불린 쌀로 등록 / 건조 쌀로 매입) 정상적으로 100%를 넘습니다.
+                  이런 원재료는 <b>절대값보다 전월·전년 대비 증감</b>으로 보세요. 갑자기 넘기 시작했다면 배합비·단위·코드 매핑을 확인해야 합니다.
                 </div>
               )}
               {!cmpHasData && (
@@ -488,14 +498,21 @@ export default function YieldAnalysis() {
                     const bad = r.deltaPP !== null && r.deltaPP <= -threshold;
                     const over = (r.yield || 0) > 1;
                     return (
-                      <tr key={r.key} className={`hover:bg-slate-50 ${over ? 'bg-red-50' : bad ? 'bg-amber-50' : ''}`}>
+                      <tr key={r.key} className={`hover:bg-slate-50 ${over ? 'bg-violet-50' : bad ? 'bg-amber-50' : ''}`}>
                         <td className="px-3 py-1.5">
                           <div className="font-medium text-gray-800">{r.name}</div>
                           <div className="text-[10px] text-gray-400 font-mono">{r.code}</div>
                         </td>
                         <td className="px-2 py-1.5 text-right">{r.stdG > 0 ? fmt(kg(r.stdG)) : <span className="text-red-500">0</span>}</td>
-                        <td className="px-2 py-1.5 text-right">{r.actG > 0 ? fmt(kg(r.actG)) : <span className="text-amber-600">미입력</span>}</td>
-                        <td className={`px-2 py-1.5 text-right font-bold ${over ? 'text-red-600' : ''}`}>{pct(r.yield)}</td>
+                        <td className="px-2 py-1.5 text-right">
+                          {r.actG > 0 ? fmt(kg(r.actG))
+                            : r.hasInput ? <span className="text-gray-400">0</span>
+                              : <span className="text-amber-600">미입력</span>}
+                        </td>
+                        <td className={`px-2 py-1.5 text-right font-bold ${over ? 'text-violet-700' : ''}`}
+                          title={over ? 'BOM 기준과 매입 기준이 다르면 정상적으로 100%를 넘습니다. 증감(%p)으로 보세요' : undefined}>
+                          {pct(r.yield)}{over && ' *'}
+                        </td>
                         <td className="px-2 py-1.5 text-right text-gray-500">{pct(r.prevYield)}</td>
                         <td className={`px-2 py-1.5 text-right font-semibold ${r.deltaPP === null ? 'text-gray-300' : r.deltaPP < 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
                           {r.deltaPP === null ? '—' : `${r.deltaPP > 0 ? '+' : ''}${fmt(r.deltaPP, 1)}`}
@@ -508,7 +525,7 @@ export default function YieldAnalysis() {
                         <td className="px-3 py-1">
                           <input defaultValue={notes[r.key] || ''} key={`${r.key}-${notes[r.key] || ''}`}
                             onBlur={(e) => { if (e.target.value !== (notes[r.key] || '')) saveNote(r.key, e.target.value); }}
-                            placeholder={over ? '데이터·BOM 확인' : bad ? '원물/공정 점검' : ''}
+                            placeholder={over ? '기준 확인 (불린/건조 등)' : bad ? '원물/공정 점검' : ''}
                             className="w-full border rounded px-2 py-1 text-xs" />
                         </td>
                       </tr>
@@ -519,7 +536,8 @@ export default function YieldAnalysis() {
             </div>
             <div className="px-4 py-2 border-t bg-slate-50 text-[11px] text-gray-500">
               진단 순서 — <b>① 데이터·마스터</b>(배합비·단위·코드 매핑) → <b>② 공정</b>(전처리·잔량·재작업) → <b>③ 원물</b>(산지·계절·수분·불량률).
-              수율 100% 초과는 개선이 아니라 <b className="text-red-600">데이터 오류</b> 신호입니다.
+              <b className="text-violet-700">*</b> 수율 100% 초과 — BOM 기준(불린 쌀 등)과 매입 기준(건조 쌀)이 다르면 정상입니다.
+              그런 원재료는 절대값이 아니라 <b>증감(%p)</b> 으로 판단하세요.
             </div>
           </div>
         </>
