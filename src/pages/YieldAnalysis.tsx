@@ -820,8 +820,8 @@ export default function YieldAnalysis() {
                     {trend.months.map((m) => <th key={m.month} className="px-2 py-2 text-center w-16">{m.month.slice(2)}</th>)}
                     <th className="px-2 py-2 text-center w-16 bg-slate-50">평균</th>
                     <th className="px-2 py-2 text-center w-20 bg-slate-50">이전평균</th>
-                    <th className="px-2 py-2 text-center w-24 bg-slate-50">최근−이전평균</th>
-                    <th className="px-2 py-2 text-center w-16 bg-slate-50">변동폭</th>
+                    <th className="px-2 py-2 text-center w-24 bg-slate-50">최근−이전평균<br /><span className="font-normal text-gray-400">%p</span></th>
+                    <th className="px-2 py-2 text-center w-16 bg-slate-50">변동폭<br /><span className="font-normal text-gray-400">%p</span></th>
                     <th className="px-2 py-2 text-right w-24 bg-slate-50">최근월 LOSS<br /><span className="font-normal text-gray-400">그 달 단가</span></th>
                   </tr>
                 </thead>
@@ -956,7 +956,7 @@ export default function YieldAnalysis() {
                     <th className="px-2 py-2 text-right w-24">① 실제투입<br /><span className="font-normal text-gray-400">kg</span></th>
                     <th className="px-2 py-2 text-right w-20">③ 수율</th>
                     <th className="px-2 py-2 text-right w-20">⑥ {cmpMonth.slice(2)}</th>
-                    <th className="px-2 py-2 text-right w-20">⑦ 증감</th>
+                    <th className="px-2 py-2 text-right w-20">⑦ 증감<br /><span className="font-normal text-gray-400">%p</span></th>
                     <th className="px-2 py-2 text-right w-20">④ LOSS<br /><span className="font-normal text-gray-400">kg</span></th>
                     <th className="px-2 py-2 text-right w-20">⑤ LOSS율</th>
                     <th className="px-2 py-2 text-right w-24">LOSS 금액<br /><span className="font-normal text-gray-400">{month} 단가</span></th>
