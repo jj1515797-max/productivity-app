@@ -190,10 +190,17 @@ function remapInputs(
   names: Record<string, string>,
 ): { byStdKey: Record<string, number>; remapped: string[] } {
   const stdKeys = new Set(stdRows.map((r) => r.key));
-  const byName = new Map<string, string>();   // 정규화 이름 → 표준 키
+  // 같은 이름에 코드가 여러 개인 원재료가 실제로 있다(한우(익,민찌) → 11320010/11/12).
+  // 이름이 유일할 때만 매칭한다. 중복이면 엉뚱한 코드에 붙어 조용히 틀린다.
+  const nameCount = new Map<string, number>();
   stdRows.forEach((r) => {
     const n = normalizeMaterialName(r.name);
-    if (n && !byName.has(n)) byName.set(n, r.key);
+    if (n) nameCount.set(n, (nameCount.get(n) || 0) + 1);
+  });
+  const byName = new Map<string, string>();   // 정규화 이름 → 표준 키 (유일한 것만)
+  stdRows.forEach((r) => {
+    const n = normalizeMaterialName(r.name);
+    if (n && nameCount.get(n) === 1 && !byName.has(n)) byName.set(n, r.key);
   });
   const byStdKey: Record<string, number> = {};
   const remapped: string[] = [];
@@ -378,6 +385,9 @@ export default function YieldAnalysis() {
       if (fromM > toM) { setErr('시작월이 종료월보다 뒤입니다'); return; }
       const months: string[] = [];
       for (let m = fromM; m <= toM && months.length < 24; m = shiftMonth(m, 1)) months.push(m);
+      if (months.length === 24 && months[23] < toM) {
+        setErr(`기간이 24개월을 넘어 ${months[0]} ~ ${months[23]} 까지만 계산했습니다`);
+      }
 
       const stds = await Promise.all(months.map((m) => stdForMonth(m, recipeMap, ambientRecipeMap, subRecipeMap, priceMap, force)));
       const inpsRaw = await Promise.all(months.map((m) => fetchInputs(m)));
@@ -497,7 +507,7 @@ export default function YieldAnalysis() {
     const valid = rows.filter((r) => r.yield !== null && r.yield >= RANGE_LO && r.yield <= RANGE_HI);
     const sumStd = valid.reduce((s, r) => s + r.stdG, 0);
     const sumAct = valid.reduce((s, r) => s + r.actG, 0);
-    const wYield = sumAct > 0 ? sumStd / sumAct : 0;
+    const wYield = sumAct > 0 ? sumStd / sumAct : null;
     // 두 달 모두 정상 범위인 원재료만으로 비교해야 like-for-like 가 된다
     const prevValid = valid.filter((r) => r.prevYield !== null && r.prevYield >= RANGE_LO && r.prevYield <= RANGE_HI);
     const cStd = prevValid.reduce((s2, r) => s2 + r.stdG, 0);
@@ -522,7 +532,7 @@ export default function YieldAnalysis() {
       noStd: rows.filter((r) => r.actG > 0 && r.stdG <= 0).length,
       over100: valid.filter((r) => (r.yield || 0) > 1).length,
       wYield,
-      wLoss: 1 - wYield,
+      wLoss: wYield === null ? null : 1 - wYield,
       wPrev: wPrevRaw,
       wCur,
       wPrevAdj,
@@ -558,7 +568,11 @@ export default function YieldAnalysis() {
     const s = [...f];
     if (sortBy === 'yield') s.sort((a, b) => (a.yield ?? 9) - (b.yield ?? 9));
     else if (sortBy === 'lossAmt') s.sort((a, b) => (b.lossAmt ?? -1) - (a.lossAmt ?? -1));
-    else if (sortBy === 'delta') s.sort((a, b) => (a.deltaPP ?? 999) - (b.deltaPP ?? 999));
+    // 이상치(범위 밖)는 하락폭 정렬 맨 뒤로 — 데이터 오류가 1위를 차지하면 안 된다
+    else if (sortBy === 'delta') {
+      const key = (r: Row) => (r.deltaPP !== null && inRange(r.yield) && inRange(r.prevYield) ? r.deltaPP : 999);
+      s.sort((a, b) => key(a) - key(b));
+    }
     else s.sort((a, b) => b.stdG - a.stdG);
     return s;
   }, [rows, search, sortBy]);
@@ -595,7 +609,9 @@ export default function YieldAnalysis() {
       ['y', 'p', 'lr'].forEach((k) => { row.getCell(k).numFmt = '0.0%'; });
       row.getCell('d').numFmt = '+0.0;-0.0';
       row.getCell('la').numFmt = '#,##0';
-      if (r.deltaPP !== null && r.deltaPP <= -threshold) row.getCell('d').font = { bold: true, color: { argb: 'FFC00000' } };
+      const oddRow = (r.yield !== null && !inRange(r.yield)) || (r.prevYield !== null && !inRange(r.prevYield));
+      if (oddRow) row.getCell('d').font = { color: { argb: 'FF999999' } };   // 데이터 이상 → 회색
+      else if (r.deltaPP !== null && r.deltaPP <= -threshold) row.getCell('d').font = { bold: true, color: { argb: 'FFC00000' } };
       if ((r.yield || 0) > 1) row.getCell('y').font = { bold: true, color: { argb: 'FFC00000' } };
     });
     ws.views = [{ state: 'frozen', ySplit: 1 }];
@@ -707,7 +723,8 @@ export default function YieldAnalysis() {
           <span className="text-gray-400">매입이 없는 자재(정제수 등). 반제품은 원물로 자동 분해되어 목록에 안 나옵니다</span>
           <span className="ml-auto font-semibold">이상 임계</span>
           <input type="number" value={threshold} step="0.5" min="0"
-            onChange={(e) => setThreshold(Number(e.target.value) || 0)} className="border rounded px-2 py-1 w-16 text-right" />
+            onChange={(e) => setThreshold(Math.max(0.1, Number(e.target.value) || 0.1))}
+            className="border rounded px-2 py-1 w-16 text-right" />
           <span className="text-gray-400">%p 이상 하락 시 이상</span>
         </div>
       </div>
@@ -885,8 +902,10 @@ export default function YieldAnalysis() {
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
             <Card label={stat.excluded > 0 ? `대상 원재료 (이상 ${stat.excluded}종 제외)` : '대상 원재료'}
               value={`${stat.count}`} unit="종" tone="slate" />
-            <Card label={`가중평균 수율 (${stat.count}종)`} value={fmt(stat.wYield * 100)} unit="%" tone="blue" big />
-            <Card label="LOSS율 (= 1 − 수율)" value={fmt(stat.wLoss * 100)} unit="%" tone="rose" big />
+            <Card label={`가중평균 수율 (${stat.count}종)`}
+              value={stat.wYield === null ? '—' : fmt(stat.wYield * 100)} unit="%" tone="blue" big />
+            <Card label="LOSS율 (= 1 − 수율)"
+              value={stat.wLoss === null ? '—' : fmt(stat.wLoss * 100)} unit="%" tone="rose" big />
             <Card label={`${cmpMode === 'yoy' ? '전년동월' : '전월'} 대비 · 수율효과 (${stat.cmpCount}종)`}
               value={stat.deltaPP === null ? '—' : `${stat.deltaPP > 0 ? '+' : ''}${fmt(stat.deltaPP, 1)}`}
               unit="%p" tone={stat.deltaPP !== null && stat.deltaPP < 0 ? 'rose' : 'emerald'} />
@@ -969,7 +988,8 @@ export default function YieldAnalysis() {
                 </thead>
                 <tbody className="divide-y tabular-nums">
                   {view.map((r) => {
-                    const bad = r.deltaPP !== null && r.deltaPP <= -threshold;
+                    const bad = r.deltaPP !== null && r.deltaPP <= -threshold
+                      && inRange(r.yield) && inRange(r.prevYield);
                     const over = (r.yield || 0) > 1;
                     const odd = (r.yield !== null && !inRange(r.yield)) || (r.prevYield !== null && !inRange(r.prevYield));
                     return (
