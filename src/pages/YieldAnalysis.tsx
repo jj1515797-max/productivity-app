@@ -524,6 +524,7 @@ export default function YieldAnalysis() {
       wYield,
       wLoss: 1 - wYield,
       wPrev: wPrevRaw,
+      wCur,
       wPrevAdj,
       cmpCount: prevValid.length,
       yieldEff,
@@ -884,13 +885,15 @@ export default function YieldAnalysis() {
           <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-3">
             <Card label={stat.excluded > 0 ? `대상 원재료 (이상 ${stat.excluded}종 제외)` : '대상 원재료'}
               value={`${stat.count}`} unit="종" tone="slate" />
-            <Card label="가중평균 수율" value={fmt(stat.wYield * 100)} unit="%" tone="blue" big />
-            <Card label="가중평균 LOSS율" value={fmt(stat.wLoss * 100)} unit="%" tone="rose" big />
+            <Card label={`가중평균 수율 (${stat.count}종)`} value={fmt(stat.wYield * 100)} unit="%" tone="blue" big />
+            <Card label="LOSS율 (= 1 − 수율)" value={fmt(stat.wLoss * 100)} unit="%" tone="rose" big />
             <Card label={`${cmpMode === 'yoy' ? '전년동월' : '전월'} 대비 · 수율효과 (${stat.cmpCount}종)`}
               value={stat.deltaPP === null ? '—' : `${stat.deltaPP > 0 ? '+' : ''}${fmt(stat.deltaPP, 1)}`}
               unit="%p" tone={stat.deltaPP !== null && stat.deltaPP < 0 ? 'rose' : 'emerald'} />
-            <Card label={`${threshold}%p 이상 하락`} value={`${stat.dropCount}`} unit="종" tone="amber" />
-            <Card label="LOSS 금액" value={Math.round(stat.lossAmt).toLocaleString()} unit="원" tone="rose" />
+            <Card label={`${cmpMode === 'yoy' ? '전년동월' : '전월'} 대비 ${threshold}%p 이상 하락`}
+              value={`${stat.dropCount}`} unit="종" tone="amber" />
+            <Card label={stat.lossAmt < 0 ? 'LOSS 금액 (음수=표준보다 덜 씀)' : 'LOSS 금액'}
+              value={Math.round(stat.lossAmt).toLocaleString()} unit="원" tone="rose" />
           </div>
 
           {stat.mixEff !== null && Math.abs(stat.mixEff) >= 0.05 && (
@@ -899,7 +902,8 @@ export default function YieldAnalysis() {
               <span className="text-gray-400 mx-1">+</span>
               <b>배합효과 {`${stat.mixEff > 0 ? '+' : ''}${fmt(stat.mixEff, 1)}%p`}</b>
               <span className="text-gray-400 mx-1">=</span>
-              단순 비교 {stat.wPrev !== null && stat.wYield !== null ? `${((stat.wYield - stat.wPrev) * 100) > 0 ? '+' : ''}${fmt((stat.wYield - stat.wPrev) * 100, 1)}%p` : '—'}
+              단순 비교 {stat.wPrev !== null && stat.wCur !== null ? `${((stat.wCur - stat.wPrev) * 100) > 0 ? '+' : ''}${fmt((stat.wCur - stat.wPrev) * 100, 1)}%p` : '—'}
+              <span className="text-gray-400 ml-1">({stat.cmpCount}종 기준)</span>
               <span className="ml-2 text-gray-500">
                 — 배합효과는 원재료별 수율이 그대로여도 <b>어느 원재료를 많이 썼는지</b>가 바뀌어 생기는 몫입니다. 관리 대상은 <b>수율효과</b> 입니다.
               </span>
