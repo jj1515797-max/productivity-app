@@ -187,6 +187,8 @@ interface TrendRow {
   outMonths: number;          // 이상치로 통계에서 뺀 달 수
   range: number | null;       // 최대-최소 %p
   lossAmtLast: number;
+  lossKgLast: number;
+  lastHasData: boolean;   // 0원이 '데이터 없음' 인지 '로스 0' 인지 구분
 }
 interface CatTrendRow {
   name: string;
@@ -539,7 +541,7 @@ export default function YieldAnalysis() {
         const vals: number[] = [];      // 통계용 — 이상치(20~200% 밖) 제외
         let anyVal = false;
         let outMonths = 0;
-        let lossAmtLast = 0;
+        let lossAmtLast = 0; let lossKgLast = 0; let lastHasData = false;
         months.forEach((m, i) => {
           const sr = stds[i].rows.find((r) => r.k === k);
           const act = inps[i].inputs[k] || 0;
@@ -549,7 +551,11 @@ export default function YieldAnalysis() {
             anyVal = true;
             if (inRangeV(v)) vals.push(v); else outMonths++;
           }
-          if (i === months.length - 1 && sr && act > 0) lossAmtLast = (act - sr.g) * (sr.p || 0);
+          if (i === months.length - 1 && sr && sr.g > 0 && act > 0) {
+            lastHasData = true;
+            lossKgLast = (act - sr.g) / 1000;
+            lossAmtLast = (act - sr.g) * (sr.p || 0);
+          }
         });
         if (!anyVal) return;
         // 평균·변동폭·증감은 전부 이상치를 뺀 값으로 낸다.
@@ -569,7 +575,7 @@ export default function YieldAnalysis() {
           range: vals.length > 1 ? (Math.max(...vals) - Math.min(...vals)) * 100 : null,
           months: vals.length,
           outMonths,
-          lossAmtLast,
+          lossAmtLast, lossKgLast, lastHasData,
         });
       });
       // 전 기간 내내 계산 가능한 원재료만 골라 '공통 기준 수율' 을 낸다.
@@ -634,7 +640,9 @@ export default function YieldAnalysis() {
           last, prevAvg, lastVsAvg,
           lossAmtLast: lb ? (lb.a - lb.s) * (lb.amt > 0 && lb.a > 0 ? lb.amt / lb.a : 0) : 0,
           actAmtLast: lb?.amt || 0,
-          impactAmt: lastVsAvg !== null && lastVsAvg < 0 ? (-lastVsAvg / 100) * (lb?.amt || 0) : 0,
+          // 낭비분 = 실투입금액 × (1 − 최근수율/이전평균수율). 위 catStats 와 같은 유도.
+          impactAmt: last !== null && prevAvg !== null && prevAvg > 0 && last < prevAvg
+            ? (lb?.amt || 0) * (1 - last / prevAvg) : 0,
         };
       });
       const catOrder = sortCategories(catIndex, catRows.map((c) => c.name));
@@ -766,7 +774,14 @@ export default function YieldAnalysis() {
         // ★ 악화 영향액 — '비교월 수율을 그대로 유지했다면 안 썼을 금액'.
         //   LOSS 금액은 BOM 기준(전처리 후 실량)이면 대부분 음수라 규모 비교에 못 쓴다.
         //   이건 '변화' 라서 어느 기준에서든 그대로 유효하고, 곧바로 개선 목표 금액이 된다.
-        impactAmt: deltaPP !== null && deltaPP < 0 ? (-deltaPP / 100) * a.actAmt : 0,
+        //
+        //   유도: 표준소요 S 는 그대로인데 수율만 y0 → y 로 떨어졌다.
+        //         비교월 수율이었다면 필요한 실투입은 S/y0, 실제로는 A = S/y 를 썼다.
+        //         낭비분 = A − S/y0 = A(1 − y/y0)  →  금액 = 실투입금액 × (1 − y/y0)
+        //   (%p 차이 × 실투입금액 은 근사식이라 y0 가 1 에서 멀수록 오차가 커진다.
+        //    y0=1.34 면 26% 과대, y0=0.88 면 14% 과소 — 보고 금액으로 쓰기엔 못 미친다)
+        impactAmt: y !== null && pAdj !== null && pAdj > 0 && y < pAdj
+          ? a.actAmt * (1 - y / pAdj) : 0,
       };
     });
     const order = sortCategories(catIndex, list.map((l) => l.name));
@@ -1088,6 +1103,17 @@ export default function YieldAnalysis() {
                       spark={ms.map((m) => c.byMonth[m])}
                       footL={c.prevAvg === null ? '이전 비교 없음' : `이전평균 ${fmt(c.prevAvg * 100)}%`}
                       footR={c.impactAmt > 0 ? `영향 ${Math.round(c.impactAmt).toLocaleString()}원` : '악화 없음'}
+                      tip={c.last === null ? undefined : [
+                        `${c.name} · ${ms[ms.length - 1]}`,
+                        `수율 ${fmt(c.last * 100)}% = 표준소요 ÷ 실투입 (그 분류 ${c.count}종 합계, 가중평균)`,
+                        c.prevAvg !== null
+                          ? `이전평균 ${fmt(c.prevAvg * 100)}% = ${ms[0]}~${ms[ms.length - 2]} ${ms.length - 1}개월 수율의 평균`
+                          : '이전평균 — 비교할 이전 달 없음',
+                        c.lastVsAvg !== null ? `증감 ${fmt(c.lastVsAvg, 1)}%p = ${fmt(c.last * 100)}% − ${fmt((c.prevAvg || 0) * 100)}%` : '',
+                        c.impactAmt > 0
+                          ? `영향액 ${Math.round(c.impactAmt).toLocaleString()}원 = 실투입금액 ${Math.round(c.actAmtLast).toLocaleString()}원 × (1 − ${fmt(c.last * 100)}%÷${fmt((c.prevAvg || 0) * 100)}%)`
+                          : '영향액 0원 — 이전평균보다 나빠지지 않음',
+                      ].filter(Boolean).join('\n')}
                       open={openCat === c.name}
                       onClick={() => setOpenCat(openCat === c.name ? null : c.name)}
                     />
@@ -1256,8 +1282,12 @@ export default function YieldAnalysis() {
                         {r.lastVsAvg === null ? '—' : `${r.lastVsAvg > 0 ? '+' : ''}${fmt(r.lastVsAvg, 1)}`}
                       </td>
                       <td className="px-2 py-1.5 text-center bg-slate-50 text-gray-600">{r.range === null ? '—' : fmt(r.range, 1)}</td>
-                      <td className="px-2 py-1.5 text-right bg-slate-50 font-semibold text-amber-700">
-                        {r.lossAmtLast > 0 ? Math.round(r.lossAmtLast).toLocaleString() : '—'}
+                      <td className={`px-2 py-1.5 text-right bg-slate-50 font-semibold
+                        ${!r.lastHasData ? 'text-gray-300' : r.lossAmtLast > 0 ? 'text-amber-700' : 'text-gray-400'}`}
+                        title={!r.lastHasData ? '최근월 표준소요 또는 실투입이 없어 계산 불가'
+                          : r.lossAmtLast > 0 ? `실투입이 표준소요보다 ${fmt(r.lossKgLast)}kg 많음`
+                            : `실투입이 표준소요보다 ${fmt(-r.lossKgLast)}kg 적음 (수율 100% 초과) — 손실이 아니라 BOM 기준 차이일 수 있습니다`}>
+                        {!r.lastHasData ? '—' : Math.round(r.lossAmtLast).toLocaleString()}
                       </td>
                     </tr>
                   ))}
@@ -1268,6 +1298,11 @@ export default function YieldAnalysis() {
               절대값이 100%가 아니어도 됩니다 — BOM 기준과 매입 기준이 다르면 원재료마다 고유한 기준선이 생깁니다.
               <b className="text-rose-600 ml-1">붉은 칸</b>(평균보다 {threshold}%p 이상 낮음) = 그 달에 표준보다 더 씀,
               <b className="text-violet-700 ml-1">보라 칸</b> = 덜 씀. <b>변동폭이 큰 원재료부터</b> 보세요.
+              <br />
+              <b>최근월 LOSS</b> — 실투입 − 표준소요를 그 달 단가로 평가한 금액입니다.
+              <b className="text-amber-700 ml-1">주황(양수)</b> = 표준보다 더 씀,
+              <b className="text-gray-500 ml-1">회색(음수)</b> = 표준보다 덜 씀(수율 100% 초과),
+              <b className="text-gray-400 ml-1">—</b> = 최근월 표준소요나 실투입이 없어 계산 불가.
             </div>
           </div>
         </>
@@ -1388,6 +1423,16 @@ export default function YieldAnalysis() {
                       impactAmt={c.impactAmt}
                       footL={`LOSS ${fmt(kg(c.lossG))}kg · ${Math.round(c.lossAmt).toLocaleString()}원`}
                       footR={c.impactAmt > 0 ? `영향 ${Math.round(c.impactAmt).toLocaleString()}원` : '악화 없음'}
+                      tip={c.yield === null ? undefined : [
+                        `${c.name} · ${month}`,
+                        `수율 ${fmt(c.yield * 100)}% = 표준소요 ÷ 실투입 (그 분류 ${c.count}종 합계, 가중평균)`,
+                        c.deltaPP !== null
+                          ? `증감 ${fmt(c.deltaPP, 1)}%p — ${cmpMode === 'yoy' ? '전년동월' : '전월'} 수율을 당월 배합 비중으로 재평가한 값과 비교`
+                          : `${cmpMode === 'yoy' ? '전년동월' : '전월'} 비교 데이터 없음`,
+                        c.impactAmt > 0
+                          ? `영향액 ${Math.round(c.impactAmt).toLocaleString()}원 = 실투입금액 ${Math.round(c.actAmt).toLocaleString()}원 × (1 − 당월수율÷비교월수율)`
+                          : '영향액 0원 — 비교월보다 나빠지지 않음',
+                      ].filter(Boolean).join('\n')}
                       note={[
                         c.outCount > 0 ? `⚠ 이상치 ${c.outCount}종` : '',
                         c.naCount > 0 ? `미입력 ${c.naCount}종` : '',
@@ -1701,7 +1746,7 @@ function Sparkline({ values, tone = 'flat', width = 132, height = 30 }: {
  *  · 배경색 = 증감 방향, 막대 = 규모. 둘을 나눠야 '금액 큰데 흰 타일' 같은 배신이 없다. */
 function CatTile({
   name, count, headline, headlineUnit, sub, subLabel, delta, deltaLabel,
-  barRatio, impactAmt, footL, footR, note, open, onClick, spark, muted, threshold,
+  barRatio, impactAmt, footL, footR, note, open, onClick, spark, muted, threshold, tip,
 }: {
   name: string; count: number;
   headline: string; headlineUnit: string;
@@ -1710,7 +1755,7 @@ function CatTile({
   /** 이 값 미만의 증감은 '변화 없음' 으로 본다 — 잡음을 위험색으로 칠하지 않기 위해 */
   threshold: number;
   barRatio: number; impactAmt: number;
-  footL: string; footR: string; footRTone?: string;
+  footL: string; footR: string; footRTone?: string; tip?: string;
   note?: string; open: boolean; onClick: () => void;
   spark?: (number | null)[]; muted?: boolean;
 }) {
@@ -1728,7 +1773,7 @@ function CatTile({
   // 제곱근으로 눌러 순서는 지키되 작은 것도 보이게 한다.
   const barH = barRatio > 0 ? Math.max(Math.sqrt(barRatio) * 100, 8) : 0;
   return (
-    <button onClick={onClick}
+    <button onClick={onClick} title={tip}
       className={`relative text-left border rounded-xl pl-4 pr-3 py-2.5 overflow-hidden transition
         ${open ? 'ring-2 ring-slate-900 border-slate-900 shadow-md' : `${bg} hover:shadow-md hover:-translate-y-px`}`}>
       {/* 규모 막대 — 악화 영향액이 있을 때만 채운다 */}
