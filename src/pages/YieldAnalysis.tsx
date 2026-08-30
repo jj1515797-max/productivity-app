@@ -30,6 +30,8 @@ interface MonthStd { rows: StdRow[]; cold: number; ambient: number; total: numbe
 /** 수율이 이 범위를 벗어나면 데이터 이상으로 보고 TOP3 에서 제외 */
 const RANGE_LO = 0.2;
 const RANGE_HI = 2.0;
+/** 수율이 정상 범위인가 (데이터 이상 격리용) — 화면·엑셀·추이 전부 이 기준 하나만 쓴다 */
+const inRangeV = (v: number | null | undefined): v is number => v !== null && v !== undefined && v >= RANGE_LO && v <= RANGE_HI;
 
 function readCache(month: string): MonthStd | null {
   try {
@@ -175,32 +177,40 @@ interface TrendRow {
   prevAvg: number | null;     // 최근월을 뺀 이전 평균
   last: number | null;
   lastVsAvg: number | null;   // 최근 − 이전평균 (%p)
-  months: number;             // 값이 있는 달 수
+  months: number;             // 통계에 쓴 달 수 (이상치 제외)
+  outMonths: number;          // 이상치로 통계에서 뺀 달 수
   range: number | null;       // 최대-최소 %p
   lossAmtLast: number;
 }
-interface TrendResult { months: MonthStat[]; rows: TrendRow[]; commonCount: number }
+interface TrendResult { months: MonthStat[]; rows: TrendRow[]; commonCount: number; outCount: number }
 
 /** 실투입 키를 표준소요 키에 맞춰 재매핑.
  *  BOM 에 코드가 없는 원재료인데 실투입엔 코드를 넣었거나(그 반대) 하면 같은 원재료가
- *  두 키로 갈라져 '표준소요 0' + '실투입 미입력' 두 행이 되어버린다. 이름으로 2차 매칭한다. */
+ *  두 키로 갈라져 '표준소요 0' + '실투입 미입력' 두 행이 되어버린다. 이름으로 2차 매칭한다.
+ *
+ *  ⚠ stdRows 는 반드시 '비교 대상 전 기간의 표준소요 행 합집합' 을 넘겨야 한다.
+ *     한 달 것만 넘기면 그 달 생산 믹스에 따라 매칭 여부가 달라져(이름이 유일했다가 중복이 됨)
+ *     두 달의 분모가 서로 다른 규칙으로 만들어지고, 증감(%p)이 수율이 아니라 매핑 변화를 재게 된다. */
 function remapInputs(
   stdRows: { key: string; name: string }[],
   inputs: Record<string, number>,
   names: Record<string, string>,
 ): { byStdKey: Record<string, number>; remapped: string[] } {
-  const stdKeys = new Set(stdRows.map((r) => r.key));
+  // 같은 키가 여러 번 들어와도 1건으로 센다 (여러 달 행을 합쳐서 넘기므로 필수)
+  const uniq = new Map<string, string>();     // 표준 키 → 이름
+  stdRows.forEach((r) => { if (r.key && !uniq.has(r.key)) uniq.set(r.key, r.name); });
+  const stdKeys = new Set(uniq.keys());
   // 같은 이름에 코드가 여러 개인 원재료가 실제로 있다(한우(익,민찌) → 11320010/11/12).
   // 이름이 유일할 때만 매칭한다. 중복이면 엉뚱한 코드에 붙어 조용히 틀린다.
   const nameCount = new Map<string, number>();
-  stdRows.forEach((r) => {
-    const n = normalizeMaterialName(r.name);
+  uniq.forEach((nm) => {
+    const n = normalizeMaterialName(nm);
     if (n) nameCount.set(n, (nameCount.get(n) || 0) + 1);
   });
   const byName = new Map<string, string>();   // 정규화 이름 → 표준 키 (유일한 것만)
-  stdRows.forEach((r) => {
-    const n = normalizeMaterialName(r.name);
-    if (n && nameCount.get(n) === 1 && !byName.has(n)) byName.set(n, r.key);
+  uniq.forEach((nm, key) => {
+    const n = normalizeMaterialName(nm);
+    if (n && nameCount.get(n) === 1 && !byName.has(n)) byName.set(n, key);
   });
   const byStdKey: Record<string, number> = {};
   const remapped: string[] = [];
@@ -249,7 +259,9 @@ export default function YieldAnalysis() {
   const [running, setRunning] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [rows, setRows] = useState<Row[] | null>(null);
-  const [cmpHasData, setCmpHasData] = useState(false);
+  const [cmpDiag, setCmpDiag] = useState<{ hasInput: boolean; qty: number; baseQty: number; partial: boolean }>(
+    { hasInput: false, qty: 0, baseQty: 0, partial: false });
+  const cmpHasData = cmpDiag.hasInput && cmpDiag.qty > 0;
   const [remapCount, setRemapCount] = useState(0);
   const [excludeText, setExcludeText] = useState(EXCLUDE_DEFAULT.join(', '));
   const [threshold, setThreshold] = useState(2);
@@ -324,11 +336,27 @@ export default function YieldAnalysis() {
 
       const stdByKey = new Map(std.rows.map((r) => [r.key, r]));
       const stdCByKey = new Map(stdC.rows.map((r) => [r.key, r]));
-      setCmpHasData(Object.keys(inpC.inputs).length > 0);
+
+      // 비교월을 쓸 수 있는지 판정.
+      // 실투입만 보면 안 된다 — 앱 도입 전이라 '생산 데이터가 없는 달' 도 ERP 수불로
+      // 실투입만 채워 넣을 수 있고, 그러면 표준소요가 0/과소라 수율이 통째로 낮게 나온다.
+      // 그 값이 20~200% 안에 들어오면 정상값으로 섞여 '수율효과' 카드에 허위 개선이 찍힌다.
+      const cmpQty = stdC.coverage?.totalQty || 0;
+      const baseQty = std.coverage?.totalQty || 0;
+      const cmpUsable = Object.keys(inpC.inputs).length > 0 && cmpQty > 0;
+      setCmpDiag({
+        hasInput: Object.keys(inpC.inputs).length > 0,
+        qty: cmpQty,
+        baseQty,
+        // 생산량이 기준월의 70% 에 못 미치면 '그 달 데이터가 덜 쌓인' 것으로 보고 경고
+        partial: cmpUsable && baseQty > 0 && cmpQty < baseQty * 0.7,
+      });
 
       // 실투입 키를 표준소요 키에 맞춘다 (코드↔이름 불일치로 갈라지는 것 방지)
-      const mapped = remapInputs(std.rows, inp.inputs, inp.names);
-      const mappedC = remapInputs(stdC.rows, inpC.inputs, inpC.names);
+      // 두 달의 표준소요 행을 '합쳐서' 넘겨야 매핑 규칙이 월에 무관하게 같아진다.
+      const unionRows = [...std.rows, ...stdC.rows].map((r) => ({ key: r.key, name: r.name }));
+      const mapped = remapInputs(unionRows, inp.inputs, inp.names);
+      const mappedC = remapInputs(unionRows, inpC.inputs, inpC.names);
       setRemapCount(new Set(mapped.remapped).size);
       const inpNow = mapped.byStdKey;
       const inpPrev = mappedC.byStdKey;
@@ -350,8 +378,8 @@ export default function YieldAnalysis() {
 
         // 비교월 수율
         const srC = stdCByKey.get(k);
-        const actC = inpPrev[k] || 0;
-        const pStd = srC?.grams || 0;
+        const actC = cmpUsable ? (inpPrev[k] || 0) : 0;
+        const pStd = cmpUsable ? (srC?.grams || 0) : 0;
         const py = actC > 0 && pStd > 0 ? pStd / actC : null;
 
         out.push({
@@ -391,8 +419,10 @@ export default function YieldAnalysis() {
 
       const stds = await Promise.all(months.map((m) => stdForMonth(m, recipeMap, ambientRecipeMap, subRecipeMap, priceMap, force)));
       const inpsRaw = await Promise.all(months.map((m) => fetchInputs(m)));
-      const inps = inpsRaw.map((x, i) => ({
-        inputs: remapInputs(stds[i].rows.map((r) => ({ key: r.k, name: r.n })), x.inputs, x.names).byStdKey,
+      // 매핑 규칙은 전 기간 합집합으로 한 번만 만든다 (월마다 다르면 추이가 흔들린다)
+      const unionRows = stds.flatMap((v) => v.rows.map((r) => ({ key: r.k, name: r.n })));
+      const inps = inpsRaw.map((x) => ({
+        inputs: remapInputs(unionRows, x.inputs, x.names).byStdKey,
         names: x.names,
       }));
 
@@ -407,8 +437,7 @@ export default function YieldAnalysis() {
           const n = normalizeMaterialName(sr.n);
           if (excludeTerms.some((t) => n.includes(t))) return;
           if (!(inp[k] > 0)) return;
-          const y = sr.g / inp[k];
-          if (y < RANGE_LO || y > RANGE_HI) return;   // 데이터 이상 제외
+          if (!inRangeV(sr.g / inp[k])) return;   // 데이터 이상 제외
           sStd += sr.g; sAct += inp[k];
         });
         return {
@@ -435,22 +464,30 @@ export default function YieldAnalysis() {
         const n = normalizeMaterialName(meta.n);
         if (excludeTerms.some((t) => n.includes(t))) return;
         const byMonth: Record<string, number | null> = {};
-        const vals: number[] = [];
+        const vals: number[] = [];      // 통계용 — 이상치(20~200% 밖) 제외
+        let anyVal = false;
+        let outMonths = 0;
         let lossAmtLast = 0;
         months.forEach((m, i) => {
           const sr = stds[i].rows.find((r) => r.k === k);
           const act = inps[i].inputs[k] || 0;
           const v = sr && sr.g > 0 && act > 0 ? sr.g / act : null;
-          byMonth[m] = v;
-          if (v !== null) vals.push(v);
+          byMonth[m] = v;              // 표시용은 원값 그대로 (점검하려면 보여야 한다)
+          if (v !== null) {
+            anyVal = true;
+            if (inRangeV(v)) vals.push(v); else outMonths++;
+          }
           if (i === months.length - 1 && sr && act > 0) lossAmtLast = (act - sr.g) * (sr.p || 0);
         });
-        if (vals.length === 0) return;
-        const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
-        const last = byMonth[months[months.length - 1]];
+        if (!anyVal) return;
+        // 평균·변동폭·증감은 전부 이상치를 뺀 값으로 낸다.
+        // (한 달 자릿수 오입력이 그 원재료의 평균·이전평균·변동폭을 통째로 왜곡하는 것 방지)
+        const avg = vals.length > 0 ? vals.reduce((a, b) => a + b, 0) / vals.length : null;
+        const lastRaw = byMonth[months[months.length - 1]];
+        const last = inRangeV(lastRaw) ? lastRaw : null;
         // 최근월을 뺀 '이전 평균' 과 비교해야 변화폭이 축소되지 않는다.
         // (평균에 최근월이 섞이면 2개월일 때 하락폭이 정확히 절반으로 보인다)
-        const prior = months.slice(0, -1).map((m) => byMonth[m]).filter((v): v is number => v !== null);
+        const prior = months.slice(0, -1).map((m) => byMonth[m]).filter(inRangeV);
         const prevAvg = prior.length > 0 ? prior.reduce((a, b) => a + b, 0) / prior.length : null;
         rowsT.push({
           key: k, name: meta.n, code: meta.c, byMonth, avg, prevAvg,
@@ -459,13 +496,16 @@ export default function YieldAnalysis() {
           lastVsAvg: last !== null && prevAvg !== null ? (last - prevAvg) * 100 : null,
           range: vals.length > 1 ? (Math.max(...vals) - Math.min(...vals)) * 100 : null,
           months: vals.length,
+          outMonths,
           lossAmtLast,
         });
       });
       // 전 기간 내내 계산 가능한 원재료만 골라 '공통 기준 수율' 을 낸다.
       // 달마다 모수가 달라지면 월 간 비교가 엄밀하지 않기 때문.
+      // 한 달이라도 이상치인 원재료는 통째로 뺀다.
+      // (넣으면 '전체 수율' 행은 그 달을 빼고 '공통 기준 수율' 행은 넣어 같은 표의 두 행이 어긋난다)
       const commonKeys = rowsT
-        .filter((r) => months.every((m) => r.byMonth[m] !== null))
+        .filter((r) => months.every((m) => inRangeV(r.byMonth[m])))
         .map((r) => r.key);
       const commonSet = new Set(commonKeys);
       months.forEach((_m, i) => {
@@ -475,12 +515,13 @@ export default function YieldAnalysis() {
           const sr = stdMap.get(k);
           const act = inps[i].inputs[k] || 0;
           if (!sr || sr.g <= 0 || act <= 0) return;
+          if (!inRangeV(sr.g / act)) return;
           cs += sr.g; ca += act;
         });
         mstat[i].wCommon = ca > 0 ? cs / ca : null;
       });
 
-      setTrend({ months: mstat, rows: rowsT, commonCount: commonSet.size });
+      setTrend({ months: mstat, rows: rowsT, commonCount: commonSet.size, outCount: rowsT.filter((r) => r.outMonths > 0).length });
     } catch (e: any) {
       console.error('[YieldTrend]', e);
       setErr(e?.message || '추이 분석 중 오류가 발생했습니다');
@@ -796,7 +837,10 @@ export default function YieldAnalysis() {
                   <tr className="bg-indigo-50">
                     <td className="px-3 py-1.5 font-semibold text-gray-800">
                       공통 기준 수율
-                      <div className="text-[10px] font-normal text-indigo-600">전 기간 계산되는 {trend.commonCount}종 고정 · 월 간 비교용</div>
+                      <div className="text-[10px] font-normal text-indigo-600">
+                        전 기간 <b>정상범위</b>로 계산되는 {trend.commonCount}종 고정 · 월 간 비교용
+                        {trend.outCount > 0 && ` (이상치 있는 ${trend.outCount}종 제외)`}
+                      </div>
                     </td>
                     {trend.months.map((m) => (
                       <td key={m.month} className={`px-2 py-1.5 text-center font-bold ${m.wCommon === null ? 'text-gray-300' : 'text-indigo-700'}`}>
@@ -852,13 +896,16 @@ export default function YieldAnalysis() {
                       </td>
                       {trend.months.map((m) => {
                         const v = r.byMonth[m.month];
-                        const d = v !== null && r.avg !== null ? (v - r.avg) * 100 : null;
-                        const bg = d === null ? '' : d <= -threshold ? 'bg-rose-100 text-rose-800 font-bold'
-                          : d >= threshold ? 'bg-violet-100 text-violet-800 font-bold' : '';
+                        const odd = v !== null && !inRangeV(v);
+                        const d = !odd && v !== null && r.avg !== null ? (v - r.avg) * 100 : null;
+                        const bg = odd ? 'bg-gray-100 text-gray-400'
+                          : d === null ? '' : d <= -threshold ? 'bg-rose-100 text-rose-800 font-bold'
+                            : d >= threshold ? 'bg-violet-100 text-violet-800 font-bold' : '';
                         return (
                           <td key={m.month} className={`px-2 py-1.5 text-center ${bg}`}
-                            title={d === null ? '' : `전체 평균 대비 ${d > 0 ? '+' : ''}${fmt(d, 1)}%p`}>
-                            {v === null ? <span className="text-gray-300">—</span> : fmt(v * 100)}
+                            title={odd ? `${RANGE_LO * 100}~${RANGE_HI * 100}% 범위를 벗어나 평균·증감 계산에서 제외했습니다`
+                              : d === null ? '' : `전체 평균 대비 ${d > 0 ? '+' : ''}${fmt(d, 1)}%p`}>
+                            {v === null ? <span className="text-gray-300">—</span> : odd ? `⚠${fmt(v * 100)}` : fmt(v * 100)}
                           </td>
                         );
                       })}
@@ -1082,8 +1129,21 @@ export default function YieldAnalysis() {
               )}
               {!cmpHasData && (
                 <div className="text-xs text-amber-800">
-                  · <b>{cmpMonth}</b> 실제 투입중량이 없어 <b>비교 지표(⑥⑦)를 낼 수 없습니다</b>
+                  · <b>{cmpMonth}</b> {!cmpDiag.hasInput ? '실제 투입중량이 없어' : '생산 데이터(레시피 기준 표준소요)가 없어'} <b>비교 지표(⑥⑦)를 낼 수 없습니다</b>
+                  {cmpDiag.hasInput && cmpDiag.qty === 0 && (
+                    <span className="block ml-2 text-[11px] text-amber-700">
+                      실투입은 입력돼 있지만 그 달 생산 실적이 없습니다. 표준소요가 0이라 비교했다면 수율이 통째로 낮게 나왔을 값이라 비교를 껐습니다.
+                    </span>
+                  )}
                   {cmpMode === 'yoy' && ' → 전월 비교로 바꾸거나, 과거 데이터를 입력해 주세요'}
+                </div>
+              )}
+              {cmpHasData && cmpDiag.partial && (
+                <div className="text-xs text-rose-800">
+                  · ⚠ <b>{cmpMonth} 생산량이 {month}의 {Math.round((cmpDiag.qty / cmpDiag.baseQty) * 100)}%</b> 뿐입니다
+                  ({cmpDiag.qty.toLocaleString()} vs {cmpDiag.baseQty.toLocaleString()} EA).
+                  그 달 데이터가 덜 쌓인 것이라면 표준소요가 과소계상돼 <b>비교월 수율이 실제보다 낮게</b> 나오고,
+                  그만큼 증감(%p)이 <b>개선된 것처럼</b> 보입니다. 보고자료에 쓰기 전 그 달 생산 데이터가 온전한지 확인하세요.
                 </div>
               )}
             </div>
