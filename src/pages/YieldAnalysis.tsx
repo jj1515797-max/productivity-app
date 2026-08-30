@@ -188,7 +188,21 @@ interface TrendRow {
   range: number | null;       // 최대-최소 %p
   lossAmtLast: number;
 }
-interface TrendResult { months: MonthStat[]; rows: TrendRow[]; commonCount: number; outCount: number }
+interface CatTrendRow {
+  name: string;
+  byMonth: Record<string, number | null>;   // 월 → 그 분류의 가중 수율
+  count: number;            // 최근월 집계 종수
+  last: number | null;
+  prevAvg: number | null;   // 최근월을 뺀 이전 평균
+  lastVsAvg: number | null; // %p
+  lossAmtLast: number;      // 최근월 LOSS 금액
+  impactAmt: number;        // 최근월 악화 영향액 (이전평균 대비)
+  actAmtLast: number;
+}
+interface TrendResult {
+  months: MonthStat[]; rows: TrendRow[]; commonCount: number; outCount: number;
+  cats: CatTrendRow[];
+}
 
 /** 실투입 키를 표준소요 키에 맞춰 재매핑.
  *  BOM 에 코드가 없는 원재료인데 실투입엔 코드를 넣었거나(그 반대) 하면 같은 원재료가
@@ -266,7 +280,7 @@ export default function YieldAnalysis() {
   const [err, setErr] = useState<string | null>(null);
   const [rows, setRows] = useState<Row[] | null>(null);
   const [coverage, setCoverage] = useState<{ pct: number; missingQty: number; totalQty: number; missingCold: number; missingAmbient: number } | null>(null);
-  const [catSort, setCatSort] = useState<'loss' | 'delta' | 'yield' | 'name'>('loss');
+  const [catSort, setCatSort] = useState<'impact' | 'loss' | 'delta' | 'yield' | 'name'>('impact');
   const [openCat, setOpenCat] = useState<string | null>(null);
   const [cmpDiag, setCmpDiag] = useState<{ hasInput: boolean; qty: number; baseQty: number; partial: boolean }>(
     { hasInput: false, qty: 0, baseQty: 0, partial: false });
@@ -579,7 +593,65 @@ export default function YieldAnalysis() {
         mstat[i].wCommon = ca > 0 ? cs / ca : null;
       });
 
-      setTrend({ months: mstat, rows: rowsT, commonCount: commonSet.size, outCount: rowsT.filter((r) => r.outMonths > 0).length });
+      /* ===== 카테고리별 월별 추이 =====
+         추이 모드는 이미 전 기간 표준소요·실투입을 다 불러왔으므로
+         분류별 집계는 추가 읽기 없이 그대로 낼 수 있다.
+         월 비교 화면과 같은 규칙: 가중평균(Σ표준÷Σ실투입) + 이상치 제외. */
+      const catAgg = new Map<string, {
+        byMonth: Record<string, { s: number; a: number; amt: number; n: number }>;
+      }>();
+      months.forEach((m, i) => {
+        const inp = inps[i].inputs;
+        stds[i].rows.forEach((r) => {
+          const n = normalizeMaterialName(r.n);
+          if (excludeTerms.some((t) => n.includes(t))) return;
+          const act = inp[r.k] || 0;
+          if (!(r.g > 0) || !(act > 0)) return;
+          if (!inRangeV(r.g / act)) return;
+          const cat = categoryOf(catIndex, r.c || '', r.n);
+          let e = catAgg.get(cat);
+          if (!e) { e = { byMonth: {} }; catAgg.set(cat, e); }
+          if (!e.byMonth[m]) e.byMonth[m] = { s: 0, a: 0, amt: 0, n: 0 };
+          const b = e.byMonth[m];
+          b.s += r.g; b.a += act; b.amt += act * (r.p || 0); b.n++;
+        });
+      });
+      const lastM = months[months.length - 1];
+      const catRows: CatTrendRow[] = [...catAgg.entries()].map(([name, e]) => {
+        const byMonth: Record<string, number | null> = {};
+        months.forEach((m) => {
+          const b = e.byMonth[m];
+          byMonth[m] = b && b.a > 0 ? b.s / b.a : null;
+        });
+        const last = byMonth[lastM];
+        const prior = months.slice(0, -1).map((m) => byMonth[m]).filter((v): v is number => v !== null);
+        const prevAvg = prior.length > 0 ? prior.reduce((x, y) => x + y, 0) / prior.length : null;
+        const lastVsAvg = last !== null && prevAvg !== null ? (last - prevAvg) * 100 : null;
+        const lb = e.byMonth[lastM];
+        return {
+          name, byMonth,
+          count: lb?.n || 0,
+          last, prevAvg, lastVsAvg,
+          lossAmtLast: lb ? (lb.a - lb.s) * (lb.amt > 0 && lb.a > 0 ? lb.amt / lb.a : 0) : 0,
+          actAmtLast: lb?.amt || 0,
+          impactAmt: lastVsAvg !== null && lastVsAvg < 0 ? (-lastVsAvg / 100) * (lb?.amt || 0) : 0,
+        };
+      });
+      const catOrder = sortCategories(catIndex, catRows.map((c) => c.name));
+      const catRank = new Map(catOrder.map((n, i) => [n, i]));
+      catRows.sort((a, b) => {
+        if (a.name === UNCLASSIFIED) return 1;
+        if (b.name === UNCLASSIFIED) return -1;
+        return b.impactAmt - a.impactAmt
+          || (a.lastVsAvg ?? 999) - (b.lastVsAvg ?? 999)
+          || (catRank.get(a.name) ?? 999) - (catRank.get(b.name) ?? 999);
+      });
+
+      setTrend({
+        months: mstat, rows: rowsT, commonCount: commonSet.size,
+        outCount: rowsT.filter((r) => r.outMonths > 0).length,
+        cats: catRows,
+      });
     } catch (e: any) {
       console.error('[YieldTrend]', e);
       setErr(e?.message || '추이 분석 중 오류가 발생했습니다');
@@ -590,6 +662,8 @@ export default function YieldAnalysis() {
     if (!trend) return [];
     const q = search.trim().toLowerCase();
     return trend.rows
+      // 카테고리 타일을 누르면 히트맵도 그 분류만 남는다 (타일 → 상세의 흐름)
+      .filter((r) => !openCat || categoryOf(catIndex, r.code, r.name) === openCat)
       .filter((r) => !q || r.name.toLowerCase().includes(q) || r.code.toLowerCase().includes(q))
       .sort((a, b) => {
         if (sortBy === 'lossAmt') return b.lossAmtLast - a.lossAmtLast;
@@ -597,7 +671,7 @@ export default function YieldAnalysis() {
         if (sortBy === 'yield') return (a.last ?? 9) - (b.last ?? 9);
         return (b.range ?? -1) - (a.range ?? -1);
       });
-  }, [trend, search, sortBy]);
+  }, [trend, search, sortBy, openCat, catIndex]);
 
   /* ===== 집계 ===== */
   const stat = useMemo(() => {
@@ -658,7 +732,7 @@ export default function YieldAnalysis() {
     if (!rows) return null;
     interface Agg {
       name: string; count: number; outCount: number; naCount: number;
-      stdG: number; actG: number; lossAmt: number;
+      stdG: number; actG: number; lossAmt: number; actAmt: number;
       pStdW: number;            // 비교월 수율 × 당월 실투입 (당월 가중으로 재평가)
       cmpAct: number;           // 위 가중의 분모
       cmpCount: number;
@@ -666,7 +740,7 @@ export default function YieldAnalysis() {
     const m = new Map<string, Agg>();
     const get = (k: string): Agg => {
       let a = m.get(k);
-      if (!a) { a = { name: k, count: 0, outCount: 0, naCount: 0, stdG: 0, actG: 0, lossAmt: 0, pStdW: 0, cmpAct: 0, cmpCount: 0 }; m.set(k, a); }
+      if (!a) { a = { name: k, count: 0, outCount: 0, naCount: 0, stdG: 0, actG: 0, lossAmt: 0, actAmt: 0, pStdW: 0, cmpAct: 0, cmpCount: 0 }; m.set(k, a); }
       return a;
     };
     rows.forEach((r) => {
@@ -676,17 +750,23 @@ export default function YieldAnalysis() {
       a.count++;
       a.stdG += r.stdG; a.actG += r.actG;
       a.lossAmt += r.lossAmt || 0;
+      a.actAmt += r.actG * (r.pricePerG || 0);
       if (inRangeV(r.prevYield)) { a.pStdW += r.prevYield * r.actG; a.cmpAct += r.actG; a.cmpCount++; }
     });
     const list = [...m.values()].map((a) => {
       const y = a.actG > 0 ? a.stdG / a.actG : null;
       // 비교월도 '당월 가중치' 로 재평가해야 배합 이동이 수율 변화로 안 보인다 (전체 카드와 같은 규칙)
       const pAdj = a.cmpAct > 0 ? a.pStdW / a.cmpAct : null;
+      const deltaPP = y !== null && pAdj !== null ? (y - pAdj) * 100 : null;
       return {
         ...a,
         yield: y,
         lossG: a.actG - a.stdG,
-        deltaPP: y !== null && pAdj !== null ? (y - pAdj) * 100 : null,
+        deltaPP,
+        // ★ 악화 영향액 — '비교월 수율을 그대로 유지했다면 안 썼을 금액'.
+        //   LOSS 금액은 BOM 기준(전처리 후 실량)이면 대부분 음수라 규모 비교에 못 쓴다.
+        //   이건 '변화' 라서 어느 기준에서든 그대로 유효하고, 곧바로 개선 목표 금액이 된다.
+        impactAmt: deltaPP !== null && deltaPP < 0 ? (-deltaPP / 100) * a.actAmt : 0,
       };
     });
     const order = sortCategories(catIndex, list.map((l) => l.name));
@@ -694,6 +774,7 @@ export default function YieldAnalysis() {
     return list.sort((a, b) => {
       if (a.name === UNCLASSIFIED) return 1;
       if (b.name === UNCLASSIFIED) return -1;
+      if (catSort === 'impact') return b.impactAmt - a.impactAmt;
       if (catSort === 'loss') return b.lossAmt - a.lossAmt;
       if (catSort === 'delta') return (a.deltaPP ?? 999) - (b.deltaPP ?? 999);
       if (catSort === 'yield') return (a.yield ?? 9) - (b.yield ?? 9);
@@ -924,6 +1005,111 @@ export default function YieldAnalysis() {
 
       {mode === 'trend' && trend && (
         <>
+          {/* ===== 카테고리별 수율 추이 =====
+              여기가 본진이다. 추이 모드는 전 기간 데이터를 이미 불러왔으므로
+              분류별 집계와 미니 그래프를 추가 읽기 없이 낼 수 있다. */}
+          {trend.cats.length > 0 && (() => {
+            const ms = trend.months.map((m) => m.month);
+            const catOrderIdx = new Map(catIndex.categories.map((n, i) => [n, i]));
+            const real = trend.cats.filter((c) => c.name !== UNCLASSIFIED).slice().sort((a, b) => {
+              if (catSort === 'delta') return (a.lastVsAvg ?? 999) - (b.lastVsAvg ?? 999);
+              if (catSort === 'yield') return (a.last ?? 9) - (b.last ?? 9);
+              if (catSort === 'name') return (catOrderIdx.get(a.name) ?? 999) - (catOrderIdx.get(b.name) ?? 999);
+              return b.impactAmt - a.impactAmt;   // 기본: 영향액순
+            });
+            const unc = trend.cats.find((c) => c.name === UNCLASSIFIED);
+            const maxImpact = Math.max(0, ...real.map((c) => c.impactAmt));
+            // 임계 미만의 미세 변동은 '봐야 할 곳' 이 아니다 — 진짜 신호가 묻힌다
+            const focus = real.filter((c) => c.lastVsAvg !== null && c.lastVsAvg <= -threshold)
+              .slice().sort((a, b) => b.impactAmt - a.impactAmt).slice(0, 3);
+            return (
+              <div className="bg-white border rounded-xl shadow-sm">
+                <div className="px-4 py-2.5 border-b flex items-start justify-between gap-2 flex-wrap">
+                  <div>
+                  <div className="font-bold text-gray-900 text-sm">카테고리별 수율 추이</div>
+                  <div className="text-[11px] text-gray-500 mt-0.5">
+                    {ms[0]} ~ {ms[ms.length - 1]} · 큰 숫자는 <b>최근월 − 이전평균(%p)</b>, 그래프는 월별 수율 ·
+                    왼쪽 막대 = <b>악화 영향액</b> 규모 · 분류를 누르면 아래 히트맵이 그 분류만 남습니다
+                    {catIndex.categories.length === 0 && (
+                      <span className="text-amber-700"> · 카테고리 DB 가 비어 있어 전부 ‘{UNCLASSIFIED}’ 입니다</span>
+                    )}
+                  </div>
+                  </div>
+                  <div className="flex items-center gap-1 text-[11px]">
+                    <span className="text-gray-400">정렬</span>
+                    {([['impact', '영향액'], ['delta', '증감'], ['yield', '수율'], ['name', '등록순']] as const).map(([k, label]) => (
+                      <button key={k} onClick={() => setCatSort(k)}
+                        className={`border rounded-md px-2 py-1 ${catSort === k ? 'bg-slate-900 text-white border-slate-900' : 'hover:bg-gray-50'}`}>
+                        {label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                {focus.length > 0 && (
+                  <div className="px-4 py-2.5 bg-rose-50/60 border-b border-rose-100 text-xs">
+                    <span className="font-bold text-rose-900">지금 봐야 할 곳</span>
+                    <span className="text-rose-700 ml-2">
+                      {focus.map((c, i) => (
+                        <span key={c.name}>
+                          {i > 0 && <span className="text-rose-300 mx-1.5">·</span>}
+                          <button onClick={() => setOpenCat(c.name)} className="underline underline-offset-2 hover:text-rose-900">
+                            <b>{c.name}</b> {c.lastVsAvg !== null && `${fmt(c.lastVsAvg, 1)}%p`} → <b>{Math.round(c.impactAmt).toLocaleString()}원</b>
+                          </button>
+                        </span>
+                      ))}
+                    </span>
+                    <div className="text-[11px] text-rose-800/80 mt-1">
+                      <b>악화 영향액</b> = 이전 평균 수율을 유지했다면 최근월에 안 썼을 금액. 개선 목표 금액으로 그대로 쓰면 됩니다.
+                    </div>
+                  </div>
+                )}
+
+                <div className="p-3 grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-2.5">
+                  {real.map((c) => (
+                    <CatTile
+                      key={c.name}
+                      name={c.name}
+                      count={c.count}
+                      threshold={threshold}
+                      // 비교값이 없으면 큰 숫자를 '—' 로 비워두지 말고 수율을 주인공으로 되돌린다
+                      headline={c.lastVsAvg !== null
+                        ? `${c.lastVsAvg > 0 ? '+' : ''}${fmt(c.lastVsAvg, 1)}`
+                        : c.last !== null ? fmt(c.last * 100) : '—'}
+                      headlineUnit={c.lastVsAvg !== null ? '%p' : '%'}
+                      sub={c.lastVsAvg !== null
+                        ? (c.last === null ? '—' : `수율 ${fmt(c.last * 100)}%`)
+                        : '비교할 이전 달 없음'}
+                      subLabel="최근월 가중평균 수율"
+                      delta={c.lastVsAvg}
+                      deltaLabel="최근월 − 이전평균"
+                      barRatio={maxImpact > 0 ? c.impactAmt / maxImpact : 0}
+                      impactAmt={c.impactAmt}
+                      spark={ms.map((m) => c.byMonth[m])}
+                      footL={c.prevAvg === null ? '이전 비교 없음' : `이전평균 ${fmt(c.prevAvg * 100)}%`}
+                      footR={c.impactAmt > 0 ? `영향 ${Math.round(c.impactAmt).toLocaleString()}원` : '악화 없음'}
+                      open={openCat === c.name}
+                      onClick={() => setOpenCat(openCat === c.name ? null : c.name)}
+                    />
+                  ))}
+                </div>
+
+                {unc && (
+                  <button onClick={() => setOpenCat(openCat === UNCLASSIFIED ? null : UNCLASSIFIED)}
+                    className={`w-full text-left px-4 py-2 border-t text-xs flex items-center gap-2 flex-wrap
+                      ${openCat === UNCLASSIFIED ? 'bg-slate-900 text-white' : 'bg-gray-50 hover:bg-gray-100 text-gray-600'}`}>
+                    <b>{UNCLASSIFIED}</b>
+                    <span>{unc.count}종</span>
+                    {unc.last !== null && <span>최근 수율 {fmt(unc.last * 100)}%</span>}
+                    <span className={openCat === UNCLASSIFIED ? 'text-gray-300' : 'text-gray-400'}>
+                      — 설정 › 원재료 카테고리 DB 에서 분류를 지정하면 위 타일로 올라갑니다
+                    </span>
+                  </button>
+                )}
+              </div>
+            );
+          })()}
+
           {/* 월별 데이터 점검 — 어느 달이 계산 가능한지 */}
           <div className="bg-white border rounded-lg overflow-hidden">
             <div className="px-4 py-2.5 border-b bg-slate-50 font-bold text-sm text-gray-800">
@@ -1009,6 +1195,12 @@ export default function YieldAnalysis() {
           <div className="bg-white border rounded-lg overflow-hidden">
             <div className="px-4 py-2.5 border-b bg-slate-50 flex items-center gap-2 flex-wrap">
               <span className="font-bold text-sm text-gray-800">원재료별 수율 추이</span>
+              {openCat && (
+                <button onClick={() => setOpenCat(null)}
+                  className="inline-flex items-center gap-1 bg-slate-900 text-white rounded-full px-2.5 py-0.5 text-xs hover:bg-slate-700">
+                  {openCat} <span className="text-slate-400">✕</span>
+                </button>
+              )}
               <span className="text-xs text-gray-500">{trendView.length}종 · 평균 대비 편차로 음영 표시</span>
               <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="원재료 검색"
                 className="ml-2 border rounded px-2 py-1 text-sm w-44" />
@@ -1121,80 +1313,104 @@ export default function YieldAnalysis() {
             </div>
           )}
 
-          {/* ===== 카테고리 타일 =====
+          {/* ===== 카테고리 타일 (월 비교) =====
               1차 스크리닝용. 분류를 눌러 그 안의 원재료를 바로 아래에서 펼쳐 본다. */}
-          {catStats && catStats.length > 0 && (
-            <div className="bg-white border rounded-lg">
-              <div className="flex items-center justify-between gap-2 flex-wrap px-4 py-2.5 border-b">
-                <div>
-                  <div className="font-bold text-gray-800 text-sm">카테고리별 수율</div>
-                  <div className="text-[11px] text-gray-500">
-                    분류를 눌러 원재료를 펼치세요 · 수율은 <b>가중평균</b>(Σ표준소요 ÷ Σ실투입)
-                    {catIndex.categories.length === 0 && (
-                      <span className="text-amber-700"> · 설정 › 원재료 카테고리 DB 가 비어 있어 전부 ‘{UNCLASSIFIED}’ 입니다</span>
-                    )}
+          {catStats && catStats.length > 0 && (() => {
+            const real = catStats.filter((c) => c.name !== UNCLASSIFIED);
+            const unc = catStats.find((c) => c.name === UNCLASSIFIED);
+            const maxImpact = Math.max(0, ...real.map((c) => c.impactAmt));
+            const focus = real.filter((c) => c.deltaPP !== null && c.deltaPP <= -threshold)
+              .slice().sort((a, b) => b.impactAmt - a.impactAmt).slice(0, 3);
+            const totalImpact = real.reduce((s2, c) => s2 + c.impactAmt, 0);
+            return (
+              <div className="bg-white border rounded-xl shadow-sm">
+                <div className="flex items-start justify-between gap-2 flex-wrap px-4 py-2.5 border-b">
+                  <div>
+                    <div className="font-bold text-gray-900 text-sm">카테고리별 수율</div>
+                    <div className="text-[11px] text-gray-500 mt-0.5">
+                      수율은 <b>가중평균</b>(Σ표준소요 ÷ Σ실투입) · 왼쪽 세로 막대 = <b>악화 영향액</b> 규모 · 분류를 눌러 원재료를 펼치세요
+                      {catIndex.categories.length === 0 && (
+                        <span className="text-amber-700"> · 설정 › 원재료 카테고리 DB 가 비어 있어 전부 ‘{UNCLASSIFIED}’ 입니다</span>
+                      )}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1 text-[11px]">
+                    <span className="text-gray-400">정렬</span>
+                    {([['impact', '영향액'], ['loss', 'LOSS 금액'], ['delta', '증감'], ['yield', '수율'], ['name', '등록순']] as const).map(([k, label]) => (
+                      <button key={k} onClick={() => setCatSort(k)}
+                        className={`border rounded-md px-2 py-1 ${catSort === k ? 'bg-slate-900 text-white border-slate-900' : 'hover:bg-gray-50'}`}>
+                        {label}
+                      </button>
+                    ))}
                   </div>
                 </div>
-                <div className="flex items-center gap-1 text-xs">
-                  <span className="text-gray-400">정렬</span>
-                  {([['loss', 'LOSS 금액'], ['delta', '증감'], ['yield', '수율'], ['name', '등록순']] as const).map(([k, label]) => (
-                    <button key={k} onClick={() => setCatSort(k)}
-                      className={`border rounded px-2 py-1 ${catSort === k ? 'bg-slate-800 text-white border-slate-800' : 'hover:bg-gray-50'}`}>
-                      {label}
-                    </button>
+
+                {/* 지금 봐야 할 곳 — 화면이 우선순위를 정해준다 */}
+                {focus.length > 0 && (
+                  <div className="px-4 py-2.5 bg-rose-50/60 border-b border-rose-100 text-xs">
+                    <span className="font-bold text-rose-900">지금 봐야 할 곳</span>
+                    <span className="text-rose-700 ml-2">
+                      {focus.map((c, i) => (
+                        <span key={c.name}>
+                          {i > 0 && <span className="text-rose-300 mx-1.5">·</span>}
+                          <button onClick={() => setOpenCat(c.name)} className="underline underline-offset-2 hover:text-rose-900">
+                            <b>{c.name}</b> {c.deltaPP !== null && `${fmt(c.deltaPP, 1)}%p`} → <b>{Math.round(c.impactAmt).toLocaleString()}원</b>
+                          </button>
+                        </span>
+                      ))}
+                    </span>
+                    <div className="text-[11px] text-rose-800/80 mt-1">
+                      <b>악화 영향액</b> = {cmpMode === 'yoy' ? '전년동월' : '전월'} 수율을 그대로 유지했다면 안 썼을 금액.
+                      LOSS 금액은 BOM 기준에 따라 음수가 되지만 이 값은 <b>‘변화’ 라서 어느 기준에서든 그대로 유효</b>합니다.
+                      {totalImpact > 0 && <> 전 분류 합계 <b>{Math.round(totalImpact).toLocaleString()}원</b>.</>}
+                    </div>
+                  </div>
+                )}
+
+                <div className="p-3 grid grid-cols-2 md:grid-cols-3 xl:grid-cols-4 gap-2.5">
+                  {real.map((c) => (
+                    <CatTile
+                      key={c.name}
+                      name={c.name}
+                      count={c.count}
+                      threshold={threshold}
+                      headline={c.deltaPP !== null
+                        ? `${c.deltaPP > 0 ? '+' : ''}${fmt(c.deltaPP, 1)}`
+                        : c.yield !== null ? fmt(c.yield * 100) : '—'}
+                      headlineUnit={c.deltaPP !== null ? '%p' : '%'}
+                      sub={c.deltaPP !== null
+                        ? (c.yield === null ? '—' : `수율 ${fmt(c.yield * 100)}%`)
+                        : `${cmpMode === 'yoy' ? '전년동월' : '전월'} 비교 없음`}
+                      subLabel="가중평균 수율"
+                      delta={c.deltaPP}
+                      deltaLabel={`${cmpMode === 'yoy' ? '전년동월' : '전월'} 대비 증감`}
+                      barRatio={maxImpact > 0 ? c.impactAmt / maxImpact : 0}
+                      impactAmt={c.impactAmt}
+                      footL={`LOSS ${fmt(kg(c.lossG))}kg · ${Math.round(c.lossAmt).toLocaleString()}원`}
+                      footR={c.impactAmt > 0 ? `영향 ${Math.round(c.impactAmt).toLocaleString()}원` : '악화 없음'}
+                      note={[
+                        c.outCount > 0 ? `⚠ 이상치 ${c.outCount}종` : '',
+                        c.naCount > 0 ? `미입력 ${c.naCount}종` : '',
+                      ].filter(Boolean).join(' · ') || undefined}
+                      open={openCat === c.name}
+                      onClick={() => setOpenCat(openCat === c.name ? null : c.name)}
+                    />
                   ))}
                 </div>
-              </div>
 
-              <div className="p-3 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-                {catStats.map((c) => {
-                  const open = openCat === c.name;
-                  const unset = c.name === UNCLASSIFIED;
-                  const d = c.deltaPP;
-                  const tone = unset ? 'border-gray-300 bg-gray-50'
-                    : d === null ? 'border-slate-200 bg-white'
-                      : d <= -threshold ? 'border-rose-300 bg-rose-50'
-                        : d >= threshold ? 'border-emerald-300 bg-emerald-50'
-                          : 'border-slate-200 bg-white';
-                  return (
-                    <button key={c.name} onClick={() => setOpenCat(open ? null : c.name)}
-                      className={`text-left border-2 rounded-lg px-3 py-2.5 transition
-                        ${open ? 'ring-2 ring-slate-800 border-slate-800' : tone} hover:shadow-sm`}>
-                      <div className="flex items-baseline justify-between gap-1">
-                        <span className={`font-bold text-sm truncate ${unset ? 'text-gray-500' : 'text-gray-800'}`}>{c.name}</span>
-                        <span className="text-[11px] text-gray-400 shrink-0">{c.count}종</span>
-                      </div>
-                      <div className="mt-1 flex items-baseline gap-1.5">
-                        <span className={`text-2xl font-extrabold tabular-nums ${unset ? 'text-gray-400' : 'text-blue-700'}`}>
-                          {c.yield === null ? '—' : fmt(c.yield * 100)}
-                        </span>
-                        <span className="text-xs text-gray-400">%</span>
-                        {d !== null && (
-                          <span className={`ml-auto text-xs font-bold tabular-nums
-                            ${d <= -threshold ? 'text-rose-600' : d >= threshold ? 'text-emerald-600' : 'text-gray-400'}`}>
-                            {d > 0 ? '▲' : d < 0 ? '▼' : ''}{fmt(Math.abs(d), 1)}%p
-                          </span>
-                        )}
-                      </div>
-                      <div className="mt-1 flex items-center justify-between text-[11px]">
-                        <span className="text-gray-400">LOSS {fmt(kg(c.lossG))}kg</span>
-                        <span className={c.lossAmt > 0 ? 'text-amber-700 font-semibold' : 'text-gray-400'}>
-                          {Math.round(c.lossAmt).toLocaleString()}원
-                        </span>
-                      </div>
-                      {(c.outCount > 0 || c.naCount > 0 || unset) && (
-                        <div className="mt-1 text-[10px] text-amber-700 truncate">
-                          {[
-                            c.outCount > 0 ? `⚠ 이상치 ${c.outCount}종` : '',
-                            c.naCount > 0 ? `미입력 ${c.naCount}종` : '',
-                            unset ? '분류 미지정' : '',
-                          ].filter(Boolean).join(' · ')}
-                        </div>
-                      )}
-                    </button>
-                  );
-                })}
-              </div>
+                {/* 미분류는 타일 한 칸을 차지할 가치가 없다 — 있다는 사실만 알리면 된다 */}
+                {unc && (unc.count > 0 || unc.naCount > 0 || unc.outCount > 0) && (
+                  <button onClick={() => setOpenCat(openCat === UNCLASSIFIED ? null : UNCLASSIFIED)}
+                    className={`w-full text-left px-4 py-2 border-t text-xs flex items-center gap-2 flex-wrap
+                      ${openCat === UNCLASSIFIED ? 'bg-slate-900 text-white' : 'bg-gray-50 hover:bg-gray-100 text-gray-600'}`}>
+                    <b>{UNCLASSIFIED}</b>
+                    <span>{unc.count}종{unc.naCount > 0 && ` · 미입력 ${unc.naCount}종`}{unc.outCount > 0 && ` · 이상치 ${unc.outCount}종`}</span>
+                    {unc.yield !== null && <span>수율 {fmt(unc.yield * 100)}%</span>}
+                    <span className={openCat === UNCLASSIFIED ? 'text-gray-300' : 'text-gray-400'}>
+                      — 설정 › 원재료 카테고리 DB 에서 분류를 지정하면 위 타일로 올라갑니다
+                    </span>
+                  </button>
+                )}
 
               {/* 아코디언 — 선택한 분류의 원재료 상세 */}
               {openCat && (() => {
@@ -1265,8 +1481,9 @@ export default function YieldAnalysis() {
                   </div>
                 );
               })()}
-            </div>
-          )}
+              </div>
+            );
+          })()}
 
           {/* TOP3 두 개 */}
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -1443,6 +1660,107 @@ export default function YieldAnalysis() {
         </>
       )}
     </div>
+  );
+}
+
+/** 미니 추이 그래프 — 라이브러리 없이 SVG 로 직접 그린다 (번들 증가 0) */
+function Sparkline({ values, tone = 'flat', width = 132, height = 30 }: {
+  values: (number | null)[]; tone?: 'up' | 'down' | 'flat'; width?: number; height?: number;
+}) {
+  const pts = values.map((v, i) => ({ v, i })).filter((p): p is { v: number; i: number } => p.v !== null);
+  if (pts.length < 2) return <div style={{ width, height }} />;
+  const vs = pts.map((p) => p.v);
+  let lo = Math.min(...vs); let hi = Math.max(...vs);
+  // 변화가 거의 없으면 평평하게 보여야 한다. 강제로 늘리면 잡음이 추세처럼 보인다.
+  const pad = Math.max((hi - lo) * 0.15, 0.02);
+  lo -= pad; hi += pad;
+  const n = values.length - 1 || 1;
+  const x = (i: number) => (i / n) * (width - 4) + 2;
+  const y = (v: number) => height - 3 - ((v - lo) / (hi - lo || 1)) * (height - 6);
+  const d = pts.map((p, k) => `${k === 0 ? 'M' : 'L'}${x(p.i).toFixed(1)},${y(p.v).toFixed(1)}`).join(' ');
+  const area = `${d} L${x(pts[pts.length - 1].i).toFixed(1)},${height} L${x(pts[0].i).toFixed(1)},${height} Z`;
+  // 색은 타일과 '같은 신호'(최근 vs 이전평균)를 써야 한다.
+  // 첫값·끝값으로 따로 정하면 배경은 빨간데 그래프는 초록인 모순이 생긴다.
+  const stroke = tone === 'up' ? '#059669' : tone === 'down' ? '#e11d48' : '#64748b';
+  const fill = tone === 'up' ? '#05966912' : tone === 'down' ? '#e11d4812' : '#64748b0d';
+  return (
+    <svg width={width} height={height} className="block overflow-visible">
+      <path d={area} fill={fill} />
+      <path d={d} fill="none" stroke={stroke} strokeWidth="1.5" strokeLinejoin="round" strokeLinecap="round" />
+      {/* 결측월은 점을 안 찍는다 — 선만 이어져 있으면 '데이터 없음' 이 안 보인다 */}
+      {pts.map((p) => (
+        <circle key={p.i} cx={x(p.i)} cy={y(p.v)} r={p.i === pts[pts.length - 1].i ? 2.4 : 1.2}
+          fill={p.i === pts[pts.length - 1].i ? stroke : '#cbd5e1'} />
+      ))}
+    </svg>
+  );
+}
+
+/** 카테고리 타일 — 월 비교 / 월별 추이 공용
+ *  · 왼쪽 세로 막대 = 악화 영향액 규모 (가장 큰 것 대비 비율)
+ *  · 배경색 = 증감 방향, 막대 = 규모. 둘을 나눠야 '금액 큰데 흰 타일' 같은 배신이 없다. */
+function CatTile({
+  name, count, headline, headlineUnit, sub, subLabel, delta, deltaLabel,
+  barRatio, impactAmt, footL, footR, note, open, onClick, spark, muted, threshold,
+}: {
+  name: string; count: number;
+  headline: string; headlineUnit: string;
+  sub: string; subLabel: string;
+  delta: number | null; deltaLabel: string;
+  /** 이 값 미만의 증감은 '변화 없음' 으로 본다 — 잡음을 위험색으로 칠하지 않기 위해 */
+  threshold: number;
+  barRatio: number; impactAmt: number;
+  footL: string; footR: string; footRTone?: string;
+  note?: string; open: boolean; onClick: () => void;
+  spark?: (number | null)[]; muted?: boolean;
+}) {
+  // 임계 미만은 '변화 없음'. -0.2%p 를 빨갛게 칠하면 진짜 신호가 묻힌다.
+  const sig: 'up' | 'down' | 'flat' = delta === null || Math.abs(delta) < threshold
+    ? 'flat' : delta < 0 ? 'down' : 'up';
+  const bg = muted ? 'bg-gray-50 border-gray-200'
+    : sig === 'down' ? 'bg-rose-50/70 border-rose-200'
+      : sig === 'up' ? 'bg-emerald-50/60 border-emerald-200'
+        : 'bg-white border-slate-200';
+  const numColor = muted ? 'text-gray-400'
+    : sig === 'down' ? 'text-rose-700' : sig === 'up' ? 'text-emerald-700' : 'text-slate-600';
+  const barColor = muted ? 'bg-gray-300' : sig === 'down' ? 'bg-rose-500' : 'bg-slate-300';
+  // 한 분류가 압도적이면 선형 비율은 나머지를 전부 0 으로 만들어 인코딩이 죽는다.
+  // 제곱근으로 눌러 순서는 지키되 작은 것도 보이게 한다.
+  const barH = barRatio > 0 ? Math.max(Math.sqrt(barRatio) * 100, 8) : 0;
+  return (
+    <button onClick={onClick}
+      className={`relative text-left border rounded-xl pl-4 pr-3 py-2.5 overflow-hidden transition
+        ${open ? 'ring-2 ring-slate-900 border-slate-900 shadow-md' : `${bg} hover:shadow-md hover:-translate-y-px`}`}>
+      {/* 규모 막대 — 악화 영향액이 있을 때만 채운다 */}
+      <span className="absolute left-0 top-0 bottom-0 w-1.5 bg-slate-100" />
+      {impactAmt <= 0 && <span className="absolute left-0 bottom-0 w-1.5 h-0" />}
+      <span className={`absolute left-0 bottom-0 w-1.5 ${barColor} transition-all`}
+        style={{ height: `${barH}%` }} />
+
+      <div className="flex items-baseline justify-between gap-1">
+        <span className={`font-bold text-[13px] truncate ${muted ? 'text-gray-500' : 'text-gray-900'}`}>{name}</span>
+        <span className="text-[10px] text-gray-400 shrink-0">{count}종</span>
+      </div>
+
+      <div className="mt-0.5 flex items-baseline gap-1">
+        <span className={`text-[26px] leading-none font-extrabold tabular-nums tracking-tight ${numColor}`}>
+          {headline}
+        </span>
+        <span className="text-[11px] text-gray-400">{headlineUnit}</span>
+        <span className="ml-auto text-[11px] text-gray-500 tabular-nums" title={subLabel}>{sub}</span>
+      </div>
+
+      {spark && spark.filter((v) => v !== null).length >= 2 && (
+        <div className="mt-1 -mx-0.5"><Sparkline values={spark} tone={sig} /></div>
+      )}
+
+      <div className="mt-1 flex items-center justify-between text-[10.5px] tabular-nums">
+        <span className="text-gray-400">{footL}</span>
+        <span className={sig === 'down' ? 'text-rose-700 font-bold' : 'text-gray-400'}>{footR}</span>
+      </div>
+      {note && <div className="mt-0.5 text-[10px] text-amber-700 truncate">{note}</div>}
+      <span className="sr-only">{deltaLabel}</span>
+    </button>
   );
 }
 
