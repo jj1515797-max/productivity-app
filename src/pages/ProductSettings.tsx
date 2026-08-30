@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { collection, deleteDoc, doc, getCountFromServer, getDoc, getDocs, onSnapshot, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
+import MaterialCategoryPanel from '../components/MaterialCategoryPanel';
 import type { Material, ProductSetting } from '../types';
 import { runBackup, downloadSql } from '../lib/dbBackup';
 import type { BackupProgress, BackupResult } from '../lib/dbBackup';
@@ -35,6 +36,15 @@ export default function ProductSettings() {
   const [showPurchaseErp, setShowPurchaseErp] = useState(false);
   const [showBackup, setShowBackup] = useState(false);
   const [showMatInput, setShowMatInput] = useState(false);
+  // 원재료분석용 DB (수율 분석 전용 — 배합비 % 기반, 현장 BOM 과 분리)
+  const [showYieldRecipe, setShowYieldRecipe] = useState(false);
+  const [showYieldSub, setShowYieldSub] = useState(false);
+  const [showYieldAmbient, setShowYieldAmbient] = useState(false);
+  const [showCategory, setShowCategory] = useState(false);
+  const [yieldRecipeCount, setYieldRecipeCount] = useState<number | null>(null);
+  const [yieldSubCount, setYieldSubCount] = useState<number | null>(null);
+  const [yieldAmbientCount, setYieldAmbientCount] = useState<number | null>(null);
+  const [categoryCount, setCategoryCount] = useState<number | null>(null);
   const [materials, setMaterials] = useState<Material[]>([]);
   // 헤더에 표시할 총개수만 가볍게 (count aggregation = 1읽기)
   const [productCount, setProductCount] = useState<number | null>(null);
@@ -50,6 +60,10 @@ export default function ProductSettings() {
     getCountFromServer(collection(db, 'ambientRecipes')).then((s) => setAmbientRecipeCount(s.data().count)).catch(() => {});
     getCountFromServer(collection(db, 'materialPricesInventory')).then((s) => setInventoryPriceCount(s.data().count)).catch(() => {});
     getCountFromServer(collection(db, 'materialErpCodes')).then((s) => setErpCodeCount(s.data().count)).catch(() => {});
+    getCountFromServer(collection(db, 'recipesYield')).then((s) => setYieldRecipeCount(s.data().count)).catch(() => {});
+    getCountFromServer(collection(db, 'subRecipesYield')).then((s) => setYieldSubCount(s.data().count)).catch(() => {});
+    getCountFromServer(collection(db, 'ambientRecipesYield')).then((s) => setYieldAmbientCount(s.data().count)).catch(() => {});
+    getCountFromServer(collection(db, 'materialCategories')).then((s) => setCategoryCount(s.data().count)).catch(() => {});
   }, []);
 
   // 섹션이 펼쳐졌을 때만 구독 (읽기 부하 절감)
@@ -338,6 +352,91 @@ export default function ProductSettings() {
           </div>
         )}
       </Section>
+
+      {/* ============================================================
+          원재료분석용 DB — 수율 분석 전용 (배합비 % 기반)
+          현장 BOM(recipes)은 '전처리 후 실제 투입량' 이라 수율이 구조적으로 100%를 넘는다.
+          수율을 보려면 '순 이론 투입량'(배합비 % × 포장중량)이 필요해 DB를 분리한다.
+          ============================================================ */}
+      <div className="border-t-2 border-dashed border-teal-300 pt-3 mt-1">
+        <div className="flex items-center gap-2 mb-2 px-1">
+          <span className="text-sm font-bold text-teal-800">🧬 원재료분석용 DB</span>
+          <span className="text-[11px] text-gray-500">수율 분석 전용 · 현장 BOM 과 별개</span>
+        </div>
+        <div className="bg-teal-50 border border-teal-200 rounded p-2.5 text-xs text-teal-900 mb-2">
+          여기 레시피는 <b>배합비 % × 포장중량</b> 으로 만든 <b>순 이론 투입량</b>입니다 (수율 안 먹인 생 배합, 정제수 포함).<br />
+          · <b>원재료수율 분석</b> → 이 DB 사용 &nbsp;·&nbsp; <b>원재료비·원가 분석</b> → 기존 현장 BOM(레시피 DB) 사용<br />
+          · 반제품(순수본베이스·디포리육수)은 <b>지금처럼 반제품 그대로</b> 넣으시면 앱이 원물까지 자동으로 풀어서 계산합니다.<br />
+          · 비어 있으면 수율 분석은 <b>기존 레시피 DB로 자동 폴백</b>합니다 — 채우는 도중에도 화면이 안 깨집니다.
+        </div>
+
+        <Section
+          icon="🧬"
+          title="분석용 레시피 DB"
+          badge={yieldRecipeCount !== null ? `${yieldRecipeCount}개` : '...'}
+          open={showYieldRecipe}
+          onToggle={() => setShowYieldRecipe(!showYieldRecipe)}
+        >
+          {showYieldRecipe && (
+            <div className="space-y-2">
+              <div className="bg-white border rounded p-2.5 text-xs text-gray-700">
+                냉장 완제품용. 값은 <b>제품 1개당 g</b> — 엑셀에서 <code className="bg-gray-100 px-1 rounded">= 배합비셀 × 포장중량셀</code> 로 계산해 넣으세요.<br />
+                배합비 셀이 <b>백분율 서식</b>이면 값 자체가 이미 0.9165 이므로 <b>÷100 을 또 하면 안 됩니다.</b>
+                표시값(91.65%)을 손으로 옮기지 말고 <b>셀 참조</b>로 계산해야 반올림 오차가 안 생깁니다.<br />
+                제품별로 <code className="bg-gray-100 px-1 rounded">SUM(계산열) − 포장중량 = 0</code> 인지 확인하면 입력 오류가 바로 잡힙니다.
+              </div>
+              <RecipeDB onCountChange={setYieldRecipeCount} collectionName="recipesYield" label="분석용 레시피" />
+            </div>
+          )}
+        </Section>
+
+        <Section
+          icon="🧫"
+          title="분석용 반제품 레시피 DB"
+          badge={yieldSubCount !== null ? `${yieldSubCount}개` : '...'}
+          open={showYieldSub}
+          onToggle={() => setShowYieldSub(!showYieldSub)}
+        >
+          {showYieldSub && (
+            <div className="space-y-2">
+              <div className="bg-white border rounded p-2.5 text-xs text-gray-700">
+                <b>반제품 1g 제조 시 원물 g</b> 기준입니다 (기존 반제품 레시피 DB 와 같은 규칙).
+                완제품 레시피에 <code className="bg-gray-100 px-1 rounded">PB-Z-001 순수본베이스</code> 처럼 반제품을 그대로 넣어두면
+                분석 때 여기 등록된 구성으로 <b>원물까지 자동 전개</b>됩니다.<br />
+                여기가 비어 있으면 <b>기존 반제품 레시피 DB로 폴백</b>합니다.
+              </div>
+              <RecipeDB onCountChange={setYieldSubCount} collectionName="subRecipesYield" label="분석용 반제품 레시피" />
+            </div>
+          )}
+        </Section>
+
+        <Section
+          icon="🍼"
+          title="분석용 실온이유식 레시피 DB"
+          badge={yieldAmbientCount !== null ? `${yieldAmbientCount}개` : '...'}
+          open={showYieldAmbient}
+          onToggle={() => setShowYieldAmbient(!showYieldAmbient)}
+        >
+          {showYieldAmbient && (
+            <div className="space-y-2">
+              <div className="bg-white border rounded p-2.5 text-xs text-gray-700">
+                실온이유식용. 값은 <b>제품 1개(1EA)당 g</b> 입니다. 비어 있으면 기존 실온 레시피 DB 로 폴백합니다.
+              </div>
+              <AmbientRecipeDB onCountChange={setYieldAmbientCount} collectionName="ambientRecipesYield" />
+            </div>
+          )}
+        </Section>
+
+        <Section
+          icon="🗂️"
+          title="원재료 카테고리 DB"
+          badge={categoryCount !== null ? `${categoryCount}건` : '...'}
+          open={showCategory}
+          onToggle={() => setShowCategory(!showCategory)}
+        >
+          {showCategory && <MaterialCategoryPanel />}
+        </Section>
+      </div>
 
       {/* 실제 투입중량 DB — 원재료수율 분석용 (월별) */}
       <Section
@@ -2093,7 +2192,8 @@ function ambientDocId(name: string): string {
   return normalizeName(name);
 }
 
-function AmbientRecipeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
+function AmbientRecipeDB({ onCountChange, collectionName = 'ambientRecipes' }: { onCountChange: (n: number) => void; collectionName?: string }) {
+  const AC = collectionName;
   const [recipes, setRecipes] = useState<AmbientRecipeDoc[]>([]);
   const [search, setSearch] = useState('');
   const [showImport, setShowImport] = useState(false);
@@ -2101,7 +2201,7 @@ function AmbientRecipeDB({ onCountChange }: { onCountChange: (n: number) => void
   const [bulkDeleting, setBulkDeleting] = useState(false);
 
   useEffect(() => {
-    return onSnapshot(collection(db, 'ambientRecipes'), (snap) => {
+    return onSnapshot(collection(db, AC), (snap) => {
       const list: AmbientRecipeDoc[] = [];
       snap.forEach((d) => {
         const data = d.data() as Omit<AmbientRecipeDoc, 'id'>;
@@ -2131,7 +2231,7 @@ function AmbientRecipeDB({ onCountChange }: { onCountChange: (n: number) => void
   const updateGram = async (r: AmbientRecipeDoc, seq: number, v: number) => {
     if (v < 0) return;
     const next = r.ingredients.map((ing) => ing.seq === seq ? { ...ing, gPerBatch: v } : ing);
-    await updateDoc(doc(db, 'ambientRecipes', r.id), {
+    await updateDoc(doc(db, AC, r.id), {
       ingredients: next,
       updatedAt: new Date().toISOString(),
     });
@@ -2144,14 +2244,14 @@ function AmbientRecipeDB({ onCountChange }: { onCountChange: (n: number) => void
       if (trimmed) copy.code = trimmed; else delete copy.code;
       return copy;
     });
-    await updateDoc(doc(db, 'ambientRecipes', r.id), {
+    await updateDoc(doc(db, AC, r.id), {
       ingredients: next,
       updatedAt: new Date().toISOString(),
     });
   };
   const delRecipe = async (r: AmbientRecipeDoc) => {
     if (!confirm(`'${r.name}' 실온 레시피를 삭제할까요?`)) return;
-    await deleteDoc(doc(db, 'ambientRecipes', r.id));
+    await deleteDoc(doc(db, AC, r.id));
   };
   const bulkDelete = async (target: AmbientRecipeDoc[]) => {
     if (target.length === 0) return;
@@ -2164,7 +2264,7 @@ function AmbientRecipeDB({ onCountChange }: { onCountChange: (n: number) => void
       const CHUNK = 400;
       for (let i = 0; i < target.length; i += CHUNK) {
         const batch = writeBatch(db);
-        target.slice(i, i + CHUNK).forEach((r) => batch.delete(doc(db, 'ambientRecipes', r.id)));
+        target.slice(i, i + CHUNK).forEach((r) => batch.delete(doc(db, AC, r.id)));
         await batch.commit();
       }
       alert(`${target.length}개 삭제됨`);
@@ -2271,12 +2371,12 @@ function AmbientRecipeDB({ onCountChange }: { onCountChange: (n: number) => void
           </div>
         </div>
       )}
-      {showImport && <AmbientRecipeImportModal onClose={() => setShowImport(false)} />}
+      {showImport && <AmbientRecipeImportModal onClose={() => setShowImport(false)} collectionName={AC} />}
     </div>
   );
 }
 
-function AmbientRecipeImportModal({ onClose }: { onClose: () => void }) {
+function AmbientRecipeImportModal({ onClose, collectionName = 'ambientRecipes' }: { onClose: () => void; collectionName?: string }) {
   const [text, setText] = useState('');
   const [saving, setSaving] = useState(false);
 
@@ -2359,7 +2459,7 @@ function AmbientRecipeImportModal({ onClose }: { onClose: () => void }) {
       for (let i = 0; i < preview.recipes.length; i += CHUNK) {
         const batch = writeBatch(db);
         preview.recipes.slice(i, i + CHUNK).forEach((r) => {
-          batch.set(doc(db, 'ambientRecipes', ambientDocId(r.name)), {
+          batch.set(doc(db, collectionName, ambientDocId(r.name)), {
             name: r.name,
             batchPieces: 1, // 개당(1EA) 투입량 기준으로 입력받음 → 나눔 계수 1
             ingredients: r.ingredients,

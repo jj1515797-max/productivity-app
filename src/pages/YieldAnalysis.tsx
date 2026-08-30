@@ -16,12 +16,16 @@ import type { AmbientEntry, Item, MachineEntry } from '../types';
 import type { AmbientRecipe, Recipe } from '../lib/wasteCompute';
 import { CODE_KEY_PREFIX, monthPriceKey, normalizeCode, normalizeMaterialName } from '../lib/wasteCompute';
 import { canonicalShort } from '../lib/codeUtil';
+import type { CategoryDoc } from '../lib/materialCategory';
+import { UNCLASSIFIED, buildCategoryIndex, categoryOf, sortCategories } from '../lib/materialCategory';
 import { computeMonthlyUsage } from '../lib/materialUsage';
 import { computeMonthlyProduction } from '../lib/monthlyProduction';
 import { expandAmbientRecipeMap, expandRecipeMap } from '../lib/bomExpansion';
 
 const EXCLUDE_DEFAULT = ['정제수'];
-const CACHE_PREFIX = 'yieldStd2:';
+// 레시피 소스(분석용 DB)가 도입되면서 기준이 바뀌므로 버전을 올린다.
+// 키에 소스를 넣어 '분석용/현장 BOM' 값이 서로 덮어쓰지 않게 한다.
+const CACHE_PREFIX = 'yieldStd3:';
 const TTL_PAST = 30 * 24 * 60 * 60 * 1000;   // 지난 달은 안 바뀜
 const TTL_CURRENT = 5 * 60 * 1000;
 
@@ -33,9 +37,9 @@ const RANGE_HI = 2.0;
 /** 수율이 정상 범위인가 (데이터 이상 격리용) — 화면·엑셀·추이 전부 이 기준 하나만 쓴다 */
 const inRangeV = (v: number | null | undefined): v is number => v !== null && v !== undefined && v >= RANGE_LO && v <= RANGE_HI;
 
-function readCache(month: string): MonthStd | null {
+function readCache(ck: string, month: string): MonthStd | null {
   try {
-    const raw = localStorage.getItem(CACHE_PREFIX + month);
+    const raw = localStorage.getItem(CACHE_PREFIX + ck);
     if (!raw) return null;
     const o = JSON.parse(raw) as { ts: number; v: MonthStd; partial?: boolean };
     // 진행 중이던 달에 저장한 캐시는 그 달이 지나도 '부분 데이터' 다.
@@ -46,9 +50,9 @@ function readCache(month: string): MonthStd | null {
     return o.v;
   } catch { return null; }
 }
-function writeCache(month: string, v: MonthStd) {
+function writeCache(ck: string, month: string, v: MonthStd) {
   try {
-    localStorage.setItem(CACHE_PREFIX + month,
+    localStorage.setItem(CACHE_PREFIX + ck,
       JSON.stringify({ ts: Date.now(), v, partial: month >= thisMonth() }));
   } catch { /* 용량 초과 */ }
 }
@@ -140,9 +144,11 @@ async function stdForMonth(
   subRecipeMap: Map<string, Recipe>,
   priceMap: Map<string, number>,
   force: boolean,
+  srcTag: string,
 ): Promise<MonthStd> {
+  const ck = `${srcTag}:${month}`;
   if (!force) {
-    const c = readCache(month);
+    const c = readCache(ck, month);
     if (c) return c;
   }
   const eff = expandRecipeMap(recipeMap, subRecipeMap);
@@ -156,7 +162,7 @@ async function stdForMonth(
     rows: u.rows.map((r) => ({ k: r.key, n: r.name, c: r.code || '', g: r.grams, p: r.pricePerGram })),
     cold: prod.coldTotal, ambient: prod.ambientTotal, total: prod.total,
   };
-  writeCache(month, v);
+  writeCache(ck, month, v);
   return v;
 }
 
@@ -259,6 +265,9 @@ export default function YieldAnalysis() {
   const [running, setRunning] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [rows, setRows] = useState<Row[] | null>(null);
+  const [coverage, setCoverage] = useState<{ pct: number; missingQty: number; totalQty: number; missingCold: number; missingAmbient: number } | null>(null);
+  const [catSort, setCatSort] = useState<'loss' | 'delta' | 'yield' | 'name'>('loss');
+  const [openCat, setOpenCat] = useState<string | null>(null);
   const [cmpDiag, setCmpDiag] = useState<{ hasInput: boolean; qty: number; baseQty: number; partial: boolean }>(
     { hasInput: false, qty: 0, baseQty: 0, partial: false });
   const cmpHasData = cmpDiag.hasInput && cmpDiag.qty > 0;
@@ -290,6 +299,48 @@ export default function YieldAnalysis() {
     snap.forEach((d) => { const v = d.data() as AmbientRecipe; m.set(d.id, { ...v, batchPieces: Number(v.batchPieces) || 1 }); });
     setAmbientRecipeMap(m);
   }), []);
+  // 분석용(수율 전용) 레시피 — 비어 있으면 현장 BOM 으로 폴백한다
+  const [yRecipeMap, setYRecipeMap] = useState<Map<string, Recipe>>(new Map());
+  const [ySubMap, setYSubMap] = useState<Map<string, Recipe>>(new Map());
+  const [yAmbientMap, setYAmbientMap] = useState<Map<string, AmbientRecipe>>(new Map());
+  useEffect(() => onSnapshot(collection(db, 'recipesYield'), (snap) => {
+    const m = new Map<string, Recipe>();
+    snap.forEach((d) => { const v = d.data() as Recipe; m.set(d.id, { ...v, code: d.id }); m.set(d.id.toLowerCase(), { ...v, code: d.id }); });
+    setYRecipeMap(m);
+  }, () => {}), []);
+  useEffect(() => onSnapshot(collection(db, 'subRecipesYield'), (snap) => {
+    const m = new Map<string, Recipe>();
+    snap.forEach((d) => { const v = d.data() as Recipe; m.set(d.id, { ...v, code: d.id }); m.set(d.id.toLowerCase(), { ...v, code: d.id }); });
+    setYSubMap(m);
+  }, () => {}), []);
+  useEffect(() => onSnapshot(collection(db, 'ambientRecipesYield'), (snap) => {
+    const m = new Map<string, AmbientRecipe>();
+    snap.forEach((d) => { const v = d.data() as AmbientRecipe; m.set(d.id, { ...v, batchPieces: Number(v.batchPieces) || 1 }); });
+    setYAmbientMap(m);
+  }, () => {}), []);
+
+  // 원재료 카테고리
+  const [catDocs, setCatDocs] = useState<CategoryDoc[]>([]);
+  useEffect(() => onSnapshot(collection(db, 'materialCategories'), (snap) => {
+    const list: CategoryDoc[] = [];
+    snap.forEach((d) => list.push({ id: d.id, ...(d.data() as Omit<CategoryDoc, 'id'>) }));
+    setCatDocs(list);
+  }, () => {}), []);
+  const catIndex = useMemo(() => buildCategoryIndex(catDocs), [catDocs]);
+
+  // 실제로 쓸 레시피 소스 — 분석용이 비어 있으면 현장 BOM
+  const useYieldDb = yRecipeMap.size > 0;
+  const srcRecipe = useYieldDb ? yRecipeMap : recipeMap;
+  const srcSub = useYieldDb && ySubMap.size > 0 ? ySubMap : subRecipeMap;
+  const srcAmbient = useYieldDb && yAmbientMap.size > 0 ? yAmbientMap : ambientRecipeMap;
+  const srcTag = useYieldDb ? 'yield' : 'bom';
+  // recipeMap 은 'A01' 과 'a01' 을 둘 다 등록하므로 size 를 그대로 쓰면 품목 수가 2배로 보인다
+  const yRecipeCount = useMemo(() => {
+    const s2 = new Set<string>();
+    yRecipeMap.forEach((r) => { const k = canonicalShort(r.code || ''); if (k) s2.add(k); });
+    return s2.size;
+  }, [yRecipeMap]);
+
   useEffect(() => onSnapshot(collection(db, 'materialPricesInventory'), (snap) => {
     const m = new Map<string, number>();
     snap.forEach((d) => {
@@ -322,8 +373,8 @@ export default function YieldAnalysis() {
     setRunning(true); setErr(null);
     try {
       // 반제품은 항상 원물까지 펼친다 (반제품 자체는 매입이 없어 수율 대상이 아님)
-      const eff = expandRecipeMap(recipeMap, subRecipeMap);
-      const effAmb = expandAmbientRecipeMap(ambientRecipeMap, subRecipeMap);
+      const eff = expandRecipeMap(srcRecipe, srcSub);
+      const effAmb = expandAmbientRecipeMap(srcAmbient, srcSub);
 
       const [raw, rawC, inp, inpC] = await Promise.all([
         fetchMonth(month), fetchMonth(cmpMonth), fetchInputs(month), fetchInputs(cmpMonth),
@@ -341,6 +392,13 @@ export default function YieldAnalysis() {
       // 실투입만 보면 안 된다 — 앱 도입 전이라 '생산 데이터가 없는 달' 도 ERP 수불로
       // 실투입만 채워 넣을 수 있고, 그러면 표준소요가 0/과소라 수율이 통째로 낮게 나온다.
       // 그 값이 20~200% 안에 들어오면 정상값으로 섞여 '수율효과' 카드에 허위 개선이 찍힌다.
+      setCoverage({
+        pct: std.coverage?.coveredPct ?? 100,
+        missingQty: std.coverage?.missingQty || 0,
+        totalQty: std.coverage?.totalQty || 0,
+        missingCold: std.missingColdCodes?.length || 0,
+        missingAmbient: std.missingAmbientNames?.length || 0,
+      });
       const cmpQty = stdC.coverage?.totalQty || 0;
       const baseQty = std.coverage?.totalQty || 0;
       const cmpUsable = Object.keys(inpC.inputs).length > 0 && cmpQty > 0;
@@ -417,7 +475,7 @@ export default function YieldAnalysis() {
         setErr(`기간이 24개월을 넘어 ${months[0]} ~ ${months[23]} 까지만 계산했습니다`);
       }
 
-      const stds = await Promise.all(months.map((m) => stdForMonth(m, recipeMap, ambientRecipeMap, subRecipeMap, priceMap, force)));
+      const stds = await Promise.all(months.map((m) => stdForMonth(m, srcRecipe, srcAmbient, srcSub, priceMap, force, srcTag)));
       const inpsRaw = await Promise.all(months.map((m) => fetchInputs(m)));
       // 매핑 규칙은 전 기간 합집합으로 한 번만 만든다 (월마다 다르면 추이가 흔들린다)
       const unionRows = stds.flatMap((v) => v.rows.map((r) => ({ key: r.k, name: r.n })));
@@ -590,6 +648,59 @@ export default function YieldAnalysis() {
     };
   }, [rows, threshold]);
 
+  /* ===== 카테고리 집계 =====
+     타일 하나 = 그 분류 전체를 '가중평균' 한 값.
+     원재료별 수율을 단순평균하면 월 3kg 쓰는 향신료가 300kg 짜리 한우와 같은 무게로
+     들어가 분류를 통째로 흔든다. 반드시 Σ표준 ÷ Σ실투입 이어야 한다.
+     이상치(20~200% 밖)는 화면 다른 곳과 같은 규칙으로 뺀다 — 안 그러면 카테고리
+     레벨에서 같은 왜곡이 그대로 재발한다. */
+  const catStats = useMemo(() => {
+    if (!rows) return null;
+    interface Agg {
+      name: string; count: number; outCount: number; naCount: number;
+      stdG: number; actG: number; lossAmt: number;
+      pStdW: number;            // 비교월 수율 × 당월 실투입 (당월 가중으로 재평가)
+      cmpAct: number;           // 위 가중의 분모
+      cmpCount: number;
+    }
+    const m = new Map<string, Agg>();
+    const get = (k: string): Agg => {
+      let a = m.get(k);
+      if (!a) { a = { name: k, count: 0, outCount: 0, naCount: 0, stdG: 0, actG: 0, lossAmt: 0, pStdW: 0, cmpAct: 0, cmpCount: 0 }; m.set(k, a); }
+      return a;
+    };
+    rows.forEach((r) => {
+      const a = get(categoryOf(catIndex, r.code, r.name));
+      if (r.yield === null) { a.naCount++; return; }   // 미입력 등 계산 불가 — 종수엔 안 넣되 있다는 건 알린다
+      if (!inRangeV(r.yield)) { a.outCount++; return; }
+      a.count++;
+      a.stdG += r.stdG; a.actG += r.actG;
+      a.lossAmt += r.lossAmt || 0;
+      if (inRangeV(r.prevYield)) { a.pStdW += r.prevYield * r.actG; a.cmpAct += r.actG; a.cmpCount++; }
+    });
+    const list = [...m.values()].map((a) => {
+      const y = a.actG > 0 ? a.stdG / a.actG : null;
+      // 비교월도 '당월 가중치' 로 재평가해야 배합 이동이 수율 변화로 안 보인다 (전체 카드와 같은 규칙)
+      const pAdj = a.cmpAct > 0 ? a.pStdW / a.cmpAct : null;
+      return {
+        ...a,
+        yield: y,
+        lossG: a.actG - a.stdG,
+        deltaPP: y !== null && pAdj !== null ? (y - pAdj) * 100 : null,
+      };
+    });
+    const order = sortCategories(catIndex, list.map((l) => l.name));
+    const rank = new Map(order.map((n, i) => [n, i]));
+    return list.sort((a, b) => {
+      if (a.name === UNCLASSIFIED) return 1;
+      if (b.name === UNCLASSIFIED) return -1;
+      if (catSort === 'loss') return b.lossAmt - a.lossAmt;
+      if (catSort === 'delta') return (a.deltaPP ?? 999) - (b.deltaPP ?? 999);
+      if (catSort === 'yield') return (a.yield ?? 9) - (b.yield ?? 9);
+      return (rank.get(a.name) ?? 999) - (rank.get(b.name) ?? 999);
+    });
+  }, [rows, catIndex, catSort]);
+
   const inRange = (v: number | null) => v !== null && v >= RANGE_LO && v <= RANGE_HI;
   // 데이터 이상(수율 20% 미만·200% 초과)은 TOP3 에서 빼야 진짜 문제가 가려지지 않는다
   const topDrop = useMemo(() => (rows || [])
@@ -751,11 +862,45 @@ export default function YieldAnalysis() {
 
       {err && <div className="bg-rose-50 border border-rose-200 text-rose-700 rounded-lg p-3 text-sm">⚠️ {err}</div>}
 
+      {/* 어느 레시피 DB 로 계산했는지 항상 보이게 — 숫자 기준이 바뀌는 지점이라 숨기면 안 된다 */}
+      {useYieldDb ? (
+        <div className="bg-teal-50 border border-teal-200 rounded-lg px-3 py-2 text-xs text-teal-900 flex items-center gap-2 flex-wrap">
+          <span className="bg-teal-600 text-white rounded px-2 py-0.5 font-bold">분석용 레시피</span>
+          배합비 % 기준 <b>순 이론 투입량</b>으로 계산했습니다 ({yRecipeCount}품목)
+          {ySubMap.size === 0 && <span className="text-teal-700">· 반제품은 기존 반제품 레시피 DB 사용</span>}
+          {yAmbientMap.size === 0 && <span className="text-teal-700">· 실온은 기존 실온 레시피 DB 사용</span>}
+        </div>
+      ) : (
+        <div className="bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 text-xs text-amber-900 flex items-center gap-2 flex-wrap">
+          <span className="bg-amber-600 text-white rounded px-2 py-0.5 font-bold">현장 BOM</span>
+          <b>분석용 레시피 DB 가 비어 있어</b> 기존 현장 BOM 으로 계산했습니다.
+          현장 BOM 은 전처리 후 실제 투입량이라 <b>수율이 구조적으로 100%를 넘습니다</b> — 절대값 대신 증감으로 보세요.
+          <span className="text-amber-700">설정 › 원재료분석용 DB 에 입력하면 자동으로 전환됩니다.</span>
+        </div>
+      )}
+
+      {/* 레시피 커버리지.
+          실투입(ERP 수불)은 전 품목분이 다 들어오는데 표준소요는 레시피가 등록된 품목만 잡힌다.
+          → 분자만 작아져 수율이 실제보다 '낮게' 나온다. 채우는 도중에 이걸 모르면
+             멀쩡한 원재료가 전부 로스 나는 것처럼 보인다. */}
+      {mode === 'cmp' && coverage && coverage.pct < 99.5 && (
+        <div className={`border rounded-lg px-3 py-2 text-xs ${coverage.pct < 90
+          ? 'bg-rose-50 border-rose-300 text-rose-900' : 'bg-amber-50 border-amber-200 text-amber-900'}`}>
+          {coverage.pct < 90 ? '🚨' : '⚠️'} <b>레시피 커버리지 {fmt(coverage.pct, 1)}%</b>
+          {' — '}{month} 생산 {coverage.totalQty.toLocaleString()}EA 중
+          <b> {coverage.missingQty.toLocaleString()}EA</b> 가 레시피 미등록이라 표준소요에서 빠졌습니다
+          {(coverage.missingCold > 0 || coverage.missingAmbient > 0) &&
+            ` (냉장 ${coverage.missingCold}품목 · 실온 ${coverage.missingAmbient}품목)`}.
+          {' '}표준소요가 과소계상되어 <b>수율이 실제보다 낮게</b> 나옵니다.
+          {coverage.pct < 90 && <b> 이 상태의 숫자는 보고자료에 쓰지 마세요.</b>}
+        </div>
+      )}
+
       {/* 계산 기준 */}
       <div className="bg-slate-50 border rounded-lg p-3 text-xs text-gray-700 space-y-1">
         <div>
           <b>원재료수율 = 표준소요량 ÷ 실제 투입중량</b>
-          <span className="text-gray-400 ml-2">표준소요량 = 완제품 생산수량 × BOM 배합비 · LOSS = 실제투입 − 표준소요 · LOSS율 = 1 − 수율</span>
+          <span className="text-gray-400 ml-2">표준소요량 = 완제품 생산수량 × {useYieldDb ? '배합비(%)' : 'BOM 배합비'} · LOSS = 실제투입 − 표준소요 · LOSS율 = 1 − 수율</span>
         </div>
         <div className="flex items-center gap-2 flex-wrap pt-1">
           <span className="font-semibold">제외 원재료</span>
@@ -973,6 +1118,153 @@ export default function YieldAnalysis() {
               <span className="ml-2 text-gray-500">
                 — 배합효과는 원재료별 수율이 그대로여도 <b>어느 원재료를 많이 썼는지</b>가 바뀌어 생기는 몫입니다. 관리 대상은 <b>수율효과</b> 입니다.
               </span>
+            </div>
+          )}
+
+          {/* ===== 카테고리 타일 =====
+              1차 스크리닝용. 분류를 눌러 그 안의 원재료를 바로 아래에서 펼쳐 본다. */}
+          {catStats && catStats.length > 0 && (
+            <div className="bg-white border rounded-lg">
+              <div className="flex items-center justify-between gap-2 flex-wrap px-4 py-2.5 border-b">
+                <div>
+                  <div className="font-bold text-gray-800 text-sm">카테고리별 수율</div>
+                  <div className="text-[11px] text-gray-500">
+                    분류를 눌러 원재료를 펼치세요 · 수율은 <b>가중평균</b>(Σ표준소요 ÷ Σ실투입)
+                    {catIndex.categories.length === 0 && (
+                      <span className="text-amber-700"> · 설정 › 원재료 카테고리 DB 가 비어 있어 전부 ‘{UNCLASSIFIED}’ 입니다</span>
+                    )}
+                  </div>
+                </div>
+                <div className="flex items-center gap-1 text-xs">
+                  <span className="text-gray-400">정렬</span>
+                  {([['loss', 'LOSS 금액'], ['delta', '증감'], ['yield', '수율'], ['name', '등록순']] as const).map(([k, label]) => (
+                    <button key={k} onClick={() => setCatSort(k)}
+                      className={`border rounded px-2 py-1 ${catSort === k ? 'bg-slate-800 text-white border-slate-800' : 'hover:bg-gray-50'}`}>
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="p-3 grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
+                {catStats.map((c) => {
+                  const open = openCat === c.name;
+                  const unset = c.name === UNCLASSIFIED;
+                  const d = c.deltaPP;
+                  const tone = unset ? 'border-gray-300 bg-gray-50'
+                    : d === null ? 'border-slate-200 bg-white'
+                      : d <= -threshold ? 'border-rose-300 bg-rose-50'
+                        : d >= threshold ? 'border-emerald-300 bg-emerald-50'
+                          : 'border-slate-200 bg-white';
+                  return (
+                    <button key={c.name} onClick={() => setOpenCat(open ? null : c.name)}
+                      className={`text-left border-2 rounded-lg px-3 py-2.5 transition
+                        ${open ? 'ring-2 ring-slate-800 border-slate-800' : tone} hover:shadow-sm`}>
+                      <div className="flex items-baseline justify-between gap-1">
+                        <span className={`font-bold text-sm truncate ${unset ? 'text-gray-500' : 'text-gray-800'}`}>{c.name}</span>
+                        <span className="text-[11px] text-gray-400 shrink-0">{c.count}종</span>
+                      </div>
+                      <div className="mt-1 flex items-baseline gap-1.5">
+                        <span className={`text-2xl font-extrabold tabular-nums ${unset ? 'text-gray-400' : 'text-blue-700'}`}>
+                          {c.yield === null ? '—' : fmt(c.yield * 100)}
+                        </span>
+                        <span className="text-xs text-gray-400">%</span>
+                        {d !== null && (
+                          <span className={`ml-auto text-xs font-bold tabular-nums
+                            ${d <= -threshold ? 'text-rose-600' : d >= threshold ? 'text-emerald-600' : 'text-gray-400'}`}>
+                            {d > 0 ? '▲' : d < 0 ? '▼' : ''}{fmt(Math.abs(d), 1)}%p
+                          </span>
+                        )}
+                      </div>
+                      <div className="mt-1 flex items-center justify-between text-[11px]">
+                        <span className="text-gray-400">LOSS {fmt(kg(c.lossG))}kg</span>
+                        <span className={c.lossAmt > 0 ? 'text-amber-700 font-semibold' : 'text-gray-400'}>
+                          {Math.round(c.lossAmt).toLocaleString()}원
+                        </span>
+                      </div>
+                      {(c.outCount > 0 || c.naCount > 0 || unset) && (
+                        <div className="mt-1 text-[10px] text-amber-700 truncate">
+                          {[
+                            c.outCount > 0 ? `⚠ 이상치 ${c.outCount}종` : '',
+                            c.naCount > 0 ? `미입력 ${c.naCount}종` : '',
+                            unset ? '분류 미지정' : '',
+                          ].filter(Boolean).join(' · ')}
+                        </div>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* 아코디언 — 선택한 분류의 원재료 상세 */}
+              {openCat && (() => {
+                const list = (rows || [])
+                  .filter((r) => categoryOf(catIndex, r.code, r.name) === openCat)
+                  .sort((a, b) => (b.lossAmt ?? -1) - (a.lossAmt ?? -1));
+                const c = catStats.find((x) => x.name === openCat);
+                return (
+                  <div className="border-t bg-slate-50 px-3 py-3">
+                    <div className="flex items-center justify-between mb-2">
+                      <div className="text-sm font-bold text-gray-800">
+                        {openCat}
+                        <span className="ml-2 text-xs font-normal text-gray-500">
+                          {list.length}종
+                          {c && c.count !== list.length && ` (집계 ${c.count}종)`}
+                          {c && c.yield !== null && ` · 가중평균 ${fmt(c.yield * 100)}%`}
+                          {c && c.deltaPP !== null && ` · ${c.deltaPP > 0 ? '+' : ''}${fmt(c.deltaPP, 1)}%p`}
+                        </span>
+                      </div>
+                      <button onClick={() => setOpenCat(null)} className="text-xs text-gray-500 hover:text-gray-800">닫기 ✕</button>
+                    </div>
+                    <div className="overflow-x-auto bg-white border rounded">
+                      <table className="w-full text-xs">
+                        <thead className="bg-gray-50 text-gray-600">
+                          <tr>
+                            <th className="px-2 py-1.5 text-left">원재료</th>
+                            <th className="px-2 py-1.5 text-right">표준소요(kg)</th>
+                            <th className="px-2 py-1.5 text-right">실투입(kg)</th>
+                            <th className="px-2 py-1.5 text-right">수율(%)</th>
+                            <th className="px-2 py-1.5 text-right">증감(%p)</th>
+                            <th className="px-2 py-1.5 text-right">LOSS(kg)</th>
+                            <th className="px-2 py-1.5 text-right">LOSS(원)</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y tabular-nums">
+                          {list.map((r) => {
+                            const odd = (r.yield !== null && !inRangeV(r.yield))
+                              || (r.prevYield !== null && !inRangeV(r.prevYield));
+                            const showDelta = r.deltaPP !== null && inRangeV(r.yield) && inRangeV(r.prevYield);
+                            return (
+                              <tr key={r.key} className={odd ? 'text-gray-400' : 'hover:bg-slate-50'}>
+                                <td className="px-2 py-1">
+                                  <div className="truncate max-w-[220px] text-gray-800">{odd && '⚠ '}{r.name}</div>
+                                  <div className="text-[10px] text-gray-400 font-mono">{r.code}</div>
+                                </td>
+                                <td className="px-2 py-1 text-right text-gray-600">{fmt(kg(r.stdG))}</td>
+                                <td className="px-2 py-1 text-right text-gray-600">
+                                  {r.hasInput ? fmt(kg(r.actG)) : <span className="text-amber-600">미입력</span>}
+                                </td>
+                                <td className="px-2 py-1 text-right font-bold text-blue-700">
+                                  {r.yield === null ? '—' : fmt(r.yield * 100)}
+                                </td>
+                                <td className={`px-2 py-1 text-right font-semibold ${!showDelta ? 'text-gray-300'
+                                  : (r.deltaPP || 0) <= -threshold ? 'text-rose-600'
+                                    : (r.deltaPP || 0) >= threshold ? 'text-emerald-600' : 'text-gray-500'}`}>
+                                  {!showDelta ? '—' : `${(r.deltaPP || 0) > 0 ? '+' : ''}${fmt(r.deltaPP || 0, 1)}`}
+                                </td>
+                                <td className="px-2 py-1 text-right text-gray-600">{r.lossG === null ? '—' : fmt(kg(r.lossG))}</td>
+                                <td className="px-2 py-1 text-right font-semibold text-amber-700">
+                                  {r.lossAmt === null ? '—' : Math.round(r.lossAmt).toLocaleString()}
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           )}
 
