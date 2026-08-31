@@ -840,27 +840,44 @@ export default function YieldAnalysis() {
       { header: '④ LOSS (kg)', key: 'l', width: 14 },
       { header: '⑤ LOSS율', key: 'lr', width: 12 },
       { header: 'LOSS 금액(원)', key: 'la', width: 15 },
+      // 엑셀만 보는 사람을 위해 상태를 '데이터' 로 남긴다.
+      // 색으로만 구분하면 정렬·필터하는 순간 의미가 사라진다.
+      { header: '비고', key: 'st', width: 30 },
       { header: '원인 점검 포인트', key: 'note', width: 34 },
     ];
     ws.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
     ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F3864' } };
     view.forEach((r) => {
+      const oddR = (r.yield !== null && !inRange(r.yield)) || (r.prevYield !== null && !inRange(r.prevYield));
+      const st = [
+        oddR ? '⚠ 데이터 이상 — 집계·TOP3 제외' : '',
+        !r.hasInput && r.stdG > 0 ? '실투입 미입력' : '',
+        r.hasInput && r.actG <= 0 && r.stdG > 0 ? '그 달 미사용 (0 입력)' : '',
+        r.stdG <= 0 ? '표준소요 0 — 레시피·코드 확인' : '',
+        !oddR && (r.yield || 0) > 1 ? '수율 100% 초과 — 기준 차이 가능' : '',
+      ].filter(Boolean).join(' · ');
       const row = ws.addRow({
         n: r.name, c: r.code,
-        s: kg(r.stdG), a: kg(r.actG),
+        s: kg(r.stdG),
+        // 미입력을 0 으로 쓰면 '안 썼다' 로 읽혀 절감으로 오해된다. 빈칸이어야 한다.
+        a: r.hasInput ? kg(r.actG) : null,
         y: r.yield, p: r.prevYield, d: r.deltaPP,
         l: r.lossG === null ? null : kg(r.lossG), lr: r.lossRate,
         la: r.lossAmt === null ? null : Math.round(r.lossAmt),
+        st,
         note: notes[r.key] || '',
       });
       ['s', 'a', 'l'].forEach((k) => { row.getCell(k).numFmt = '#,##0.0'; });
       ['y', 'p', 'lr'].forEach((k) => { row.getCell(k).numFmt = '0.0%'; });
       row.getCell('d').numFmt = '+0.0;-0.0';
       row.getCell('la').numFmt = '#,##0';
-      const oddRow = (r.yield !== null && !inRange(r.yield)) || (r.prevYield !== null && !inRange(r.prevYield));
-      if (oddRow) row.getCell('d').font = { color: { argb: 'FF999999' } };   // 데이터 이상 → 회색
-      else if (r.deltaPP !== null && r.deltaPP <= -threshold) row.getCell('d').font = { bold: true, color: { argb: 'FFC00000' } };
-      if ((r.yield || 0) > 1) row.getCell('y').font = { bold: true, color: { argb: 'FFC00000' } };
+      if (oddR) {
+        row.getCell('d').font = { color: { argb: 'FF999999' } };   // 데이터 이상 → 회색
+        row.getCell('y').font = { color: { argb: 'FF999999' } };
+        row.getCell('st').font = { color: { argb: 'FFC00000' }, bold: true };
+      }
+      if (!oddR && r.deltaPP !== null && r.deltaPP <= -threshold) row.getCell('d').font = { bold: true, color: { argb: 'FFC00000' } };
+      if (!oddR && (r.yield || 0) > 1) row.getCell('y').font = { bold: true, color: { argb: 'FF7030A0' } };
     });
     ws.views = [{ state: 'frozen', ySplit: 1 }];
     const buf = await wb.xlsx.writeBuffer();
@@ -884,11 +901,21 @@ export default function YieldAnalysis() {
       { header: '값 있는 달', key: 'mn', width: 10 },
       { header: '변동폭(%p)', key: 'rg', width: 12 },
       { header: '최근월 LOSS금액', key: 'la', width: 16 },
+      { header: '비고', key: 'st', width: 30 },
     ];
     ws.getRow(1).font = { bold: true, color: { argb: 'FFFFFFFF' } };
     ws.getRow(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FF1F3864' } };
     trendView.forEach((r) => {
-      const o: Record<string, unknown> = { n: r.name, c: r.code, avg: r.avg, pavg: r.prevAvg, lv: r.lastVsAvg, mn: r.months, rg: r.range, la: Math.round(r.lossAmtLast) };
+      const o: Record<string, unknown> = {
+        n: r.name, c: r.code, avg: r.avg, pavg: r.prevAvg, lv: r.lastVsAvg, mn: r.months, rg: r.range,
+        // 최근월 데이터가 없으면 0 이 아니라 빈칸 (0 으로 쓰면 '로스 없음' 으로 읽힌다)
+        la: r.lastHasData ? Math.round(r.lossAmtLast) : null,
+        st: [
+          r.outMonths > 0 ? `⚠ 이상치 ${r.outMonths}개월 — 평균·증감에서 제외` : '',
+          !r.lastHasData ? '최근월 데이터 없음' : '',
+          r.prevAvg === null ? '비교할 이전 달 없음' : '',
+        ].filter(Boolean).join(' · '),
+      };
       trend.months.forEach((m) => { o[m.month] = r.byMonth[m.month]; });
       const row = ws.addRow(o);
       trend.months.forEach((m) => { row.getCell(m.month).numFmt = '0.0%'; });
@@ -898,6 +925,12 @@ export default function YieldAnalysis() {
       row.getCell('rg').numFmt = '0.0';
       row.getCell('la').numFmt = '#,##0';
       if ((r.lastVsAvg ?? 0) <= -threshold) row.getCell('lv').font = { bold: true, color: { argb: 'FFC00000' } };
+      if (r.outMonths > 0) row.getCell('st').font = { color: { argb: 'FFC00000' }, bold: true };
+      // 이상치인 달의 칸은 회색 처리해 정상월과 구분한다
+      trend.months.forEach((m) => {
+        const v = r.byMonth[m.month];
+        if (v !== null && !inRangeV(v)) row.getCell(m.month).font = { color: { argb: 'FF999999' } };
+      });
     });
     ws.views = [{ state: 'frozen', xSplit: 1, ySplit: 1 }];
     const buf = await wb.xlsx.writeBuffer();
