@@ -45,7 +45,7 @@ export default function DevRecipeImport() {
   const [mFilter, setMFilter] = useState<Record<string, string>>({});   // 목록 검색어
   const [mCode, setMCode] = useState<Record<string, string>>({});       // ERP 코드 직접 입력
   const [applyAll, setApplyAll] = useState(true);   // 같은 이름은 한 번에
-  const [lastBulk, setLastBulk] = useState<{ name: string; n: number } | null>(null);
+  const [lastBulk, setLastBulk] = useState<{ name: string; n: number; skip: number } | null>(null);
   const [regBusy, setRegBusy] = useState('');
   const [saving, setSaving] = useState(false);
   const [done, setDone] = useState<string | null>(null);
@@ -181,20 +181,44 @@ export default function DevRecipeImport() {
     const next = { ...ov };
     if (!val) { delete next[key]; setOv(next); setLastBulk(null); return; }
     next[key] = val;
-    let n = 0;
+    let n = 0; let skip = 0;
     if (applyAll) {
       const target = normalizeMaterialName(rawName);
-      reports.forEach((p) => p.rows.forEach((r, i) => {
-        const k = rowKey(p, r, i);
-        if (k === key) return;
-        if (normalizeMaterialName(r.rawName) !== target) return;
-        if (ov[k]) return;              // 사람이 이미 고른 건 안 건드림
-        if (r.match.code && !r.match.needsReview) return;   // 자동 확정된 것도 안 건드림
-        next[k] = val; n++;
-      }));
+      /* ⚠ 그냥 같은 이름이라고 다 같은 코드를 박으면 안 된다.
+         개발은 전부 '소고기' 로 주지만 제품마다 한우슬라이스 / 한우민찌 로 다르다.
+         그 제품이 실제로 뭘 쓰는지는 그 제품 BOM 이 알고 있다.
+         → 고른 코드가 그 제품 BOM 에 있을 때만 적용한다.
+           BOM 에 없는데 그 제품에 아직 안 쓴 BOM 원재료가 남아 있으면
+           둘 중 뭔지 알 수 없으므로 건너뛰고, 사람이 고르게 남긴다. */
+      const codeInAnyBom = [...bom.values()].some((list) =>
+        list.some((ing) => normalizeCode(ing.code || '') === val.code));
+      reports.forEach((p2) => {
+        const pBomCodes = new Set((bom.get(p2.short) || [])
+          .map((ing) => normalizeCode(ing.code || '')).filter(Boolean));
+        // 이 제품에서 아직 아무 줄도 안 가져간 BOM 원재료가 있나
+        const used = new Set(p2.rows.map((r2, k2) => {
+          const kk = rowKey(p2, r2, k2);
+          return next[kk]?.code || ov[kk]?.code || r2.match.code;
+        }).filter(Boolean));
+        const hasLeftover = [...pBomCodes].some((c) => !used.has(c));
+
+        p2.rows.forEach((r, i) => {
+          const k = rowKey(p2, r, i);
+          if (k === key) return;
+          if (normalizeMaterialName(r.rawName) !== target) return;
+          if (ov[k]) return;                                  // 사람이 이미 고른 건 안 건드림
+          if (r.match.code && !r.match.needsReview) return;   // 자동 확정된 것도 안 건드림
+
+          const fits = pBomCodes.has(val.code)   // 그 제품 BOM 에 실제로 있는 코드
+            || !codeInAnyBom                     // 어느 BOM 에도 없는 자재(정제수 등) — 헷갈릴 대상이 없음
+            || !hasLeftover;                     // 그 제품 BOM 이 이미 다 찼으면 혼동 여지 없음
+          if (!fits) { skip++; return; }
+          next[k] = val; n++;
+        });
+      });
     }
     setOv(next);
-    setLastBulk(n > 0 ? { name: rawName, n } : null);
+    setLastBulk(n > 0 || skip > 0 ? { name: rawName, n, skip } : null);
   };
 
   const stat = useMemo(() => {
@@ -388,6 +412,12 @@ export default function DevRecipeImport() {
           {lastBulk && (
             <div className="text-xs text-blue-800 bg-blue-50 border border-blue-200 rounded px-3 py-1.5">
               ✔ <b>{lastBulk.name}</b> — 같은 이름 <b>{lastBulk.n}건</b>에 함께 적용했습니다.
+              {lastBulk.skip > 0 && (
+                <span className="text-orange-800">
+                  {' '}· <b>{lastBulk.skip}건</b>은 그 제품 BOM 에 이 코드가 없어 <b>일부러 건너뛰었습니다</b>
+                  {' '}(제품마다 규격이 다를 수 있어 직접 고르셔야 합니다)
+                </span>
+              )}
               <button onClick={() => setLastBulk(null)} className="ml-2 underline">닫기</button>
             </div>
           )}
@@ -505,9 +535,9 @@ export default function DevRecipeImport() {
                                 {/* 이 행이 이 제품 BOM 밖의 원재료를 잡고 있는데 BOM 엔 아직 남은 게 있다.
                                     하나씩 열어보지 않아도 어디를 볼지 바로 알 수 있게 표시한다. */}
                                 {leftoverBom.length > 0 && !inProductBom(e.code) && (
-                                  <span className="inline-block mt-0.5 ml-1 text-[10px] px-1.5 rounded bg-orange-100 text-orange-800"
-                                    title={`이 제품 BOM 에 아직 안 쓰인 원재료: ${leftoverBom.map((m) => m.name).join(', ')}`}>
-                                    BOM 잔여 {leftoverBom.length}
+                                  <span className="inline-block mt-0.5 ml-1 text-[10px] px-1.5 rounded bg-orange-100 text-orange-800 font-semibold"
+                                    title={`이 코드는 이 제품 BOM 에 없습니다.\n아직 안 쓰인 BOM 원재료: ${leftoverBom.map((m) => m.name).join(', ')}`}>
+                                    ⚠ BOM 밖 · 잔여 {leftoverBom.length}
                                   </span>
                                 )}
                               </td>

@@ -1254,6 +1254,27 @@ function RecipeDB({ onCountChange, collectionName = 'recipes', label = '레시�
     try {
       const ExcelJS = (await import('exceljs')).default;
       const hasPct = filtered.some((r) => (r.ingredients || []).some((i) => typeof i.pct === 'number'));
+
+      /* 현장 BOM 을 같이 읽어 대조한다.
+         '개발이 전부 소고기로 줬는데 제품마다 한우슬라이스/한우민찌가 다르다' 같은
+         오배정은 BOM 과 맞대보지 않으면 절대 못 잡는다. */
+      const bomByProd = new Map<string, { name: string; code: string }[]>();
+      if (COL !== 'recipes') {
+        try {
+          const rs = await getDocs(collection(db, 'recipes'));
+          rs.forEach((d) => {
+            const v = d.data() as RecipeDoc;
+            const k = canonicalShort(v.code || d.id);
+            if (!k) return;
+            bomByProd.set(k, (v.ingredients || [])
+              .map((i) => ({ name: i.name, code: normalizeCode(i.code || '') }))
+              .filter((i) => i.code));
+          });
+        } catch { /* BOM 을 못 읽으면 대조 열만 비워 둔다 */ }
+      }
+      const hasBom = bomByProd.size > 0;
+      const bomOf = (code: string) => bomByProd.get(canonicalShort(code)) || [];
+      const bomCodes = (code: string) => new Set(bomOf(code).map((i) => i.code));
       const wb = new ExcelJS.Workbook();
       wb.created = new Date();
 
@@ -1279,6 +1300,7 @@ function RecipeDB({ onCountChange, collectionName = 'recipes', label = '레시�
         ...(hasPct ? [{ header: '배합비(%)', key: 'pt', width: 11 }] : []),
         { header: 'g/개', key: 'g', width: 11 },
         ...(hasPct ? [{ header: '개발 시트 표기', key: 'dv', width: 22 }] : []),
+        ...(hasBom ? [{ header: 'BOM 대조', key: 'bm', width: 14 }] : []),
       ] as any;
       styleHeader(ws);
       let band = false;
@@ -1293,6 +1315,9 @@ function RecipeDB({ onCountChange, collectionName = 'recipes', label = '레시�
             pt: typeof i.pct === 'number' ? i.pct : null,
             g: i.gPerPiece ?? null,
             dv: i.devName && i.devName !== i.name ? i.devName : '',
+            bm: hasBom ? (bomByProd.has(canonicalShort(r.code))
+              ? (bomCodes(r.code).has(normalizeCode(i.code || '')) ? 'BOM 일치' : '⚠ BOM 밖')
+              : 'BOM 없음') : undefined,
           });
           // 제품 단위로 옅은 줄무늬 — 어디서 끊기는지 눈으로 보인다
           if (band) row.eachCell((c: any) => {
@@ -1306,6 +1331,10 @@ function RecipeDB({ onCountChange, collectionName = 'recipes', label = '레시�
           if (hasPct) row.getCell('pw').numFmt = '#,##0';
           // 코드 없는 행은 빨갛게 — 검증에서 제일 먼저 볼 것
           if (!i.code) row.getCell('cd').font = { color: { argb: 'FFC00000' }, bold: true };
+          if (hasBom && row.getCell('bm').value === '⚠ BOM 밖') {
+            row.getCell('bm').font = { bold: true, color: { argb: 'FFC00000' } };
+            row.eachCell((c: any) => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFDECEA' } }; });
+          }
         });
       });
 
@@ -1316,6 +1345,10 @@ function RecipeDB({ onCountChange, collectionName = 'recipes', label = '레시�
         { header: '제품명', key: 'pn', width: 24 },
         { header: '원재료 수', key: 'n', width: 10 },
         { header: 'ERP코드 없음', key: 'nc', width: 12 },
+        ...(hasBom ? [
+          { header: 'BOM 밖', key: 'ob', width: 9 },
+          { header: 'BOM 미사용', key: 'ub', width: 11 },
+        ] : []),
         ...(hasPct ? [
           { header: '포장중량(g)', key: 'pw', width: 12 },
           { header: '배합비 합계(%)', key: 'ps', width: 14 },
@@ -1333,9 +1366,16 @@ function RecipeDB({ onCountChange, collectionName = 'recipes', label = '레시�
         const nc = ings.filter((i) => !i.code).length;
         const pd = hasPct ? ps - 100 : 0;
         const gd = hasPct && r.packWeight ? gs - r.packWeight : 0;
-        const ok = nc === 0 && (!hasPct || (Math.abs(pd) <= 0.5 && Math.abs(gd) <= 0.5));
+        const bc = hasBom ? bomCodes(r.code) : new Set<string>();
+        const knowsBom = hasBom && bomByProd.has(canonicalShort(r.code));
+        const ob = knowsBom ? ings.filter((i) => !bc.has(normalizeCode(i.code || ''))).length : 0;
+        const usedC = new Set(ings.map((i) => normalizeCode(i.code || '')).filter(Boolean));
+        const ub = knowsBom ? [...bc].filter((c) => !usedC.has(c)).length : 0;
+        const ok = nc === 0 && ob === 0
+          && (!hasPct || (Math.abs(pd) <= 0.5 && Math.abs(gd) <= 0.5));
         const row = ck.addRow({
           pc: r.code, pn: r.name || '', n: ings.length, nc,
+          ob: knowsBom ? ob : null, ub: knowsBom ? ub : null,
           pw: r.packWeight ?? null, ps: hasPct ? ps : null, pd: hasPct ? pd : null,
           gs, gd: hasPct && r.packWeight ? gd : null,
           jd: ok ? 'OK' : '확인',
@@ -1350,6 +1390,11 @@ function RecipeDB({ onCountChange, collectionName = 'recipes', label = '레시�
           row.getCell('jd').font = { bold: true, color: { argb: 'FF107C41' } };
         }
         if (nc > 0) row.getCell('nc').font = { bold: true, color: { argb: 'FFC00000' } };
+        if (hasBom) {
+          ['ob', 'ub'].forEach((k) => { row.getCell(k).alignment = { horizontal: 'center' }; });
+          if (ob > 0) row.getCell('ob').font = { bold: true, color: { argb: 'FFC00000' } };
+          if (ub > 0) row.getCell('ub').font = { bold: true, color: { argb: 'FFB26B00' } };
+        }
       });
 
       /* ── 시트 3: 원재료별 ──
@@ -1396,6 +1441,67 @@ function RecipeDB({ onCountChange, collectionName = 'recipes', label = '레시�
             row.eachCell((c: any) => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFDECEA' } }; });
           }
         });
+
+      /* ── 시트 4: 개발 표기별 ──
+         '개발이 전부 소고기로 줬는데 제품마다 다른 걸 쓴다' 를 잡는 시트.
+         같은 표기가 여러 코드로 갈렸으면 그 자체는 정상일 수 있다(제품마다 규격이 다름).
+         진짜 오류는 '그 제품 BOM 에 없는 코드가 붙은 것' 이므로 그걸 따로 센다. */
+      if (hasPct) {
+        const dv = wb.addWorksheet('개발 표기별');
+        dv.columns = [
+          { header: '개발 시트 표기', key: 'dn', width: 24 },
+          { header: '붙은 원재료', key: 'nm', width: 26 },
+          { header: 'ERP코드', key: 'cd', width: 14 },
+          { header: '제품 수', key: 'np', width: 9 },
+          ...(hasBom ? [{ header: 'BOM 밖', key: 'ob', width: 9 }] : []),
+          { header: '해당 제품', key: 'ps', width: 46 },
+          { header: '점검', key: 'jd', width: 30 },
+        ] as any;
+        styleHeader(dv);
+        // 개발 표기 → (코드 → {이름, 제품들, BOM밖 제품들})
+        const byDev = new Map<string, Map<string, { nm: string; ps: string[]; out: string[] }>>();
+        filtered.forEach((r) => (r.ingredients || []).forEach((i) => {
+          const d = (i.devName || i.name || '').trim();
+          if (!d) return;
+          const c = normalizeCode(i.code || '') || '(없음)';
+          const m1 = byDev.get(d) || new Map();
+          const e = m1.get(c) || { nm: i.name, ps: [] as string[], out: [] as string[] };
+          e.ps.push(r.code);
+          if (hasBom && bomByProd.has(canonicalShort(r.code)) && !bomCodes(r.code).has(c)) e.out.push(r.code);
+          m1.set(c, e); byDev.set(d, m1);
+        }));
+        [...byDev.entries()].sort((a, b) => (b[1].size - a[1].size) || a[0].localeCompare(b[0]))
+          .forEach(([d, m1]) => {
+            const multi = m1.size > 1;
+            let band = false;
+            [...m1.entries()].sort((a, b) => b[1].ps.length - a[1].ps.length).forEach(([c, e]) => {
+              band = !band;
+              const note = [
+                c === '(없음)' ? 'ERP코드 없음' : '',
+                e.out.length > 0 ? `⚠ BOM 에 없는 제품 ${e.out.length}개` : '',
+                multi && e.out.length === 0 ? '같은 표기가 여러 코드로 (제품별 규격 차이일 수 있음)' : '',
+              ].filter(Boolean).join(' · ');
+              const row = dv.addRow({
+                dn: d, nm: e.nm, cd: c === '(없음)' ? '' : c, np: e.ps.length,
+                ob: hasBom ? e.out.length : null,
+                ps: (e.out.length > 0 ? e.out : e.ps).slice(0, 6).join(', ')
+                  + ((e.out.length > 0 ? e.out : e.ps).length > 6 ? ' 외' : ''),
+                jd: note,
+              });
+              row.getCell('np').alignment = { horizontal: 'center' };
+              if (hasBom) row.getCell('ob').alignment = { horizontal: 'center' };
+              if (multi) row.getCell('dn').font = { bold: true };
+              if (e.out.length > 0 || c === '(없음)') {
+                row.getCell('jd').font = { bold: true, color: { argb: 'FFC00000' } };
+                row.eachCell((x: any) => { x.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFDECEA' } }; });
+              } else if (multi) {
+                row.eachCell((x: any) => { x.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF7E6' } }; });
+              } else if (band) {
+                row.eachCell((x: any) => { x.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF4F7FB' } }; });
+              }
+            });
+          });
+      }
 
       const buf = await wb.xlsx.writeBuffer();
       const url = URL.createObjectURL(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
