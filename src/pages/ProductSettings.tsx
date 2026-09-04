@@ -2551,6 +2551,23 @@ function ErpCodeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
   const [search, setSearch] = useState('');
   const [showBulk, setShowBulk] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [qCode, setQCode] = useState('');
+  const [qName, setQName] = useState('');
+  const [qBusy, setQBusy] = useState(false);
+
+  /** 한 건만 빠르게 추가 — 일괄 모달을 열지 않아도 되게 */
+  const quickAdd = async () => {
+    const code = qCode.trim().replace(/\s+/g, '');
+    const name = qName.trim();
+    if (!code || !name) return;
+    setQBusy(true);
+    try {
+      await setDoc(doc(db, 'materialErpCodes', code), { code, name }, { merge: true });
+      setQCode(''); setQName('');
+    } catch (e: any) {
+      alert(`추가 실패: ${e?.message || e}`);
+    } finally { setQBusy(false); }
+  };
 
   useEffect(() => {
     return onSnapshot(collection(db, 'materialErpCodes'), (snap) => {
@@ -2600,6 +2617,15 @@ function ErpCodeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
           placeholder="🔍 코드·품목명·업체 검색..."
           className="flex-1 min-w-[240px] border rounded-md px-3 py-2 text-sm" />
         <span className="text-xs text-gray-500">{filtered.length}/{rows.length}개</span>
+        <input value={qCode} onChange={(e) => setQCode(e.target.value)}
+          placeholder="품목코드" className="w-28 border rounded-md px-2 py-2 text-sm font-mono" />
+        <input value={qName} onChange={(e) => setQName(e.target.value)}
+          onKeyDown={(e) => { if (e.key === 'Enter') quickAdd(); }}
+          placeholder="품목명" className="w-36 border rounded-md px-2 py-2 text-sm" />
+        <button onClick={quickAdd} disabled={!qCode.trim() || !qName.trim() || qBusy}
+          className="px-3 py-2 bg-teal-600 text-white rounded text-sm font-medium hover:bg-teal-700 disabled:bg-gray-300">
+          {qBusy ? '추가중...' : '＋ 한 건 추가'}
+        </button>
         <button onClick={() => setShowBulk(true)} className="px-3 py-2 bg-teal-700 text-white rounded text-sm font-medium hover:bg-teal-800">📋 일괄 입력</button>
         {rows.length > 0 && (
           <button onClick={deleteAll} disabled={deleting}
@@ -2655,14 +2681,26 @@ function ErpCodeBulkModal({ onClose }: { onClose: () => void }) {
 
   const lines = text.trim().split('\n').map((l) => l.trim()).filter(Boolean);
   const parsed = lines.map((line) => {
-    // 엑셀 붙여넣기는 탭 구분 → 탭이 있으면 탭으로만 자름(품목명 속 콤마 보존)
-    const p = (line.includes('\t') ? line.split('\t') : line.split(',')).map((s) => s.trim());
+    // 엑셀 붙여넣기는 탭 구분 → 탭이 있으면 탭으로만 자름(품목명 속 콤마 보존).
+    // 손으로 '9999999 정제수' 처럼 공백으로 치는 경우도 받는다 —
+    // 안 받으면 무효 처리되면서 왜 안 되는지 알 길이 없다.
+    let p: string[];
+    // 맨 앞 숫자 코드 + 공백 패턴을 콤마보다 먼저 본다.
+    // 콤마를 먼저 자르면 '11320011 한우(익,민찌)' 가 '11320011 한우(익' / '민찌)' 로 깨진다.
+    const lead = line.includes('\t') ? null : line.match(/^\s*([0-9][0-9-]{3,})[ \t]+(.+)$/);
+    if (line.includes('\t')) p = line.split('\t');
+    else if (lead) p = [lead[1], lead[2]];
+    else if (line.includes(',')) p = line.split(',');
+    else p = line.split(/\s{2,}/);
+    p = p.map((s) => s.trim());
     const code = (p[0] || '').trim();
     const name = (p[1] || '').trim();
     const supplier = (p[2] || '').trim();
-    return { code, name, supplier, valid: !!code && !!name };
+    const why = !code ? '품목코드 없음' : !name ? '품목명 없음 (코드와 이름 사이를 탭·콤마·공백으로 띄우세요)' : '';
+    return { code, name, supplier, valid: !!code && !!name, why, line };
   });
   const validRows = parsed.filter((p) => p.valid);
+  const badRows = parsed.filter((p) => !p.valid);
 
   const save = async () => {
     if (validRows.length === 0) return;
@@ -2677,6 +2715,8 @@ function ErpCodeBulkModal({ onClose }: { onClose: () => void }) {
       await batch.commit();
       alert(`${validRows.length}개 저장 완료`);
       onClose();
+    } catch (e: any) {
+      alert(`저장 실패: ${e?.message || e}`);
     } finally { setSaving(false); }
   };
 
@@ -2699,7 +2739,35 @@ function ErpCodeBulkModal({ onClose }: { onClose: () => void }) {
             placeholder={"10620044\t당근\t원예농협\n10620017\t대파\t해마\n10720002\t배\t인터넷발주"}
             className="w-full h-60 border rounded-md p-3 text-sm font-mono" />
           {parsed.length > 0 && (
-            <div className="text-sm text-gray-600">유효 <b className="text-teal-700">{validRows.length}</b> / 전체 {parsed.length}줄</div>
+            <div className="space-y-2">
+              <div className="text-sm text-gray-600">
+                유효 <b className="text-teal-700">{validRows.length}</b> / 전체 {parsed.length}줄
+              </div>
+              {validRows.length > 0 && (
+                <div className="border rounded overflow-hidden">
+                  <table className="w-full text-xs">
+                    <thead className="bg-gray-50 text-gray-500">
+                      <tr><th className="px-2 py-1 text-left w-28">품목코드</th><th className="px-2 py-1 text-left">품목명</th><th className="px-2 py-1 text-left w-32">업체</th></tr>
+                    </thead>
+                    <tbody className="divide-y">
+                      {validRows.slice(0, 8).map((r, i) => (
+                        <tr key={i}><td className="px-2 py-1 font-mono text-teal-700">{r.code}</td><td className="px-2 py-1">{r.name}</td><td className="px-2 py-1 text-gray-500">{r.supplier || '—'}</td></tr>
+                      ))}
+                    </tbody>
+                  </table>
+                  {validRows.length > 8 && <div className="px-2 py-1 text-[11px] text-gray-400">외 {validRows.length - 8}줄</div>}
+                </div>
+              )}
+              {badRows.length > 0 && (
+                <div className="bg-rose-50 border border-rose-200 rounded p-2 text-xs text-rose-800">
+                  <b>읽지 못한 {badRows.length}줄</b>
+                  {badRows.slice(0, 5).map((r, i) => (
+                    <div key={i} className="mt-0.5">· "{r.line.slice(0, 40)}" — {r.why}</div>
+                  ))}
+                  {badRows.length > 5 && <div className="text-rose-500 mt-0.5">외 {badRows.length - 5}줄</div>}
+                </div>
+              )}
+            </div>
           )}
         </div>
         <div className="px-5 py-3 border-t bg-slate-50 flex items-center gap-2">

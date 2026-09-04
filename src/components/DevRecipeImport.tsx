@@ -9,7 +9,7 @@
  *  · 애매한 매칭은 조용히 확정하지 않고 화면에 띄워 사람이 고르게 한다.
  */
 import { useEffect, useMemo, useState } from 'react';
-import { collection, doc, getDocs, writeBatch } from 'firebase/firestore';
+import { collection, doc, getDocs, setDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import { canonicalShort, normalizeCode } from '../lib/codeUtil';
 import {
@@ -42,6 +42,7 @@ export default function DevRecipeImport() {
   const [ov, setOv] = useState<Record<string, Override>>({});   // 행키 → 사람이 고른 값
   const [mFilter, setMFilter] = useState<Record<string, string>>({});   // 목록 검색어
   const [mCode, setMCode] = useState<Record<string, string>>({});       // ERP 코드 직접 입력
+  const [regBusy, setRegBusy] = useState('');
   const [saving, setSaving] = useState(false);
   const [done, setDone] = useState<string | null>(null);
 
@@ -194,6 +195,23 @@ export default function DevRecipeImport() {
     } finally { setSaving(false); }
   };
 
+  /** ERP 코드 마스터에 없는 코드를 이 화면에서 바로 등록한다.
+   *  한 번 등록해 두면 다음 제품부터는 이름으로 자동 매칭된다. */
+  const registerCode = async (key: string, code: string, name: string) => {
+    const c = normalizeCode(code);
+    if (!c || !name.trim()) return;
+    if (!confirm(`ERP 코드 마스터에 등록합니다.\n\n  ${c}  ${name}\n\n다음부터는 이름만으로 자동 매칭됩니다.`)) return;
+    setRegBusy(key);
+    try {
+      await setDoc(doc(db, 'materialErpCodes', c), { code: c, name: name.trim() }, { merge: true });
+      setMaster((prev) => prev.some((m) => m.code === c)
+        ? prev : [...prev, { name: name.trim(), code: c, uses: 0, src: 'erp' as const }]);
+      setOv((o) => ({ ...o, [key]: { code: c, name: name.trim() } }));
+    } catch (e: any) {
+      alert(`등록 실패: ${e?.message || e}`);
+    } finally { setRegBusy(''); }
+  };
+
   const fmt = (v: number, d = 2) => v.toLocaleString('ko-KR', { minimumFractionDigits: d, maximumFractionDigits: d });
 
   return (
@@ -206,7 +224,8 @@ export default function DevRecipeImport() {
         · 애매한 매칭은 <b>확정하지 않고 후보만</b> 보여줍니다. 드롭다운에서 직접 고르세요.<br />
         · 배합비 칸에 <b>‘삭제’</b> 라고 적힌 줄은 <b>빼고</b> 계산합니다 (무엇을 뺐는지 제품마다 보여줍니다).<br />
         · <b>정제수처럼 현장 BOM 에 없는 원재료</b>도 ERP 코드 마스터에서 찾습니다.
-        거기에도 없으면 <b>ERP 코드를 직접 입력</b>할 수 있습니다.
+        거기에도 없으면 <b>ERP 코드를 직접 입력</b>하고 <b>＋ 마스터 등록</b> 으로 바로 추가할 수 있습니다
+        (한 번 등록하면 다음 제품부터 이름만으로 자동 매칭됩니다).
       </div>
 
       {/* 입력 */}
@@ -456,6 +475,20 @@ export default function DevRecipeImport() {
                                       }}
                                       placeholder="ERP 코드 직접 입력"
                                       className="border rounded px-1.5 py-0.5 text-[11px] w-32 font-mono" />
+                                    {(() => {
+                                      const typed = normalizeCode(mCode[rowKey(p, r, i)] || '');
+                                      if (!typed || master.some((m) => m.code === typed)) return null;
+                                      const k = rowKey(p, r, i);
+                                      return (
+                                        <button
+                                          onClick={() => registerCode(k, typed, r.rawName)}
+                                          disabled={regBusy === k}
+                                          title={`ERP 코드 마스터에 "${typed} ${r.rawName}" 로 등록`}
+                                          className="text-[11px] border border-indigo-300 text-indigo-700 rounded px-1.5 py-0.5 hover:bg-indigo-50 disabled:text-gray-400 whitespace-nowrap">
+                                          {regBusy === k ? '등록중' : '＋ 마스터 등록'}
+                                        </button>
+                                      );
+                                    })()}
                                   </div>
                                 )}
                               </td>
