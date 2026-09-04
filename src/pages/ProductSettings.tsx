@@ -2,6 +2,7 @@ import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import { collection, deleteDoc, doc, getCountFromServer, getDoc, getDocs, onSnapshot, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import MaterialCategoryPanel from '../components/MaterialCategoryPanel';
+import DevRecipeImport from '../components/DevRecipeImport';
 import type { Material, ProductSetting } from '../types';
 import { runBackup, downloadSql } from '../lib/dbBackup';
 import type { BackupProgress, BackupResult } from '../lib/dbBackup';
@@ -41,6 +42,7 @@ export default function ProductSettings() {
   const [showYieldSub, setShowYieldSub] = useState(false);
   const [showYieldAmbient, setShowYieldAmbient] = useState(false);
   const [showCategory, setShowCategory] = useState(false);
+  const [showDevImport, setShowDevImport] = useState(false);
   const [yieldRecipeCount, setYieldRecipeCount] = useState<number | null>(null);
   const [yieldSubCount, setYieldSubCount] = useState<number | null>(null);
   const [yieldAmbientCount, setYieldAmbientCount] = useState<number | null>(null);
@@ -369,6 +371,16 @@ export default function ProductSettings() {
           · 반제품(순수본베이스·디포리육수)은 <b>지금처럼 반제품 그대로</b> 넣으시면 앱이 원물까지 자동으로 풀어서 계산합니다.<br />
           · 비어 있으면 수율 분석은 <b>기존 레시피 DB로 자동 폴백</b>합니다 — 채우는 도중에도 화면이 안 깨집니다.
         </div>
+
+        <Section
+          icon="🔗"
+          title="개발 배합비 → 분석용 레시피 변환"
+          badge=""
+          open={showDevImport}
+          onToggle={() => setShowDevImport(!showDevImport)}
+        >
+          {showDevImport && <DevRecipeImport />}
+        </Section>
 
         <Section
           icon="🧬"
