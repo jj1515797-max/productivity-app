@@ -32,7 +32,7 @@ interface Override { code: string; name: string }
 
 export default function DevRecipeImport() {
   const [text, setText] = useState('');
-  const [bom, setBom] = useState<BomIndex>(new Map());
+  const [rawBom, setRawBom] = useState<BomIndex>(new Map());
   const [bomMaster, setBomMaster] = useState<MasterIngredient[]>([]);
   const [erpMaster, setErpMaster] = useState<MasterIngredient[]>([]);
   const [packW, setPackW] = useState<Map<string, number>>(new Map());
@@ -93,7 +93,7 @@ export default function DevRecipeImport() {
         if (!c || !v.name || all.has(c)) return;
         all.set(c, { name: v.name, code: c, uses: 0, src: 'erp' });
       });
-      setBom(b);
+      setRawBom(b);
       setBomMaster([...all.values()]);
       setPackW(pw); setProdName(pn); setDocIdOf(idMap); setLoaded(true);
     } catch (e: any) {
@@ -114,12 +114,43 @@ export default function DevRecipeImport() {
     setErpMaster(list);
   }, () => {}), []);
 
-  /** BOM 쪽 + ERP 코드 쪽을 합친 최종 후보 목록. BOM 이름을 우선한다. */
+  /** BOM 안의 원재료 이름도 ERP 정본 이름으로 바꿔 둔다.
+   *  같은 코드인데 화면마다 다른 이름이 뜨면 '이게 맞나' 싶어진다. */
+  const bom = useMemo(() => {
+    if (erpMaster.length === 0) return rawBom;
+    const byCode = new Map(erpMaster.map((m) => [m.code, m.name]));
+    const out: BomIndex = new Map();
+    rawBom.forEach((list, k) => {
+      out.set(k, list.map((ing) => {
+        const c = normalizeCode(ing.code || '');
+        const n = c ? byCode.get(c) : undefined;
+        return n ? { ...ing, name: n } : ing;
+      }));
+    });
+    return out;
+  }, [rawBom, erpMaster]);
+
+  /** BOM 쪽 + ERP 코드 쪽을 합친 최종 후보 목록.
+   *  같은 코드면 '설정 › 원재료 ERP 코드' 의 이름을 우선한다 — 그쪽이 정본이고,
+   *  BOM 이름은 현장 표기라 제각각이다. (BOM 이름을 우선하면 방금 등록한
+   *  '정제수' 가 BOM 의 '정제수(후투입)' 에 덮여 목록에서 사라진다)
+   *  BOM 이름도 버리지 않고 별칭 후보로 같이 둔다 — 시트가 어느 쪽으로 쓰든 잡히게. */
   const master = useMemo(() => {
-    const all = new Map<string, MasterIngredient>();
-    bomMaster.forEach((m) => all.set(m.code, m));
-    erpMaster.forEach((m) => { if (!all.has(m.code)) all.set(m.code, m); });
-    return [...all.values()].sort((a, b) => b.uses - a.uses || a.name.localeCompare(b.name));
+    const erpByCode = new Map(erpMaster.map((m) => [m.code, m]));
+    const out: MasterIngredient[] = [];
+    const seen = new Set<string>();
+    const push = (m: MasterIngredient) => {
+      const k = `${m.code}|${normalizeMaterialName(m.name)}`;
+      if (seen.has(k)) return;
+      seen.add(k); out.push(m);
+    };
+    bomMaster.forEach((m) => {
+      const e = erpByCode.get(m.code);
+      if (e) push({ ...m, name: e.name });      // ERP 이름 우선
+      push(m);                                   // BOM 이름도 별칭으로
+    });
+    erpMaster.forEach((m) => push(m));
+    return out.sort((a, b) => b.uses - a.uses || a.name.localeCompare(b.name));
   }, [bomMaster, erpMaster]);
 
   const parsed = useMemo(() => (text.trim() ? parseDevSheet(text)
