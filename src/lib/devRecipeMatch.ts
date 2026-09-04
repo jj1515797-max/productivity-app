@@ -239,7 +239,9 @@ export function matchIngredient(
     .sort((a, b) => b.score - a.score).slice(0, 8);
   if (best2 && best2.score >= AUTO_MIN) {
     const gap = best2.score - (c2[1]?.score ?? 0);
-    const decided = best2.code && gap >= 0.12 && best2.score >= 0.9;
+    // 정리 후 이름이 그대로 일치(0.96↑)하면 2위와 조금만 벌어져도 확정한다.
+    // 0.12 격차를 요구하면 '정제수' 처럼 비슷한 이름이 마스터에 여럿일 때 영원히 미확정으로 남는다.
+    const decided = best2.code && (best2.score >= 0.96 ? gap >= 0.02 : (gap >= 0.12 && best2.score >= 0.9));
     // 이름이 정확히 같으면 BOM 밖에서 찾았어도 헷갈릴 게 없다.
     // (정제수처럼 배합비엔 있고 현장 BOM 엔 없는 원재료가 실제로 있다)
     if (decided && best2.score >= EXACT_MIN) {
@@ -348,20 +350,29 @@ export function resolveSheet(
        단, 최소한의 유사성은 있어야 한다 — 아무거나 남았다고 붙이면 조용히 틀린다. */
     const LEFTOVER_MIN = 0.35;
     const claimed = new Set(resolved.map((r) => r.match.code).filter(Boolean));
+    // 시트에서 '삭제' 라고 한 원재료는 잔여 후보에서 빼야 한다.
+    // 안 빼면 '알배추 삭제' 인데 남아 있다는 이유로 '양배추' 에 붙어버린다.
+    const skipClean = new Set((skipByProd.get(prodCode) || []).map((x) => cleanName(x.rawName)));
     const unused = (bom.get(short) || []).filter((ing) => {
       const c = normalizeCode(ing.code || '');
-      return c && !claimed.has(c);
+      return c && !claimed.has(c) && !skipClean.has(cleanName(ing.name));
     });
     const pending = resolved.filter((r) => !r.match.code);
     if (unused.length > 0 && pending.length > 0) {
       const unusedCodes = new Set(unused.map((u) => normalizeCode(u.code || '')));
+      // 양쪽에 딱 하나씩만 남았으면 소거법으로 정해진다.
+      // 이름이 하나도 안 겹쳐도(소고기 ↔ 한우(익,민찌)) 다른 후보가 없으므로 그것이다.
+      // 다만 반드시 '확인 필요' 로 표시해 사람이 눈으로 보게 한다.
+      const onlyPair = unused.length === 1 && pending.length === 1;
       pending.forEach((r) => {
         const cands = r.match.candidates.filter((c) => unusedCodes.has(c.code));
-        const best = cands[0];
-        if (!best || best.score < LEFTOVER_MIN) return;
-        // 남은 게 하나뿐이면 그것, 여럿이면 2위와 벌어져야 한다
+        const only = unused[0];
+        const best = cands[0]
+          || (onlyPair ? { name: only.name, code: normalizeCode(only.code || ''), score: 0, kind: 'leftover' as MatchKind, src: 'bom' as MatSource } : undefined);
+        if (!best || !best.code) return;
+        if (!onlyPair && best.score < LEFTOVER_MIN) return;
         const gap = best.score - (cands[1]?.score ?? 0);
-        if (unused.length === 1 || gap >= 0.1) {
+        if (onlyPair || unused.length === 1 || gap >= 0.1) {
           r.match = { ...r.match, code: best.code, name: best.name, kind: 'leftover', score: best.score, needsReview: true };
         }
       });

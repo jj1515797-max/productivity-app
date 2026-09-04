@@ -14,7 +14,7 @@ import { db } from '../firebase';
 import { canonicalShort, normalizeCode } from '../lib/codeUtil';
 import {
   BomIndex, BomIngredient, MasterIngredient, ProductReport, ResolvedRow,
-  parseDevSheet, resolveSheet,
+  cleanName, parseDevSheet, resolveSheet,
 } from '../lib/devRecipeMatch';
 
 const KIND_LABEL: Record<string, { t: string; cls: string }> = {
@@ -289,6 +289,14 @@ export default function DevRecipeImport() {
           <div className="space-y-2 max-h-[720px] overflow-y-auto">
             {reports.map((p) => {
               // '확인 필요' = 미확정 + 자동확정이지만 근거가 약한 것 + 사람이 손댄 것
+              // 지금 이 순간 기준으로 '아직 안 쓰인 BOM 원재료'. 사람이 고를 때마다 줄어든다.
+              const usedNow = new Set(p.rows.map((r, k) => effOf(p, r, k).code).filter(Boolean));
+              const skippedNow = new Set(p.skipped.map((x) => cleanName(x.rawName)));
+              const leftoverBom = (bom.get(p.short) || [])
+                .map((ing) => ({ name: ing.name, code: normalizeCode(ing.code || '') }))
+                .filter((m, k, a) => m.code && !usedNow.has(m.code)
+                  && !skippedNow.has(cleanName(m.name))
+                  && a.findIndex((y) => y.code === m.code) === k);
               const shown = p.rows.map((r, i) => ({ r, i })).filter(({ r, i }) => {
                 if (!onlyReview) return true;
                 const e = effOf(p, r, i);
@@ -386,6 +394,18 @@ export default function DevRecipeImport() {
                                     && !cands.some((c) => c.code === e.code) && (
                                     <option value={selVal}>{e.name || r.rawName} · {e.code} · 직접 입력</option>
                                   )}
+                                  {/* 이 제품 BOM 에서 아직 아무도 안 가져간 원재료를 맨 위에 둔다.
+                                      '소고기 → 한우(익,민찌)' 처럼 이름이 안 겹치는 건 이 목록에서 고르게 된다.
+                                      점수순 추천만 보여주면 정작 필요한 것이 아래로 묻힌다. */}
+                                  {!q && leftoverBom.length > 0 && (
+                                    <optgroup label={`── 이 제품 BOM 에 남은 원재료 (${leftoverBom.length}) ──`}>
+                                      {leftoverBom.map((m) => (
+                                        <option key={'lb' + m.code} value={`${m.code}||${m.name}`}>
+                                          {m.name} · {m.code}
+                                        </option>
+                                      ))}
+                                    </optgroup>
+                                  )}
                                   {/* 검색어가 있으면 추천/전체를 나누지 않는다.
                                       나눠 두면 이미 추천에 있는 항목이 전체에서 빠져 '없음' 처럼 보인다 */}
                                   {q ? (
@@ -400,14 +420,15 @@ export default function DevRecipeImport() {
                                   ) : (
                                     <>
                                       <optgroup label="── 추천 후보 ──">
-                                        {cands.filter((c) => c.code).map((c) => (
+                                        {cands.filter((c) => c.code && !leftoverBom.some((m) => m.code === c.code)).map((c) => (
                                           <option key={c.code + c.name} value={`${c.code}||${c.name}`}>
                                             {c.name} ({Math.round(c.score * 100)}%){c.src === 'erp' ? ' · ERP' : ''}
                                           </option>
                                         ))}
                                       </optgroup>
                                       <optgroup label="── 전체 원재료 ──">
-                                        {master.filter((m) => !cands.some((c) => c.code === m.code))
+                                        {master.filter((m) => !cands.some((c) => c.code === m.code)
+                                          && !leftoverBom.some((x) => x.code === m.code))
                                           .slice(0, 300).map((m) => (
                                             <option key={m.code} value={`${m.code}||${m.name}`}>
                                               {m.name} · {m.code}{m.src === 'erp' ? ' · ERP' : ''}
