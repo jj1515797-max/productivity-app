@@ -234,9 +234,31 @@ export function matchIngredient(
     return cands.sort((a, b) => b.score - a.score);
   };
 
-  // 1차: 그 제품의 BOM 안에서
   const short = canonicalShort(prodShort);
   const inBom = bom.get(short) || [];
+
+  /* 0차: 이름이 '정확히' 같은 것이 있으면 무조건 그것. 점수·격차 판정을 거치지 않는다.
+     시트에 '정제수' 라고 적혀 있고 마스터에 '정제수' 가 있으면 그게 답이다.
+     '정제수(전분용)' '정제수(분말용)' 이 옆에서 97% 로 동점을 내도 흔들릴 이유가 없다.
+     같은 이름이 코드 여럿에 걸쳐 있으면(진짜 모호) 확정하지 않고 넘어간다. */
+  const exactIn = (list: { name: string; code?: string; src?: MatSource }[]) => {
+    const hit = list.filter((x) => normalizeMaterialName(x.name) === n && normalizeCode(x.code || ''));
+    const codes = new Set(hit.map((x) => normalizeCode(x.code || '')));
+    return codes.size === 1 ? hit[0] : undefined;
+  };
+  // 그 제품 BOM 에 같은 이름이 있으면 그쪽이 우선 (제품마다 쓰는 규격이 다를 수 있다)
+  const exactHit = exactIn(inBom)
+    || exactIn(master.map((m) => ({ name: m.name, code: m.code, src: m.src })));
+  if (exactHit) {
+    const cands = scoreList([...inBom, ...master.map((m) => ({ name: m.name, code: m.code, src: m.src }))], 'fuzzy')
+      .slice(0, 8);
+    return {
+      raw, code: normalizeCode(exactHit.code || ''), name: exactHit.name,
+      kind: 'exact', score: 1, candidates: cands, needsReview: false,
+    };
+  }
+
+  // 1차: 그 제품의 BOM 안에서
   const c1 = scoreList(inBom, 'fuzzy');
   const best1 = c1[0];
   if (best1 && best1.score >= EXACT_MIN && best1.code) {
