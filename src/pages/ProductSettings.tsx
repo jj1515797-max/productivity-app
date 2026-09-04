@@ -1204,11 +1204,17 @@ interface RecipeIngredient {
   name: string;
   gPerPiece: number;
   code?: string;
+  /** 분석용 레시피만 — 원본 배합비(%) 와 개발 시트 표기 */
+  pct?: number;
+  devName?: string;
 }
 interface RecipeDoc {
   code: string;
   name: string;
   ingredients: RecipeIngredient[];
+  /** 분석용 레시피만 */
+  packWeight?: number;
+  pctSum?: number;
 }
 
 function RecipeDB({ onCountChange, collectionName = 'recipes', label = '레시피' }: { onCountChange: (n: number) => void; collectionName?: string; label?: string }) {
@@ -1237,6 +1243,170 @@ function RecipeDB({ onCountChange, collectionName = 'recipes', label = '레시�
       (r.ingredients || []).some((i) => i.name.toLowerCase().includes(q))
     );
   }, [recipes, search]);
+
+  /** 검증용 엑셀 — 화면에 보이는(검색 필터 적용된) 레시피를 그대로 내보낸다.
+   *  시트 2장: 원재료 한 줄씩 + 제품별 검산.
+   *  분석용 레시피면 배합비(%)·포장중량·개발 시트 표기까지 같이 나간다. */
+  const [dl, setDl] = useState(false);
+  const downloadXlsx = async () => {
+    if (filtered.length === 0) return;
+    setDl(true);
+    try {
+      const ExcelJS = (await import('exceljs')).default;
+      const hasPct = filtered.some((r) => (r.ingredients || []).some((i) => typeof i.pct === 'number'));
+      const wb = new ExcelJS.Workbook();
+      wb.created = new Date();
+
+      const HEAD = { bold: true, color: { argb: 'FFFFFFFF' }, size: 11 };
+      const HEAD_FILL = { type: 'pattern' as const, pattern: 'solid' as const, fgColor: { argb: 'FF1F3864' } };
+      const styleHeader = (ws: any) => {
+        const row = ws.getRow(1);
+        row.font = HEAD; row.fill = HEAD_FILL; row.height = 22;
+        row.alignment = { vertical: 'middle', horizontal: 'center' };
+        ws.views = [{ state: 'frozen', ySplit: 1 }];
+        ws.autoFilter = { from: { row: 1, column: 1 }, to: { row: 1, column: ws.columnCount } };
+      };
+
+      /* ── 시트 1: 레시피 ── */
+      const ws = wb.addWorksheet('레시피');
+      ws.columns = [
+        { header: '품목코드', key: 'pc', width: 14 },
+        { header: '제품명', key: 'pn', width: 24 },
+        ...(hasPct ? [{ header: '포장중량(g)', key: 'pw', width: 12 }] : []),
+        { header: '순번', key: 'sq', width: 6 },
+        { header: '원재료명', key: 'nm', width: 26 },
+        { header: 'ERP코드', key: 'cd', width: 14 },
+        ...(hasPct ? [{ header: '배합비(%)', key: 'pt', width: 11 }] : []),
+        { header: 'g/개', key: 'g', width: 11 },
+        ...(hasPct ? [{ header: '개발 시트 표기', key: 'dv', width: 22 }] : []),
+      ] as any;
+      styleHeader(ws);
+      let band = false;
+      filtered.forEach((r) => {
+        band = !band;
+        const ings = [...(r.ingredients || [])].sort((a, b) => (a.seq || 0) - (b.seq || 0));
+        ings.forEach((i, k) => {
+          const row = ws.addRow({
+            pc: k === 0 ? r.code : '', pn: k === 0 ? (r.name || '') : '',
+            pw: k === 0 ? (r.packWeight ?? null) : null,
+            sq: i.seq || k + 1, nm: i.name, cd: i.code || '',
+            pt: typeof i.pct === 'number' ? i.pct : null,
+            g: i.gPerPiece ?? null,
+            dv: i.devName && i.devName !== i.name ? i.devName : '',
+          });
+          // 제품 단위로 옅은 줄무늬 — 어디서 끊기는지 눈으로 보인다
+          if (band) row.eachCell((c: any) => {
+            c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFF4F7FB' } };
+          });
+          if (k === 0) row.getCell('pc').font = { bold: true };
+          row.getCell('cd').alignment = { horizontal: 'left' };
+          row.getCell('sq').alignment = { horizontal: 'center' };
+          if (hasPct) row.getCell('pt').numFmt = '0.00';
+          row.getCell('g').numFmt = '#,##0.000';
+          if (hasPct) row.getCell('pw').numFmt = '#,##0';
+          // 코드 없는 행은 빨갛게 — 검증에서 제일 먼저 볼 것
+          if (!i.code) row.getCell('cd').font = { color: { argb: 'FFC00000' }, bold: true };
+        });
+      });
+
+      /* ── 시트 2: 제품별 검산 ── */
+      const ck = wb.addWorksheet('제품별 검산');
+      ck.columns = [
+        { header: '품목코드', key: 'pc', width: 14 },
+        { header: '제품명', key: 'pn', width: 24 },
+        { header: '원재료 수', key: 'n', width: 10 },
+        { header: 'ERP코드 없음', key: 'nc', width: 12 },
+        ...(hasPct ? [
+          { header: '포장중량(g)', key: 'pw', width: 12 },
+          { header: '배합비 합계(%)', key: 'ps', width: 14 },
+          { header: '100% 차이', key: 'pd', width: 11 },
+        ] : []),
+        { header: 'g 합계', key: 'gs', width: 12 },
+        ...(hasPct ? [{ header: '포장중량 차이', key: 'gd', width: 13 }] : []),
+        { header: '판정', key: 'jd', width: 10 },
+      ] as any;
+      styleHeader(ck);
+      filtered.forEach((r) => {
+        const ings = r.ingredients || [];
+        const ps = ings.reduce((a, i) => a + (typeof i.pct === 'number' ? i.pct : 0), 0);
+        const gs = ings.reduce((a, i) => a + (i.gPerPiece || 0), 0);
+        const nc = ings.filter((i) => !i.code).length;
+        const pd = hasPct ? ps - 100 : 0;
+        const gd = hasPct && r.packWeight ? gs - r.packWeight : 0;
+        const ok = nc === 0 && (!hasPct || (Math.abs(pd) <= 0.5 && Math.abs(gd) <= 0.5));
+        const row = ck.addRow({
+          pc: r.code, pn: r.name || '', n: ings.length, nc,
+          pw: r.packWeight ?? null, ps: hasPct ? ps : null, pd: hasPct ? pd : null,
+          gs, gd: hasPct && r.packWeight ? gd : null,
+          jd: ok ? 'OK' : '확인',
+        });
+        if (hasPct) { row.getCell('ps').numFmt = '0.00'; row.getCell('pd').numFmt = '+0.00;-0.00;0.00'; row.getCell('pw').numFmt = '#,##0'; row.getCell('gd').numFmt = '+0.000;-0.000;0.000'; }
+        row.getCell('gs').numFmt = '#,##0.000';
+        ['n', 'nc', 'jd'].forEach((k) => { row.getCell(k).alignment = { horizontal: 'center' }; });
+        if (!ok) {
+          row.getCell('jd').font = { bold: true, color: { argb: 'FFC00000' } };
+          row.eachCell((c: any) => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFDECEA' } }; });
+        } else {
+          row.getCell('jd').font = { bold: true, color: { argb: 'FF107C41' } };
+        }
+        if (nc > 0) row.getCell('nc').font = { bold: true, color: { argb: 'FFC00000' } };
+      });
+
+      /* ── 시트 3: 원재료별 ──
+         같은 원재료가 제품마다 다른 코드로 붙었는지 보는 시트.
+         매칭을 자동으로 했으니 이게 검증의 핵심이다. */
+      const mat = wb.addWorksheet('원재료별');
+      mat.columns = [
+        { header: '원재료명', key: 'nm', width: 26 },
+        { header: 'ERP코드', key: 'cd', width: 14 },
+        { header: '쓰는 제품 수', key: 'np', width: 12 },
+        { header: '총 g/개 합', key: 'gs', width: 12 },
+        { header: '개발 시트 표기', key: 'dv', width: 30 },
+        { header: '점검', key: 'jd', width: 24 },
+      ] as any;
+      styleHeader(mat);
+      const byMat = new Map<string, { nm: string; cd: string; np: number; gs: number; dv: Set<string> }>();
+      const codesOfName = new Map<string, Set<string>>();
+      filtered.forEach((r) => (r.ingredients || []).forEach((i) => {
+        const k = `${i.name}|${i.code || ''}`;
+        const e = byMat.get(k) || { nm: i.name, cd: i.code || '', np: 0, gs: 0, dv: new Set<string>() };
+        e.np++; e.gs += i.gPerPiece || 0;
+        if (i.devName && i.devName !== i.name) e.dv.add(i.devName);
+        byMat.set(k, e);
+        const cs = codesOfName.get(i.name) || new Set<string>();
+        cs.add(i.code || '(없음)');
+        codesOfName.set(i.name, cs);
+      }));
+      [...byMat.values()]
+        .sort((a, b) => a.nm.localeCompare(b.nm) || a.cd.localeCompare(b.cd))
+        .forEach((e) => {
+          const multi = (codesOfName.get(e.nm)?.size || 1) > 1;
+          const note = [
+            !e.cd ? 'ERP코드 없음' : '',
+            multi ? '같은 이름에 코드가 여러 개' : '',
+          ].filter(Boolean).join(' · ');
+          const row = mat.addRow({
+            nm: e.nm, cd: e.cd, np: e.np, gs: e.gs,
+            dv: [...e.dv].join(', '), jd: note,
+          });
+          row.getCell('gs').numFmt = '#,##0.000';
+          row.getCell('np').alignment = { horizontal: 'center' };
+          if (note) {
+            row.getCell('jd').font = { bold: true, color: { argb: 'FFC00000' } };
+            row.eachCell((c: any) => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFDECEA' } }; });
+          }
+        });
+
+      const buf = await wb.xlsx.writeBuffer();
+      const url = URL.createObjectURL(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+      const a = document.createElement('a');
+      const stamp = new Date().toISOString().slice(0, 10);
+      a.href = url; a.download = `${label}_${stamp}.xlsx`; a.click();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      alert(`엑셀 생성 실패: ${e?.message || e}`);
+    } finally { setDl(false); }
+  };
 
   const delRecipe = async (code: string) => {
     if (!confirm(`${code} 레시피를 삭제할까요?`)) return;
@@ -1339,6 +1509,12 @@ function RecipeDB({ onCountChange, collectionName = 'recipes', label = '레시�
           <button onClick={() => bulkDelete(filtered)} disabled={bulkDeleting}
             className="px-3 py-2 bg-orange-600 text-white rounded text-sm font-medium hover:bg-orange-700 disabled:bg-gray-300">
             🗑️ 검색결과 삭제 ({filtered.length})
+          </button>
+        )}
+        {recipes.length > 0 && (
+          <button onClick={downloadXlsx} disabled={dl}
+            className="text-xs px-2.5 py-1.5 border border-emerald-300 text-emerald-700 rounded hover:bg-emerald-50 disabled:text-gray-400">
+            {dl ? '만드는 중...' : '📥 엑셀'}
           </button>
         )}
         {recipes.length > 0 && (
