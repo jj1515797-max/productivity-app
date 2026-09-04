@@ -12,6 +12,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { collection, doc, getDocs, onSnapshot, setDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import { canonicalShort, normalizeCode } from '../lib/codeUtil';
+import { normalizeMaterialName } from '../lib/wasteCompute';
 import {
   BomIndex, BomIngredient, MasterIngredient, ProductReport, ResolvedRow,
   cleanName, parseDevSheet, resolveSheet,
@@ -400,6 +401,12 @@ export default function DevRecipeImport() {
                           const cands = r.match.candidates;
                           const selVal = e.code ? `${e.code}||${e.name}` : '';
                           const q = (mFilter[rowKey(p, r, i)] || '').trim();
+                          // 시트 이름과 정규화 후 완전히 같은 원재료 (여러 개일 수 있다)
+                          const devN = normalizeMaterialName(r.rawName);
+                          const sameName = devN
+                            ? master.filter((m) => normalizeMaterialName(m.name) === devN)
+                            : [];
+                          const inSame = (code: string) => sameName.some((m) => m.code === code);
                           return (
                             <tr key={i} className={!e.code ? 'bg-rose-50' : e.manual ? 'bg-blue-50/50' : ''}>
                               <td className="px-2 py-1.5">
@@ -418,21 +425,36 @@ export default function DevRecipeImport() {
                                     else { const [c, n] = v.split('||'); next[rowKey(p, r, i)] = { code: c, name: n }; }
                                     setOv(next);
                                   }}
-                                  className={`border rounded px-1.5 py-1 w-full ${!e.code ? 'border-rose-400 text-rose-700' : ''}`}
+                                  className={`border rounded px-1.5 py-1 w-full ${!e.code
+                                    ? 'border-rose-400 text-rose-700'
+                                    : e.manual ? 'border-blue-400 text-blue-800' : ''}`}
                                 >
                                   <option value="">— 고르세요 —</option>
-                                  {/* 직접 입력한 코드가 마스터에 없으면 목록에 값이 없어
-                                      '고르세요' 로 남는다. 넣어줘야 무엇이 선택됐는지 보인다 */}
-                                  {e.code && !master.some((m) => m.code === e.code)
-                                    && !cands.some((c) => c.code === e.code) && (
-                                    <option value={selVal}>{e.name || r.rawName} · {e.code} · 직접 입력</option>
+                                  {/* 지금 고른 값은 무조건 맨 위에 둔다.
+                                      아래 목록에 같은 값이 있어도 상관없다 — 브라우저는 첫 항목을 잡는다.
+                                      이걸 조건부로 넣으면 이름이 한 글자만 달라도 '고르세요' 로 비어 보인다. */}
+                                  {e.code && (
+                                    <option value={selVal}>
+                                      ✓ {e.name || r.rawName} · {e.code}
+                                    </option>
+                                  )}
+                                  {/* 시트에 적힌 이름과 '똑같은' 원재료가 있으면 무조건 맨 위.
+                                      점수·격차 판정과 무관하게 눈에 보여야 바로 고를 수 있다. */}
+                                  {!q && sameName.length > 0 && (
+                                    <optgroup label="── 이름이 같은 원재료 ──">
+                                      {sameName.map((m) => (
+                                        <option key={'sn' + m.code} value={`${m.code}||${m.name}`}>
+                                          {m.name} · {m.code}
+                                        </option>
+                                      ))}
+                                    </optgroup>
                                   )}
                                   {/* 이 제품 BOM 에서 아직 아무도 안 가져간 원재료를 맨 위에 둔다.
                                       '소고기 → 한우(익,민찌)' 처럼 이름이 안 겹치는 건 이 목록에서 고르게 된다.
                                       점수순 추천만 보여주면 정작 필요한 것이 아래로 묻힌다. */}
                                   {!q && leftoverBom.length > 0 && (
                                     <optgroup label={`── 이 제품 BOM 에 남은 원재료 (${leftoverBom.length}) ──`}>
-                                      {leftoverBom.map((m) => (
+                                      {leftoverBom.filter((m) => !inSame(m.code)).map((m) => (
                                         <option key={'lb' + m.code} value={`${m.code}||${m.name}`}>
                                           {m.name} · {m.code}
                                         </option>
@@ -453,14 +475,16 @@ export default function DevRecipeImport() {
                                   ) : (
                                     <>
                                       <optgroup label="── 추천 후보 ──">
-                                        {cands.filter((c) => c.code && !leftoverBom.some((m) => m.code === c.code)).map((c) => (
+                                        {cands.filter((c) => c.code && !inSame(c.code)
+                                          && !leftoverBom.some((m) => m.code === c.code)).map((c) => (
                                           <option key={c.code + c.name} value={`${c.code}||${c.name}`}>
                                             {c.name} ({Math.round(c.score * 100)}%){c.src === 'erp' ? ' · ERP코드' : ''}
                                           </option>
                                         ))}
                                       </optgroup>
                                       <optgroup label="── 전체 원재료 ──">
-                                        {master.filter((m) => !cands.some((c) => c.code === m.code)
+                                        {master.filter((m) => !inSame(m.code)
+                                          && !cands.some((c) => c.code === m.code)
                                           && !leftoverBom.some((x) => x.code === m.code))
                                           .slice(0, 300).map((m) => (
                                             <option key={m.code} value={`${m.code}||${m.name}`}>
