@@ -405,9 +405,15 @@ export default function DevRecipeImport() {
                 .filter((m, k, a) => m.code && !usedNow.has(m.code)
                   && !skippedNow.has(cleanName(m.name))
                   && a.findIndex((y) => y.code === m.code) === k);
+              const bomCodes = new Set((bom.get(p.short) || [])
+                .map((ing) => normalizeCode(ing.code || '')).filter(Boolean));
+              const inProductBom = (c: string) => !!c && bomCodes.has(c);
               const shown = p.rows.map((r, i) => ({ r, i })).filter(({ r, i }) => {
                 if (!onlyReview) return true;
                 const e = effOf(p, r, i);
+                // BOM 에 남은 게 있으면, 그 제품 BOM 밖을 잡은 행도 보여준다 —
+                // 짝을 바꿔야 할 후보가 바로 그 행들이다
+                if (leftoverBom.length > 0 && !inProductBom(e.code)) return true;
                 return !e.code || e.manual || r.match.needsReview;
               });
               // 확인할 행이 없어도 카드는 남긴다 — 삭제·쪼개짐·누락 안내가 같이 사라지면 안 된다
@@ -425,6 +431,11 @@ export default function DevRecipeImport() {
                     <span className={p.packWeight === null ? 'text-rose-600 font-bold' : 'text-gray-500'}>
                       포장중량 {p.packWeight === null ? '미등록' : `${p.packWeight}g`}
                     </span>
+                    {leftoverBom.length > 0 && (
+                      <span className="bg-orange-100 text-orange-800 rounded px-1.5 py-0.5 font-semibold">
+                        BOM 잔여 {leftoverBom.length}종
+                      </span>
+                    )}
                   </div>
 
                   {p.problems.length > 0 && (
@@ -444,10 +455,13 @@ export default function DevRecipeImport() {
                       {p.dupCodes.map((d) => ` ${d.name} ${d.count}줄(합 ${fmt(d.pct)}%)`).join(' ·')}
                     </div>
                   )}
-                  {p.missingFromDev.length > 0 && (
+                  {/* 자동 매칭 시점이 아니라 '지금' 기준으로 센다.
+                      사람이 고른 걸 반영 안 하면, 이미 짝지어 준 원재료가 계속 남아 있다고 뜬다. */}
+                  {leftoverBom.length > 0 && (
                     <div className="px-3 py-1.5 bg-orange-50 border-b border-orange-200 text-[11px] text-orange-900">
-                      · BOM 에는 있는데 이 시트엔 없는 원재료: <b>{p.missingFromDev.map((m) => m.name).join(', ')}</b>
-                      {' '}— 개발이 뺀 것인지 확인하세요.
+                      · <b>아직 아무 줄에도 안 쓰인 BOM 원재료 {leftoverBom.length}종</b>:
+                      {' '}<b>{leftoverBom.map((m) => m.name).join(', ')}</b>
+                      {' '}— 개발이 뺀 것인지, 아니면 시트의 다른 이름이 이것인지 확인하세요.
                     </div>
                   )}
 
@@ -488,6 +502,14 @@ export default function DevRecipeImport() {
                                 <span className={`inline-block mt-0.5 text-[10px] px-1.5 rounded ${e.manual ? 'bg-blue-100 text-blue-800' : k.cls}`}>
                                   {e.manual ? '직접 지정' : k.t}{!e.manual && r.match.score > 0 && r.match.kind !== 'exact' && ` ${Math.round(r.match.score * 100)}%`}
                                 </span>
+                                {/* 이 행이 이 제품 BOM 밖의 원재료를 잡고 있는데 BOM 엔 아직 남은 게 있다.
+                                    하나씩 열어보지 않아도 어디를 볼지 바로 알 수 있게 표시한다. */}
+                                {leftoverBom.length > 0 && !inProductBom(e.code) && (
+                                  <span className="inline-block mt-0.5 ml-1 text-[10px] px-1.5 rounded bg-orange-100 text-orange-800"
+                                    title={`이 제품 BOM 에 아직 안 쓰인 원재료: ${leftoverBom.map((m) => m.name).join(', ')}`}>
+                                    BOM 잔여 {leftoverBom.length}
+                                  </span>
+                                )}
                               </td>
                               <td className="px-2 py-1.5">
                                 <select
