@@ -115,9 +115,16 @@ export function isSynonym(a: string, b: string): boolean {
 export interface BomIngredient {
   name: string;
   code?: string;
+  src?: MatSource;
 }
 /** 제품코드(canonicalShort) → 그 제품 BOM 의 원재료들 */
 export type BomIndex = Map<string, BomIngredient[]>;
+
+/** 후보 원재료의 출처.
+ *  BOM 에 아예 없는 원재료가 실제로 있다 — 정제수처럼 배합비에는 있지만
+ *  현장 BOM 에는 안 넣은 것. 그래서 ERP 코드 마스터까지 후보에 넣어야 한다. */
+export type MatSource = 'bom' | 'erp';
+export const SRC_LABEL: Record<MatSource, string> = { bom: 'BOM', erp: 'ERP 마스터' };
 
 /** 원재료 마스터 (전 제품 통합) — 제품 BOM 에서 못 찾았을 때의 2차 후보 */
 export interface MasterIngredient {
@@ -125,6 +132,7 @@ export interface MasterIngredient {
   code: string;
   /** 이 원재료가 등장하는 제품 수 — 동점일 때 흔한 쪽을 택하는 근거 */
   uses: number;
+  src: MatSource;
 }
 
 export type MatchKind =
@@ -141,6 +149,7 @@ export interface Candidate {
   code: string;
   score: number;
   kind: MatchKind;
+  src: MatSource;
 }
 
 export interface MatchResult {
@@ -198,7 +207,11 @@ export function matchIngredient(
         score = similarity(bc || bn, c || n);
         kind = 'fuzzy';
       }
-      cands.push({ name: ing.name, code: normalizeCode(ing.code || ''), score, kind: base === 'master' && kind !== 'exact' ? 'master' : kind });
+      cands.push({
+        name: ing.name, code: normalizeCode(ing.code || ''), score,
+        kind: base === 'master' && kind !== 'exact' ? 'master' : kind,
+        src: ing.src || (base === 'master' ? 'erp' : 'bom'),
+      });
     });
     return cands.sort((a, b) => b.score - a.score);
   };
@@ -219,7 +232,7 @@ export function matchIngredient(
   }
 
   // 2차: 전체 원재료 마스터
-  const c2 = scoreList(master.map((m) => ({ name: m.name, code: m.code })), 'master');
+  const c2 = scoreList(master.map((m) => ({ name: m.name, code: m.code, src: m.src })), 'master');
   const best2 = c2[0];
   const merged = [...c1, ...c2]
     .filter((x, i, a) => a.findIndex((y) => y.code === x.code && y.name === x.name) === i)
@@ -227,6 +240,11 @@ export function matchIngredient(
   if (best2 && best2.score >= AUTO_MIN) {
     const gap = best2.score - (c2[1]?.score ?? 0);
     const decided = best2.code && gap >= 0.12 && best2.score >= 0.9;
+    // 이름이 정확히 같으면 BOM 밖에서 찾았어도 헷갈릴 게 없다.
+    // (정제수처럼 배합비엔 있고 현장 BOM 엔 없는 원재료가 실제로 있다)
+    if (decided && best2.score >= EXACT_MIN) {
+      return { raw, code: best2.code, name: best2.name, kind: 'master', score: 1, candidates: merged, needsReview: false };
+    }
     return out(decided ? best2.code : '', decided ? best2.name : '', 'master', best2.score, merged);
   }
   return out('', '', 'none', best2?.score ?? 0, merged);
