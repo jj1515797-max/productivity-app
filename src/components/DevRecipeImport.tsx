@@ -9,7 +9,7 @@
  *  · 애매한 매칭은 조용히 확정하지 않고 화면에 띄워 사람이 고르게 한다.
  */
 import { useEffect, useMemo, useState } from 'react';
-import { collection, doc, getDocs, setDoc, writeBatch } from 'firebase/firestore';
+import { collection, doc, getDocs, onSnapshot, setDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import { canonicalShort, normalizeCode } from '../lib/codeUtil';
 import {
@@ -32,7 +32,8 @@ interface Override { code: string; name: string }
 export default function DevRecipeImport() {
   const [text, setText] = useState('');
   const [bom, setBom] = useState<BomIndex>(new Map());
-  const [master, setMaster] = useState<MasterIngredient[]>([]);
+  const [bomMaster, setBomMaster] = useState<MasterIngredient[]>([]);
+  const [erpMaster, setErpMaster] = useState<MasterIngredient[]>([]);
   const [packW, setPackW] = useState<Map<string, number>>(new Map());
   const [prodName, setProdName] = useState<Map<string, string>>(new Map());
   const [docIdOf, setDocIdOf] = useState<Map<string, string>>(new Map());
@@ -52,10 +53,9 @@ export default function DevRecipeImport() {
     try {
       // 정제수처럼 '배합비엔 있고 현장 BOM 엔 없는' 원재료가 있다.
       // BOM 만 후보로 쓰면 영원히 못 찾으므로 설정 › 원재료 ERP 코드까지 읽는다.
-      const [rs, ps, erp, inv] = await Promise.all([
+      const [rs, ps, inv] = await Promise.all([
         getDocs(collection(db, 'recipes')),
         getDocs(collection(db, 'productSettings')),
-        getDocs(collection(db, 'materialErpCodes')).catch(() => null),
         getDocs(collection(db, 'materialPricesInventory')).catch(() => null),
       ]);
       const b: BomIndex = new Map();
@@ -84,26 +84,42 @@ export default function DevRecipeImport() {
         if (typeof v.packWeight === 'number' && v.packWeight > 0) pw.set(short, v.packWeight);
         if (v.name) pn.set(short, v.name);
       });
-      // BOM 에서 모은 것 + 설정 › 원재료 ERP 코드 + 재고평가현황. 코드 기준으로 합친다.
       const all = new Map<string, MasterIngredient>();
       useCount.forEach((v, c) => all.set(c, { name: v.name, code: c, uses: v.uses, src: 'bom' }));
-      const addExt = (code?: string, name?: string) => {
-        const c = normalizeCode(code || '');
-        if (!c || !name) return;
-        const e = all.get(c);
-        if (e) { if (!e.name) e.name = name; return; }   // BOM 이름을 우선한다
-        all.set(c, { name, code: c, uses: 0, src: 'erp' });
-      };
-      erp?.forEach((d) => { const v = d.data() as { code?: string; name?: string }; addExt(v.code || d.id, v.name); });
-      inv?.forEach((d) => { const v = d.data() as { code?: string; name?: string }; addExt(v.code, v.name); });
+      inv?.forEach((d) => {
+        const v = d.data() as { code?: string; name?: string };
+        const c = normalizeCode(v.code || '');
+        if (!c || !v.name || all.has(c)) return;
+        all.set(c, { name: v.name, code: c, uses: 0, src: 'erp' });
+      });
       setBom(b);
-      setMaster([...all.values()].sort((a, x) => x.uses - a.uses || a.name.localeCompare(x.name)));
+      setBomMaster([...all.values()]);
       setPackW(pw); setProdName(pn); setDocIdOf(idMap); setLoaded(true);
     } catch (e: any) {
       alert(`기존 DB 를 읽지 못했습니다: ${e?.message || e}`);
     } finally { setLoading(false); }
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
+
+  /* 설정 › 원재료 ERP 코드는 실시간으로 본다.
+     한 번만 읽으면 '설정에서 방금 등록했는데 여기선 아직 없다' 가 생긴다. */
+  useEffect(() => onSnapshot(collection(db, 'materialErpCodes'), (snap) => {
+    const list: MasterIngredient[] = [];
+    snap.forEach((d) => {
+      const v = d.data() as { code?: string; name?: string };
+      const c = normalizeCode(v.code || d.id);
+      if (c && v.name) list.push({ name: v.name, code: c, uses: 0, src: 'erp' });
+    });
+    setErpMaster(list);
+  }, () => {}), []);
+
+  /** BOM 쪽 + ERP 코드 쪽을 합친 최종 후보 목록. BOM 이름을 우선한다. */
+  const master = useMemo(() => {
+    const all = new Map<string, MasterIngredient>();
+    bomMaster.forEach((m) => all.set(m.code, m));
+    erpMaster.forEach((m) => { if (!all.has(m.code)) all.set(m.code, m); });
+    return [...all.values()].sort((a, b) => b.uses - a.uses || a.name.localeCompare(b.name));
+  }, [bomMaster, erpMaster]);
 
   const parsed = useMemo(() => (text.trim() ? parseDevSheet(text)
     : { rows: [], skipped: [], errors: [], headerUsed: false }), [text]);
@@ -204,8 +220,6 @@ export default function DevRecipeImport() {
     setRegBusy(key);
     try {
       await setDoc(doc(db, 'materialErpCodes', c), { code: c, name: name.trim() }, { merge: true });
-      setMaster((prev) => prev.some((m) => m.code === c)
-        ? prev : [...prev, { name: name.trim(), code: c, uses: 0, src: 'erp' as const }]);
       setOv((o) => ({ ...o, [key]: { code: c, name: name.trim() } }));
     } catch (e: any) {
       alert(`등록 실패: ${e?.message || e}`);
@@ -457,6 +471,9 @@ export default function DevRecipeImport() {
                                     </>
                                   )}
                                 </select>
+                                {!e.code && r.match.why && (
+                                  <div className="mt-1 text-[11px] text-rose-700">↳ {r.match.why}</div>
+                                )}
                                 {(!e.code || r.match.needsReview) && (
                                   <div className="mt-1 flex gap-1">
                                     <input

@@ -2589,7 +2589,7 @@ function ErpCodeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
     if (!confirm(`'${code}' 삭제할까요?`)) return;
     await deleteDoc(doc(db, 'materialErpCodes', code));
   };
-  const updateField = async (code: string, field: 'supplier', value: string) => {
+  const updateField = async (code: string, field: 'supplier' | 'name', value: string) => {
     await setDoc(doc(db, 'materialErpCodes', code), { code, [field]: value.trim() }, { merge: true });
   };
   const deleteAll = async () => {
@@ -2644,7 +2644,7 @@ function ErpCodeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
               <thead className="bg-gray-50 text-xs text-gray-500 sticky top-0">
                 <tr>
                   <th className="px-3 py-2 text-left w-32">품목코드</th>
-                  <th className="px-3 py-2 text-left">품목명</th>
+                  <th className="px-3 py-2 text-left">품목명 <span className="font-normal text-gray-400">(눌러서 수정)</span></th>
                   <th className="px-3 py-2 text-left w-40">업체 (기본값)</th>
                   <th className="px-3 py-2 w-12"></th>
                 </tr>
@@ -2653,7 +2653,11 @@ function ErpCodeDB({ onCountChange }: { onCountChange: (n: number) => void }) {
                 {filtered.map((r) => (
                   <tr key={r.code} className="hover:bg-slate-50/60">
                     <td className="px-3 py-1.5 font-mono font-bold text-teal-700">{r.code}</td>
-                    <td className="px-3 py-1.5 text-gray-800">{r.name}</td>
+                    <td className="px-3 py-1.5">
+                      <input defaultValue={r.name} key={`${r.code}-n-${r.name}`}
+                        onBlur={(e) => { const v = e.target.value.trim(); if (v && v !== r.name) updateField(r.code, 'name', v); }}
+                        className="w-full border border-transparent hover:border-gray-300 focus:border-teal-500 rounded px-1.5 py-0.5 text-sm text-gray-800 bg-transparent" />
+                    </td>
                     <td className="px-3 py-1.5">
                       <input defaultValue={r.supplier || ''} key={`${r.code}-v-${r.supplier || ''}`}
                         onBlur={(e) => { if (e.target.value.trim() !== (r.supplier || '')) updateField(r.code, 'supplier', e.target.value); }}

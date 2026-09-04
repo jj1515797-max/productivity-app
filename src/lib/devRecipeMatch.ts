@@ -163,6 +163,8 @@ export interface MatchResult {
   candidates: Candidate[];
   /** true = 눈으로 확인 필요 */
   needsReview: boolean;
+  /** 확정하지 못한 이유 (미확정일 때만) — 화면에 그대로 보여준다 */
+  why?: string;
 }
 
 const EXACT_MIN = 0.999;
@@ -180,10 +182,26 @@ export function matchIngredient(
   const raw = (rawName || '').trim();
   const n = normalizeMaterialName(raw);
   const c = cleanName(raw);
-  const out = (code: string, name: string, kind: MatchKind, score: number, cands: Candidate[]): MatchResult => ({
-    raw, code, name, kind, score, candidates: cands,
-    needsReview: kind !== 'exact' && kind !== 'clean' ? true : !code,
-  });
+  const out = (code: string, name: string, kind: MatchKind, score: number, cands: Candidate[]): MatchResult => {
+    let why: string | undefined;
+    if (!code) {
+      const a = cands[0], bb = cands[1];
+      if (!a || a.score < AUTO_MIN) {
+        why = a
+          ? `가장 비슷한 게 ${a.name} ${Math.round(a.score * 100)}% — 기준 ${Math.round(AUTO_MIN * 100)}% 미달`
+          : '비교할 후보가 없습니다';
+      } else if (bb && a.score - bb.score < 0.12) {
+        why = `${a.name} ${Math.round(a.score * 100)}% 와 ${bb.name} ${Math.round(bb.score * 100)}% 가 비슷해 하나로 못 정했습니다`;
+      } else {
+        why = `${a.name} ${Math.round(a.score * 100)}% — 확정 기준에 못 미쳐 직접 고르셔야 합니다`;
+      }
+    }
+    return {
+      raw, code, name, kind, score, candidates: cands,
+      needsReview: kind !== 'exact' && kind !== 'clean' ? true : !code,
+      why,
+    };
+  };
 
   const scoreList = (list: BomIngredient[], base: MatchKind): Candidate[] => {
     const seen = new Set<string>();
