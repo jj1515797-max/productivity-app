@@ -133,7 +133,18 @@ export interface MasterIngredient {
   /** 이 원재료가 등장하는 제품 수 — 동점일 때 흔한 쪽을 택하는 근거 */
   uses: number;
   src: MatSource;
+  /** BOM 표기를 별칭으로 같이 넣은 항목. 이름 정본이 아니므로
+   *  '이름이 정확히 같은가' 판정에서는 뒤로 미룬다. */
+  alias?: boolean;
 }
+
+/** 고정 매핑 — 이름이 이것이면 코드는 무조건 이것.
+ *  마스터에 비슷한 이름이 여럿이라 매번 걸리는 원재료를 못 박아 둔다.
+ *  (정제수는 수율 분석에서 제외 대상이라 코드가 흔들려도 수율엔 영향이 없지만,
+ *   매번 미확정으로 남아 저장을 막는 게 문제였다) */
+export const PINNED: Record<string, { code: string; name: string }> = {
+  정제수: { code: '9999999', name: '정제수' },
+};
 
 export type MatchKind =
   | 'exact'        // 정규화 이름 완전일치 (같은 제품 BOM 안)
@@ -237,6 +248,17 @@ export function matchIngredient(
   const short = canonicalShort(prodShort);
   const inBom = bom.get(short) || [];
 
+  /* 고정 매핑이 있으면 두말 없이 그것. 판정 자체를 건너뛴다. */
+  const pin = PINNED[n];
+  if (pin) {
+    return {
+      raw, code: normalizeCode(pin.code), name: pin.name,
+      kind: 'exact', score: 1,
+      candidates: scoreList([...inBom, ...master.map((m) => ({ name: m.name, code: m.code, src: m.src }))], 'fuzzy').slice(0, 8),
+      needsReview: false,
+    };
+  }
+
   /* 0차: 이름이 '정확히' 같은 것이 있으면 무조건 그것. 점수·격차 판정을 거치지 않는다.
      시트에 '정제수' 라고 적혀 있고 마스터에 '정제수' 가 있으면 그게 답이다.
      '정제수(전분용)' '정제수(분말용)' 이 옆에서 97% 로 동점을 내도 흔들릴 이유가 없다.
@@ -247,7 +269,10 @@ export function matchIngredient(
     return codes.size === 1 ? hit[0] : undefined;
   };
   // 그 제품 BOM 에 같은 이름이 있으면 그쪽이 우선 (제품마다 쓰는 규격이 다를 수 있다)
+  // 별칭(BOM 표기)이 끼면 '같은 이름이 코드 여럿' 으로 잘못 판정된다.
+  // 정본 이름끼리 먼저 보고, 거기서 못 찾을 때만 별칭까지 본다.
   const exactHit = exactIn(inBom)
+    || exactIn(master.filter((m) => !m.alias).map((m) => ({ name: m.name, code: m.code, src: m.src })))
     || exactIn(master.map((m) => ({ name: m.name, code: m.code, src: m.src })));
   if (exactHit) {
     const cands = scoreList([...inBom, ...master.map((m) => ({ name: m.name, code: m.code, src: m.src }))], 'fuzzy')

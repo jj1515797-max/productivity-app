@@ -44,6 +44,8 @@ export default function DevRecipeImport() {
   const [ov, setOv] = useState<Record<string, Override>>({});   // 행키 → 사람이 고른 값
   const [mFilter, setMFilter] = useState<Record<string, string>>({});   // 목록 검색어
   const [mCode, setMCode] = useState<Record<string, string>>({});       // ERP 코드 직접 입력
+  const [applyAll, setApplyAll] = useState(true);   // 같은 이름은 한 번에
+  const [lastBulk, setLastBulk] = useState<{ name: string; n: number } | null>(null);
   const [regBusy, setRegBusy] = useState('');
   const [saving, setSaving] = useState(false);
   const [done, setDone] = useState<string | null>(null);
@@ -147,7 +149,7 @@ export default function DevRecipeImport() {
     bomMaster.forEach((m) => {
       const e = erpByCode.get(m.code);
       if (e) push({ ...m, name: e.name });      // ERP 이름 우선
-      push(m);                                   // BOM 이름도 별칭으로
+      push({ ...m, alias: true });               // BOM 이름도 별칭으로 (정본은 아니다)
     });
     erpMaster.forEach((m) => push(m));
     return out.sort((a, b) => b.uses - a.uses || a.name.localeCompare(b.name));
@@ -172,6 +174,29 @@ export default function DevRecipeImport() {
     return o ? { code: o.code, name: o.name, manual: true } : { code: r.match.code, name: r.match.name, manual: false };
   };
 
+  /** 한 행에서 고른 값을 같은 이름의 다른 행에도 적용한다.
+   *  개발 시트에서 이름이 같으면 같은 원재료다 — 50개 제품에서 같은 걸 50번 고를 이유가 없다.
+   *  이미 확정된 행은 건드리지 않는다 (제품별로 다른 규격을 쓴 경우를 보존). */
+  const choose = (key: string, rawName: string, val: Override | null) => {
+    const next = { ...ov };
+    if (!val) { delete next[key]; setOv(next); setLastBulk(null); return; }
+    next[key] = val;
+    let n = 0;
+    if (applyAll) {
+      const target = normalizeMaterialName(rawName);
+      reports.forEach((p) => p.rows.forEach((r, i) => {
+        const k = rowKey(p, r, i);
+        if (k === key) return;
+        if (normalizeMaterialName(r.rawName) !== target) return;
+        if (ov[k]) return;              // 사람이 이미 고른 건 안 건드림
+        if (r.match.code && !r.match.needsReview) return;   // 자동 확정된 것도 안 건드림
+        next[k] = val; n++;
+      }));
+    }
+    setOv(next);
+    setLastBulk(n > 0 ? { name: rawName, n } : null);
+  };
+
   const stat = useMemo(() => {
     let total = 0, auto = 0, review = 0, unresolved = 0, manual = 0;
     reports.forEach((p) => p.rows.forEach((r, i) => {
@@ -182,7 +207,12 @@ export default function DevRecipeImport() {
       else if (r.match.needsReview) review++;
       else auto++;
     }));
-    return { total, auto, review, unresolved, manual, prods: reports.length };
+    // 44건이라도 이름 기준으로는 몇 종뿐일 수 있다 — 실제로 몇 번 고르면 되는지 보여준다
+    const names = new Set<string>();
+    reports.forEach((p) => p.rows.forEach((r, i) => {
+      if (!effOf(p, r, i).code) names.add(normalizeMaterialName(r.rawName));
+    }));
+    return { total, auto, review, unresolved, manual, prods: reports.length, unresolvedNames: names.size };
   }, [reports, ov]);
 
   // 배합비는 품목코드별 합계가 반드시 100% 다. 어긋나면 뭔가 잘못 읽은 것이므로 저장을 막는다.
@@ -252,7 +282,7 @@ export default function DevRecipeImport() {
     setRegBusy(key);
     try {
       await setDoc(doc(db, 'materialErpCodes', c), { code: c, name: name.trim() }, { merge: true });
-      setOv((o) => ({ ...o, [key]: { code: c, name: name.trim() } }));
+      choose(key, name, { code: c, name: name.trim() });
     } catch (e: any) {
       alert(`등록 실패: ${e?.message || e}`);
     } finally { setRegBusy(''); }
@@ -306,13 +336,14 @@ export default function DevRecipeImport() {
       {reports.length > 0 && (
         <>
           {/* 요약 */}
-          <div className="grid grid-cols-2 md:grid-cols-6 gap-2">
+          <div className="grid grid-cols-2 md:grid-cols-7 gap-2">
             {([
               ['제품', stat.prods, '개', 'text-gray-800'],
               ['자동 확정', stat.auto, '건', 'text-emerald-700'],
               ['확인 권장', stat.review, '건', 'text-amber-700'],
               ['직접 지정', stat.manual, '건', 'text-blue-700'],
               ['미확정', stat.unresolved, '건', stat.unresolved > 0 ? 'text-rose-700' : 'text-gray-400'],
+              ['골라야 할 이름', stat.unresolvedNames, '종', stat.unresolvedNames > 0 ? 'text-rose-700' : 'text-gray-400'],
               ['삭제 표시로 뺌', parsed.skipped.length, '행', 'text-gray-500'],
             ] as const).map(([l, v, u, c]) => (
               <div key={l} className="border rounded px-3 py-2 bg-white">
@@ -327,7 +358,13 @@ export default function DevRecipeImport() {
               <input type="checkbox" checked={onlyReview} onChange={(e) => setOnlyReview(e.target.checked)} />
               <b>확인 필요한 행만 보기</b>
             </label>
-            <span className="text-gray-400">완전일치는 숨겨서 손댈 것만 남깁니다</span>
+            <label className="flex items-center gap-1.5 cursor-pointer">
+              <input type="checkbox" checked={applyAll} onChange={(e) => setApplyAll(e.target.checked)} />
+              <b>같은 이름은 한 번에</b>
+            </label>
+            <span className="text-gray-400">
+              한 번 고르면 <b>같은 원재료명 전부</b>에 적용됩니다 (이미 정해진 행은 그대로)
+            </span>
             <button onClick={save} disabled={!canSave || saving}
               className="ml-auto bg-indigo-600 text-white rounded px-4 py-1.5 font-semibold disabled:bg-gray-300">
               {saving ? '저장중...' : `분석용 레시피로 저장 (${stat.prods}개 제품)`}
@@ -346,6 +383,12 @@ export default function DevRecipeImport() {
                 <div>· 포장중량이 없는 제품이 있습니다: {reports.filter((p) => p.packWeight === null).slice(0, 8).map((p) => p.prodCode).join(', ')}
                   {reports.filter((p) => p.packWeight === null).length > 8 && ' 외'} → 설정 › 제품 DB 에서 입력</div>
               )}
+            </div>
+          )}
+          {lastBulk && (
+            <div className="text-xs text-blue-800 bg-blue-50 border border-blue-200 rounded px-3 py-1.5">
+              ✔ <b>{lastBulk.name}</b> — 같은 이름 <b>{lastBulk.n}건</b>에 함께 적용했습니다.
+              <button onClick={() => setLastBulk(null)} className="ml-2 underline">닫기</button>
             </div>
           )}
           {done && <div className="text-xs text-emerald-700 bg-emerald-50 border border-emerald-200 rounded p-2">✅ {done}</div>}
@@ -451,10 +494,8 @@ export default function DevRecipeImport() {
                                   value={selVal}
                                   onChange={(ev) => {
                                     const v = ev.target.value;
-                                    const next = { ...ov };
-                                    if (!v) delete next[rowKey(p, r, i)];
-                                    else { const [c, n] = v.split('||'); next[rowKey(p, r, i)] = { code: c, name: n }; }
-                                    setOv(next);
+                                    if (!v) choose(rowKey(p, r, i), r.rawName, null);
+                                    else { const [c, nm] = v.split('||'); choose(rowKey(p, r, i), r.rawName, { code: c, name: nm }); }
                                   }}
                                   className={`border rounded px-1.5 py-1 w-full ${!e.code
                                     ? 'border-rose-400 text-rose-700'
@@ -543,7 +584,7 @@ export default function DevRecipeImport() {
                                         const code = normalizeCode(ev.target.value);
                                         if (!code) return;
                                         const hit = master.find((m) => m.code === code);
-                                        setOv({ ...ov, [rowKey(p, r, i)]: { code, name: hit?.name || r.rawName } });
+                                        choose(rowKey(p, r, i), r.rawName, { code, name: hit?.name || r.rawName });
                                       }}
                                       placeholder="ERP 코드 직접 입력"
                                       className="border rounded px-1.5 py-0.5 text-[11px] w-32 font-mono" />
