@@ -22,7 +22,7 @@ const KIND_LABEL: Record<string, { t: string; cls: string }> = {
   clean:    { t: '표기차',    cls: 'bg-emerald-50 text-emerald-700' },
   contains: { t: '포함관계',  cls: 'bg-amber-100 text-amber-800' },
   fuzzy:    { t: '유사',      cls: 'bg-amber-100 text-amber-800' },
-  master:   { t: 'ERP 마스터', cls: 'bg-sky-100 text-sky-800' },
+  master:   { t: '원재료 ERP코드', cls: 'bg-sky-100 text-sky-800' },
   leftover: { t: '잔여배정',  cls: 'bg-purple-100 text-purple-800' },
   none:     { t: '못 찾음',   cls: 'bg-rose-100 text-rose-800' },
 };
@@ -51,7 +51,7 @@ export default function DevRecipeImport() {
     setLoading(true);
     try {
       // 정제수처럼 '배합비엔 있고 현장 BOM 엔 없는' 원재료가 있다.
-      // BOM 만 후보로 쓰면 영원히 못 찾으므로 ERP 코드 마스터까지 읽는다.
+      // BOM 만 후보로 쓰면 영원히 못 찾으므로 설정 › 원재료 ERP 코드까지 읽는다.
       const [rs, ps, erp, inv] = await Promise.all([
         getDocs(collection(db, 'recipes')),
         getDocs(collection(db, 'productSettings')),
@@ -84,7 +84,7 @@ export default function DevRecipeImport() {
         if (typeof v.packWeight === 'number' && v.packWeight > 0) pw.set(short, v.packWeight);
         if (v.name) pn.set(short, v.name);
       });
-      // BOM 에서 모은 것 + ERP 코드 마스터 + 재고평가현황. 코드 기준으로 합친다.
+      // BOM 에서 모은 것 + 설정 › 원재료 ERP 코드 + 재고평가현황. 코드 기준으로 합친다.
       const all = new Map<string, MasterIngredient>();
       useCount.forEach((v, c) => all.set(c, { name: v.name, code: c, uses: v.uses, src: 'bom' }));
       const addExt = (code?: string, name?: string) => {
@@ -195,12 +195,12 @@ export default function DevRecipeImport() {
     } finally { setSaving(false); }
   };
 
-  /** ERP 코드 마스터에 없는 코드를 이 화면에서 바로 등록한다.
+  /** 설정 › 원재료 ERP 코드에 없는 코드를 이 화면에서 바로 등록한다.
    *  한 번 등록해 두면 다음 제품부터는 이름으로 자동 매칭된다. */
   const registerCode = async (key: string, code: string, name: string) => {
     const c = normalizeCode(code);
     if (!c || !name.trim()) return;
-    if (!confirm(`ERP 코드 마스터에 등록합니다.\n\n  ${c}  ${name}\n\n다음부터는 이름만으로 자동 매칭됩니다.`)) return;
+    if (!confirm(`설정 › 원재료 ERP 코드에 등록합니다.\n\n  ${c}  ${name}\n\n다음부터는 이름만으로 자동 매칭됩니다.`)) return;
     setRegBusy(key);
     try {
       await setDoc(doc(db, 'materialErpCodes', c), { code: c, name: name.trim() }, { merge: true });
@@ -223,7 +223,7 @@ export default function DevRecipeImport() {
         · 개발이 쪼개 놓은 줄은 <b>합치지 않고 그대로</b> 저장합니다 (사용량 계산 때 코드 기준으로 합산됩니다).<br />
         · 애매한 매칭은 <b>확정하지 않고 후보만</b> 보여줍니다. 드롭다운에서 직접 고르세요.<br />
         · 배합비 칸에 <b>‘삭제’</b> 라고 적힌 줄은 <b>빼고</b> 계산합니다 (무엇을 뺐는지 제품마다 보여줍니다).<br />
-        · <b>정제수처럼 현장 BOM 에 없는 원재료</b>도 ERP 코드 마스터에서 찾습니다.
+        · <b>정제수처럼 현장 BOM 에 없는 원재료</b>도 설정 › 원재료 ERP 코드에서 찾습니다.
         거기에도 없으면 <b>ERP 코드를 직접 입력</b>하고 <b>＋ 마스터 등록</b> 으로 바로 추가할 수 있습니다
         (한 번 등록하면 다음 제품부터 이름만으로 자동 매칭됩니다).
       </div>
@@ -233,9 +233,9 @@ export default function DevRecipeImport() {
         <div className="flex items-center justify-between gap-2 flex-wrap">
           <div className="text-xs font-semibold text-gray-700">배합비 시트 붙여넣기</div>
           <div className="text-[11px] text-gray-500">
-            {loading ? '기존 BOM · ERP 마스터 읽는 중...'
+            {loading ? '기존 BOM · 원재료 ERP 코드 읽는 중...'
               : loaded ? <>참조 BOM <b>{bom.size}</b>개 제품 · 원재료 <b>{master.length}</b>종
-                (BOM {master.filter((m) => m.src === 'bom').length} + ERP 마스터 {master.filter((m) => m.src === 'erp').length})
+                (BOM {master.filter((m) => m.src === 'bom').length} + 원재료 ERP코드 {master.filter((m) => m.src === 'erp').length})
                 <button onClick={load} className="ml-2 underline hover:text-gray-800">다시 읽기</button></>
               : '기존 BOM 을 읽지 못했습니다'}
           </div>
@@ -432,7 +432,7 @@ export default function DevRecipeImport() {
                                       {master.filter((m) => m.name.includes(q) || m.code.includes(q))
                                         .slice(0, 300).map((m) => (
                                           <option key={m.code} value={`${m.code}||${m.name}`}>
-                                            {m.name} · {m.code}{m.src === 'erp' ? ' · ERP' : ''}
+                                            {m.name} · {m.code}{m.src === 'erp' ? ' · ERP코드' : ''}
                                           </option>
                                         ))}
                                     </optgroup>
@@ -441,7 +441,7 @@ export default function DevRecipeImport() {
                                       <optgroup label="── 추천 후보 ──">
                                         {cands.filter((c) => c.code && !leftoverBom.some((m) => m.code === c.code)).map((c) => (
                                           <option key={c.code + c.name} value={`${c.code}||${c.name}`}>
-                                            {c.name} ({Math.round(c.score * 100)}%){c.src === 'erp' ? ' · ERP' : ''}
+                                            {c.name} ({Math.round(c.score * 100)}%){c.src === 'erp' ? ' · ERP코드' : ''}
                                           </option>
                                         ))}
                                       </optgroup>
@@ -450,7 +450,7 @@ export default function DevRecipeImport() {
                                           && !leftoverBom.some((x) => x.code === m.code))
                                           .slice(0, 300).map((m) => (
                                             <option key={m.code} value={`${m.code}||${m.name}`}>
-                                              {m.name} · {m.code}{m.src === 'erp' ? ' · ERP' : ''}
+                                              {m.name} · {m.code}{m.src === 'erp' ? ' · ERP코드' : ''}
                                             </option>
                                           ))}
                                       </optgroup>
@@ -483,7 +483,7 @@ export default function DevRecipeImport() {
                                         <button
                                           onClick={() => registerCode(k, typed, r.rawName)}
                                           disabled={regBusy === k}
-                                          title={`ERP 코드 마스터에 "${typed} ${r.rawName}" 로 등록`}
+                                          title={`설정 › 원재료 ERP 코드에 "${typed} ${r.rawName}" 로 등록`}
                                           className="text-[11px] border border-indigo-300 text-indigo-700 rounded px-1.5 py-0.5 hover:bg-indigo-50 disabled:text-gray-400 whitespace-nowrap">
                                           {regBusy === k ? '등록중' : '＋ 마스터 등록'}
                                         </button>

@@ -122,9 +122,9 @@ export type BomIndex = Map<string, BomIngredient[]>;
 
 /** 후보 원재료의 출처.
  *  BOM 에 아예 없는 원재료가 실제로 있다 — 정제수처럼 배합비에는 있지만
- *  현장 BOM 에는 안 넣은 것. 그래서 ERP 코드 마스터까지 후보에 넣어야 한다. */
+ *  현장 BOM 에는 안 넣은 것. 그래서 설정 › 원재료 ERP 코드까지 후보에 넣어야 한다. */
 export type MatSource = 'bom' | 'erp';
-export const SRC_LABEL: Record<MatSource, string> = { bom: 'BOM', erp: 'ERP 마스터' };
+export const SRC_LABEL: Record<MatSource, string> = { bom: 'BOM', erp: '원재료 ERP코드' };
 
 /** 원재료 마스터 (전 제품 통합) — 제품 BOM 에서 못 찾았을 때의 2차 후보 */
 export interface MasterIngredient {
