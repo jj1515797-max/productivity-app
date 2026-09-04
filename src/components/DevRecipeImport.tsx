@@ -104,7 +104,8 @@ export default function DevRecipeImport() {
   };
   useEffect(() => { load(); /* eslint-disable-next-line */ }, []);
 
-  const parsed = useMemo(() => (text.trim() ? parseDevSheet(text) : { rows: [], errors: [], headerUsed: false }), [text]);
+  const parsed = useMemo(() => (text.trim() ? parseDevSheet(text)
+    : { rows: [], skipped: [], errors: [], headerUsed: false }), [text]);
 
   const reports: ProductReport[] = useMemo(() => {
     if (!loaded || parsed.rows.length === 0) return [];
@@ -112,6 +113,7 @@ export default function DevRecipeImport() {
       parsed.rows, bom, master,
       (short) => packW.get(short) ?? null,
       (short) => prodName.get(short) || '',
+      parsed.skipped,
     );
   }, [parsed, bom, master, packW, prodName, loaded]);
 
@@ -134,20 +136,23 @@ export default function DevRecipeImport() {
     return { total, auto, review, unresolved, manual, prods: reports.length };
   }, [reports, ov]);
 
+  // 배합비는 품목코드별 합계가 반드시 100% 다. 어긋나면 뭔가 잘못 읽은 것이므로 저장을 막는다.
+  const badSum = reports.filter((p) => Math.abs(p.pctSum - 100) > 0.5);
   const canSave = reports.length > 0 && stat.unresolved === 0
-    && reports.every((p) => p.packWeight !== null);
+    && reports.every((p) => p.packWeight !== null) && badSum.length === 0;
 
   const save = async () => {
     if (!canSave) return;
     const noCode = reports.flatMap((p) => p.rows.map((r, i) => effOf(p, r, i)).filter((e) => !e.code));
     if (noCode.length > 0) { alert(`ERP 코드가 비어 있는 행이 ${noCode.length}건 있습니다.`); return; }
-    const bad = reports.filter((p) => Math.abs(p.pctSum - 100) > 0.5);
+    const skipN = reports.reduce((s2, p) => s2 + p.skipped.length, 0);
     const msg = [
       `분석용 레시피 DB(recipesYield)에 ${reports.length}개 제품을 저장합니다.`,
       '',
       '· 현장 BOM(레시피 DB)은 건드리지 않습니다.',
       '· 개발이 쪼개 놓은 줄은 합치지 않고 그대로 저장합니다.',
-      bad.length > 0 ? `\n⚠ 배합비 합계가 100%가 아닌 제품 ${bad.length}개: ${bad.slice(0, 5).map((p) => `${p.prodCode}(${p.pctSum.toFixed(1)}%)`).join(', ')}` : '',
+      skipN > 0 ? `· 배합비 칸이 '삭제' 인 ${skipN}행은 빼고 저장합니다.` : '',
+      `· 전 제품 배합비 합계 100% 확인 완료.`,
       '',
       '진행할까요?',
     ].filter(Boolean).join('\n');
@@ -199,6 +204,7 @@ export default function DevRecipeImport() {
         · 저장 대상은 <b>분석용 레시피 DB(recipesYield)</b> 뿐입니다 — <b>현장 BOM(레시피 DB)은 건드리지 않습니다.</b><br />
         · 개발이 쪼개 놓은 줄은 <b>합치지 않고 그대로</b> 저장합니다 (사용량 계산 때 코드 기준으로 합산됩니다).<br />
         · 애매한 매칭은 <b>확정하지 않고 후보만</b> 보여줍니다. 드롭다운에서 직접 고르세요.<br />
+        · 배합비 칸에 <b>‘삭제’</b> 라고 적힌 줄은 <b>빼고</b> 계산합니다 (무엇을 뺐는지 제품마다 보여줍니다).<br />
         · <b>정제수처럼 현장 BOM 에 없는 원재료</b>도 ERP 코드 마스터에서 찾습니다.
         거기에도 없으면 <b>ERP 코드를 직접 입력</b>할 수 있습니다.
       </div>
@@ -217,7 +223,9 @@ export default function DevRecipeImport() {
         </div>
         <div className="text-[11px] text-gray-500">
           <b>제품코드 / (제품명) / 원재료명 / 배합비%</b> — 탭 또는 쉼표 구분. 머리글이 있으면 자동 인식합니다.
-          배합비가 <code className="bg-gray-100 px-1 rounded">0.9165</code> 처럼 백분율 서식이면 자동으로 %로 바꿉니다.
+          배합비는 <b>품목코드별 합계가 100%</b>여야 합니다 — 아니면 저장을 막습니다.
+          엑셀에서 값으로 붙여 <code className="bg-gray-100 px-1 rounded">0.3369</code> 처럼 들어와도
+          <b>제품 단위 합계를 보고</b> 자동으로 %로 바꿉니다 (0.19% 같은 소량 원재료는 그대로 둡니다).
         </div>
         <textarea value={text} onChange={(e) => { setText(e.target.value); setOv({}); setDone(null); }}
           placeholder={'품목코드\t제품명\t원재료명\t배합비(%)\nE-001\t순수쌀미음\t정제수\t91.65\nE-001\t순수쌀미음\t맵쌀\t8.35'}
@@ -233,13 +241,14 @@ export default function DevRecipeImport() {
       {reports.length > 0 && (
         <>
           {/* 요약 */}
-          <div className="grid grid-cols-2 md:grid-cols-5 gap-2">
+          <div className="grid grid-cols-2 md:grid-cols-6 gap-2">
             {([
               ['제품', stat.prods, '개', 'text-gray-800'],
               ['자동 확정', stat.auto, '건', 'text-emerald-700'],
               ['확인 권장', stat.review, '건', 'text-amber-700'],
               ['직접 지정', stat.manual, '건', 'text-blue-700'],
               ['미확정', stat.unresolved, '건', stat.unresolved > 0 ? 'text-rose-700' : 'text-gray-400'],
+              ['삭제 표시로 뺌', parsed.skipped.length, '행', 'text-gray-500'],
             ] as const).map(([l, v, u, c]) => (
               <div key={l} className="border rounded px-3 py-2 bg-white">
                 <div className="text-[11px] text-gray-500">{l}</div>
@@ -262,6 +271,12 @@ export default function DevRecipeImport() {
           {!canSave && (
             <div className="text-xs text-rose-700">
               {stat.unresolved > 0 && <div>· 미확정 {stat.unresolved}건을 먼저 지정해야 저장할 수 있습니다.</div>}
+              {badSum.length > 0 && (
+                <div>· <b>배합비 합계가 100%가 아닌 제품 {badSum.length}개</b>:
+                  {' '}{badSum.slice(0, 6).map((p) => `${p.prodCode} ${p.pctSum.toFixed(2)}%`).join(', ')}
+                  {badSum.length > 6 && ' 외'}
+                  {' '}→ 열을 잘못 잡았거나 빠진 줄이 있는지 확인하세요.</div>
+              )}
               {reports.some((p) => p.packWeight === null) && (
                 <div>· 포장중량이 없는 제품이 있습니다: {reports.filter((p) => p.packWeight === null).slice(0, 8).map((p) => p.prodCode).join(', ')}
                   {reports.filter((p) => p.packWeight === null).length > 8 && ' 외'} → 설정 › 제품 DB 에서 입력</div>
@@ -279,13 +294,15 @@ export default function DevRecipeImport() {
                 const e = effOf(p, r, i);
                 return !e.code || e.manual || r.match.needsReview;
               });
-              if (onlyReview && shown.length === 0 && p.problems.length === 0) return null;
+              // 확인할 행이 없어도 카드는 남긴다 — 삭제·쪼개짐·누락 안내가 같이 사라지면 안 된다
               return (
                 <div key={p.short} className="border rounded bg-white">
                   <div className="px-3 py-2 border-b bg-slate-50 flex items-baseline gap-2 flex-wrap text-xs">
                     <b className="text-sm text-gray-800">{p.prodCode}</b>
                     <span className="text-gray-600">{p.name || p.rows[0]?.prodName}</span>
-                    <span className="text-gray-400">{p.rows.length}행</span>
+                    <span className="text-gray-400">
+                      {p.rows.length}행{p.skipped.length > 0 && ` (삭제 ${p.skipped.length})`}
+                    </span>
                     <span className={Math.abs(p.pctSum - 100) > 0.5 ? 'text-rose-600 font-bold' : 'text-gray-500'}>
                       합계 {fmt(p.pctSum)}%
                     </span>
@@ -297,6 +314,12 @@ export default function DevRecipeImport() {
                   {p.problems.length > 0 && (
                     <div className="px-3 py-1.5 bg-amber-50 border-b border-amber-200 text-[11px] text-amber-900">
                       {p.problems.map((x, i) => <div key={i}>· {x}</div>)}
+                    </div>
+                  )}
+                  {p.skipped.length > 0 && (
+                    <div className="px-3 py-1.5 bg-gray-100 border-b text-[11px] text-gray-600">
+                      · 배합비 칸이 <b>‘{p.skipped[0].mark}’</b> 라 <b>{p.skipped.length}행을 뺐습니다</b>:
+                      {' '}<b>{p.skipped.map((x) => x.rawName).join(', ')}</b>
                     </div>
                   )}
                   {p.dupCodes.length > 0 && (
@@ -312,6 +335,12 @@ export default function DevRecipeImport() {
                     </div>
                   )}
 
+                  {shown.length === 0 ? (
+                    <div className="px-3 py-2 text-[11px] text-emerald-700">
+                      ✓ 전 행 자동 확정 — 확인할 것이 없습니다
+                      <button onClick={() => setOnlyReview(false)} className="ml-2 underline hover:text-emerald-900">전체 보기</button>
+                    </div>
+                  ) : (
                   <div className="overflow-x-auto">
                     <table className="w-full text-xs">
                       <thead className="bg-white text-gray-500 border-b">
@@ -420,6 +449,7 @@ export default function DevRecipeImport() {
                       </tbody>
                     </table>
                   </div>
+                  )}
                 </div>
               );
             })}

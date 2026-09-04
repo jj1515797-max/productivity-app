@@ -254,7 +254,25 @@ export interface DevRow {
   prodCode: string;     // 개발 시트의 제품코드 (원본 표기)
   prodName?: string;
   rawName: string;      // 개발 시트의 원재료명
-  pct: number;          // 배합비 %
+  pct: number;          // 배합비 % (제품 단위로 보정된 값)
+  /** 셀에 '%' 기호가 있었나 — 백분율 서식 판정의 결정적 근거 */
+  hadPercentSign?: boolean;
+}
+
+/** 배합비 칸에 숫자 대신 이 말이 적혀 있으면 그 줄은 쓰지 않는다는 뜻이다.
+ *  (개발 시트에서 뺀 원재료를 지우지 않고 표시만 해두는 경우) */
+const SKIP_MARKS = ['삭제', '삭재', '제외', '미사용', '사용안함', '없음', 'x', 'X', '-', 'n/a', 'na'];
+export function isSkipMark(v: string): boolean {
+  const t = (v || '').trim().toLowerCase().replace(/\s+/g, '');
+  if (!t) return false;
+  return SKIP_MARKS.some((m) => t === m.toLowerCase() || t.startsWith(m.toLowerCase()));
+}
+
+/** 삭제 표시로 건너뛴 줄 — 조용히 버리지 않고 화면에 보여준다 */
+export interface SkippedRow {
+  prodCode: string;
+  rawName: string;
+  mark: string;
 }
 
 export interface ResolvedRow extends DevRow {
@@ -272,6 +290,8 @@ export interface ProductReport {
   pctSum: number;
   /** BOM 에는 있는데 개발 시트엔 없는 원재료 */
   missingFromDev: BomIngredient[];
+  /** 배합비 칸에 '삭제' 라고 적혀 건너뛴 줄 */
+  skipped: SkippedRow[];
   /** 같은 ERP 코드로 여러 줄이 매칭됨 (개발이 쪼개 놓은 경우).
    *  합치지 않고 그대로 저장한다 — 확인용 정보일 뿐이다. */
   dupCodes: { code: string; name: string; count: number; pct: number }[];
@@ -285,6 +305,7 @@ export function resolveSheet(
   master: MasterIngredient[],
   packWeightOf: (short: string) => number | null,
   productNameOf: (short: string) => string,
+  skippedRows: SkippedRow[] = [],
 ): ProductReport[] {
   const byProd = new Map<string, DevRow[]>();
   rows.forEach((r) => {
@@ -294,8 +315,25 @@ export function resolveSheet(
     byProd.get(k)!.push(r);
   });
 
+  // 삭제 표시된 줄도 제품별로 묶어 둔다 (그 제품에 삭제만 있는 경우도 보여야 한다)
+  const skipByProd = new Map<string, SkippedRow[]>();
+  skippedRows.forEach((r) => {
+    const k = r.prodCode.trim();
+    if (!byProd.has(k)) byProd.set(k, []);
+    skipByProd.set(k, [...(skipByProd.get(k) || []), r]);
+  });
+
   const out: ProductReport[] = [];
-  byProd.forEach((list, prodCode) => {
+  byProd.forEach((list0, prodCode) => {
+    /* 백분율 서식 보정 — 반드시 제품 단위로 판단한다.
+       엑셀에서 값으로 붙여넣으면 33.69% 가 0.3369 로 온다. 그때는 합계가 1 근처다.
+       반대로 셀에 '%' 가 있거나 합계가 100 근처면 이미 % 이므로 건드리면 안 된다.
+       (행마다 '1 이하면 ×100' 을 하면 0.19% 같은 소량 원재료가 19% 로 튄다) */
+    const rawSum = list0.reduce((s, r) => s + r.pct, 0);
+    const anyPct = list0.some((r) => r.hadPercentSign);
+    const scale = (!anyPct && rawSum > 0.9 && rawSum < 1.1) ? 100 : 1;
+    const list = scale === 1 ? list0 : list0.map((r) => ({ ...r, pct: r.pct * 100 }));
+
     const short = canonicalShort(prodCode);
     const pw = packWeightOf(short);
     const resolved: ResolvedRow[] = list.map((r) => {
@@ -345,9 +383,11 @@ export function resolveSheet(
 
     // BOM 에는 있는데 개발 시트엔 없는 것
     const got = new Set(resolved.map((r) => r.match.code).filter(Boolean));
+    // 삭제 표시된 원재료는 '시트에 없다' 고 또 경고하지 않는다 — 일부러 뺀 것이다
+    const skippedNames = new Set((skipByProd.get(prodCode) || []).map((x) => cleanName(x.rawName)));
     const missingFromDev = (bom.get(short) || []).filter((ing) => {
       const c = normalizeCode(ing.code || '');
-      return c && !got.has(c);
+      return c && !got.has(c) && !skippedNames.has(cleanName(ing.name));
     });
 
     const problems: string[] = [];
@@ -363,6 +403,7 @@ export function resolveSheet(
     out.push({
       prodCode, short, name: productNameOf(short), packWeight: pw,
       rows: resolved, pctSum, missingFromDev, dupCodes, problems,
+      skipped: skipByProd.get(prodCode) || [],
     });
   });
   return out.sort((a, b) => a.short.localeCompare(b.short));
@@ -370,10 +411,13 @@ export function resolveSheet(
 
 /** 붙여넣기 파싱 — 제품코드 / (제품명) / 원재료명 / 배합비%
  *  헤더가 있으면 열 위치를 찾아 쓰고, 없으면 열 개수로 추정한다. */
-export function parseDevSheet(text: string): { rows: DevRow[]; errors: string[]; headerUsed: boolean } {
+export function parseDevSheet(text: string): {
+  rows: DevRow[]; skipped: SkippedRow[]; errors: string[]; headerUsed: boolean;
+} {
   const errors: string[] = [];
+  const skipped: SkippedRow[] = [];
   const lines = text.split('\n').filter((l) => l.trim());
-  if (lines.length === 0) return { rows: [], errors: ['데이터가 없습니다'], headerUsed: false };
+  if (lines.length === 0) return { rows: [], skipped: [], errors: ['데이터가 없습니다'], headerUsed: false };
 
   const split = (l: string) => (l.includes('\t') ? l.split('\t') : l.split(',')).map((c) => c.trim());
   const norm = (s: string) => s.replace(/\s+/g, '').replace(/\([^)]*\)/g, '').toLowerCase();
@@ -402,10 +446,17 @@ export function parseDevSheet(text: string): { rows: DevRow[]; errors: string[];
     if (!prodCode && !rawName) continue;
     if (!prodCode) { errors.push(`${i + 1}행: 제품코드 없음 — "${lines[i].trim().slice(0, 40)}"`); continue; }
     if (!rawName) { errors.push(`${i + 1}행: 원재료명 없음`); continue; }
+    // 배합비 칸에 '삭제' 라고 적힌 줄은 오류가 아니라 '빼라는 뜻' 이다
+    if (isSkipMark(pctRaw)) { skipped.push({ prodCode, rawName, mark: pctRaw }); continue; }
     const pct = parseFloat(pctRaw);
     if (!isFinite(pct)) { errors.push(`${i + 1}행: 배합비를 읽을 수 없음 — "${pctRaw}"`); continue; }
-    // 백분율 서식(0.9165)으로 붙은 경우도 받아들인다
-    rows.push({ prodCode, prodName: mi >= 0 ? (cells[mi] || '').trim() : '', rawName, pct: pct <= 1 && pct > 0 ? pct * 100 : pct });
+    // ⚠ 여기서 '1 이하면 ×100' 같은 행 단위 판정을 하면 안 된다.
+    //    0.19% 처럼 소량 원재료는 실제로 1% 미만이라 100배로 부풀려진다.
+    //    백분율 서식 판정은 제품 단위 합계를 보고 resolveSheet 에서 한다.
+    rows.push({
+      prodCode, prodName: mi >= 0 ? (cells[mi] || '').trim() : '', rawName, pct,
+      hadPercentSign: (cells[pi] || '').includes('%'),
+    });
   }
-  return { rows, errors, headerUsed };
+  return { rows, skipped, errors, headerUsed };
 }
