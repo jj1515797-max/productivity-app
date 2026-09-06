@@ -1217,6 +1217,51 @@ interface RecipeDoc {
   pctSum?: number;
 }
 
+/** 더블클릭하면 고칠 수 있는 칸.
+ *  평소엔 그냥 글씨라 표가 조용하고, 고칠 때만 입력칸이 된다.
+ *  Enter 저장 · Esc 취소 · 밖을 클릭해도 저장. */
+function EditableCell({ value, onSave, mono, placeholder, title }: {
+  value: string;
+  onSave: (v: string) => void | Promise<void>;
+  mono?: boolean; placeholder?: string; title?: string;
+}) {
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(value);
+  useEffect(() => { setDraft(value); }, [value]);
+
+  const commit = () => {
+    setEditing(false);
+    const v = draft.trim();
+    if (v !== value) onSave(v);
+  };
+  if (!editing) {
+    return (
+      <span
+        onDoubleClick={() => { setDraft(value); setEditing(true); }}
+        title={title || '더블클릭하면 수정'}
+        className={`inline-block min-w-[3rem] px-1 -mx-1 rounded cursor-text
+          hover:bg-blue-50 hover:ring-1 hover:ring-blue-200 ${mono ? 'font-mono' : ''}
+          ${value ? '' : 'text-gray-300'}`}
+      >
+        {value || placeholder || '—'}
+      </span>
+    );
+  }
+  return (
+    <input
+      autoFocus
+      value={draft}
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') { e.preventDefault(); commit(); }
+        if (e.key === 'Escape') { setDraft(value); setEditing(false); }
+      }}
+      className={`w-full border rounded px-1.5 py-0.5 text-sm focus:ring-1 focus:ring-blue-400 ${mono ? 'font-mono' : ''}`}
+    />
+  );
+}
+
 function RecipeDB({ onCountChange, collectionName = 'recipes', label = '레시피' }: { onCountChange: (n: number) => void; collectionName?: string; label?: string }) {
   const COL = collectionName;
   const [recipes, setRecipes] = useState<RecipeDoc[]>([]);
@@ -1514,6 +1559,38 @@ function RecipeDB({ onCountChange, collectionName = 'recipes', label = '레시�
     } finally { setDl(false); }
   };
 
+  /** 제품코드 변경 = 문서 ID 변경. 새로 만들고 옛것을 지운다. */
+  const renameCode = async (r: RecipeDoc, newCode: string) => {
+    const nc = newCode.trim();
+    if (!nc || nc === r.code) return;
+    if (recipes.some((x) => x.code === nc)) {
+      alert(`'${nc}' 코드가 이미 있습니다. 다른 코드를 쓰거나 기존 것을 먼저 정리해 주세요.`);
+      return;
+    }
+    if (!confirm(`제품코드를 바꿉니다.\n\n  ${r.code}  →  ${nc}\n\n(문서를 새로 만들고 옛 코드는 지웁니다)`)) return;
+    try {
+      const { code: _drop, ...rest } = r as any;
+      await setDoc(doc(db, COL, nc), { ...rest, code: nc }, { merge: false });
+      await deleteDoc(doc(db, COL, r.code));
+      setExpanded((x) => (x === r.code ? nc : x));
+    } catch (e: any) {
+      alert(`코드 변경 실패: ${e?.message || e}`);
+    }
+  };
+
+  const renameProduct = async (r: RecipeDoc, name: string) => {
+    try { await setDoc(doc(db, COL, r.code), { name }, { merge: true }); }
+    catch (e: any) { alert(`제품명 변경 실패: ${e?.message || e}`); }
+  };
+
+  /** 원재료명 변경 — ingredients 배열을 통째로 다시 쓴다 */
+  const renameIng = async (r: RecipeDoc, seq: number, name: string) => {
+    if (!name) return;
+    const next = (r.ingredients || []).map((i) => (i.seq === seq ? { ...i, name } : i));
+    try { await setDoc(doc(db, COL, r.code), { ingredients: next }, { merge: true }); }
+    catch (e: any) { alert(`원재료명 변경 실패: ${e?.message || e}`); }
+  };
+
   const delRecipe = async (code: string) => {
     if (!confirm(`${code} 레시피를 삭제할까요?`)) return;
     await deleteDoc(doc(db, COL, code));
@@ -1638,18 +1715,24 @@ function RecipeDB({ onCountChange, collectionName = 'recipes', label = '레시�
           <table className="w-full text-sm">
             <thead className="bg-slate-50 text-xs text-gray-600 sticky top-0 z-10">
               <tr>
-                <th className="px-3 py-2 text-left">코드</th>
-                <th className="px-3 py-2 text-left">제품명</th>
+                <th className="px-3 py-2 text-left">코드 <span className="font-normal text-gray-400">(더블클릭 수정)</span></th>
+                <th className="px-3 py-2 text-left">제품명 <span className="font-normal text-gray-400">(더블클릭 수정)</span></th>
                 <th className="px-3 py-2 text-right">원재료수</th>
                 <th className="px-3 py-2 w-24"></th>
               </tr>
             </thead>
             <tbody>
               {filtered.map((r) => (
-                <>
-                  <tr key={r.code} className="border-t hover:bg-slate-50">
-                    <td className="px-3 py-1.5 font-mono">{r.code}</td>
-                    <td className="px-3 py-1.5">{r.name}</td>
+                <Fragment key={r.code}>
+                  <tr className="border-t hover:bg-slate-50">
+                    <td className="px-3 py-1.5">
+                      <EditableCell value={r.code} mono onSave={(v) => renameCode(r, v)}
+                        title="더블클릭하면 제품코드 수정 (문서를 새로 만들고 옛 코드는 지웁니다)" />
+                    </td>
+                    <td className="px-3 py-1.5">
+                      <EditableCell value={r.name || ''} placeholder="(제품명 없음)"
+                        onSave={(v) => renameProduct(r, v)} />
+                    </td>
                     <td className="px-3 py-1.5 text-right">{r.ingredients?.length || 0}</td>
                     <td className="px-3 py-1.5 text-right">
                       <button onClick={() => setExpanded(expanded === r.code ? null : r.code)}
@@ -1664,7 +1747,7 @@ function RecipeDB({ onCountChange, collectionName = 'recipes', label = '레시�
                           <thead className="text-gray-500">
                             <tr>
                               <th className="text-right pr-2 w-12">순번</th>
-                              <th className="text-left">원재료</th>
+                              <th className="text-left">원재료 <span className="font-normal text-gray-400">(더블클릭 수정)</span></th>
                               <th className="text-left w-28">원재료코드</th>
                               <th className="text-right pr-2 w-32">식재료필요량(g)</th>
                             </tr>
@@ -1673,7 +1756,9 @@ function RecipeDB({ onCountChange, collectionName = 'recipes', label = '레시�
                             {(r.ingredients || []).map((ing) => (
                               <tr key={ing.seq} className="border-t border-gray-200">
                                 <td className="text-right pr-2 text-gray-500">{ing.seq}</td>
-                                <td>{ing.name}</td>
+                                <td>
+                                  <EditableCell value={ing.name} onSave={(v) => renameIng(r, ing.seq, v)} />
+                                </td>
                                 <td className="py-0.5">
                                   <input
                                     key={`${r.code}-${ing.seq}-code-${ing.code || ''}`}
@@ -1707,7 +1792,7 @@ function RecipeDB({ onCountChange, collectionName = 'recipes', label = '레시�
                       </td>
                     </tr>
                   )}
-                </>
+                </Fragment>
               ))}
             </tbody>
           </table>
