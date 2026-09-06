@@ -125,9 +125,25 @@ export type BomIndex = Map<string, BomIngredient[]>;
 
 /** 그 제품의 BOM. 전체코드로 먼저 찾고, 없을 때만 단축코드로 떨어진다. */
 export function bomFor(bom: BomIndex, prodCode: string): BomIngredient[] {
-  const exact = bom.get(normalizeCode(prodCode));
-  if (exact) return exact;
-  return bom.get(canonicalShort(prodCode)) || [];
+  return bomSourceFor(bom, prodCode).list;
+}
+
+/** BOM 을 '어디서' 가져왔는지까지 돌려준다.
+ *  전체코드로 못 찾고 단축코드로 떨어졌다면 다른 제품의 BOM 을 보고 있을 수 있다.
+ *  그 사실을 화면에 찍어야 '왜 엉뚱한 원재료가 뜨지' 를 사람이 판정할 수 있다. */
+export function bomSourceFor(bom: BomIndex, prodCode: string): {
+  list: BomIngredient[];
+  /** 'exact' = 그 제품코드 문서 · 'short' = 단축코드로 찾음 · 'none' = 없음 */
+  how: 'exact' | 'short' | 'none';
+  key: string;
+} {
+  const full = normalizeCode(prodCode);
+  const exact = bom.get(full);
+  if (exact) return { list: exact, how: 'exact', key: full };
+  const sh = canonicalShort(prodCode);
+  const byShort = bom.get(sh);
+  if (byShort) return { list: byShort, how: 'short', key: sh };
+  return { list: [], how: 'none', key: full };
 }
 
 /** 후보 원재료의 출처.

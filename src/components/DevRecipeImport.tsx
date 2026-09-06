@@ -15,7 +15,7 @@ import { canonicalShort, normalizeCode } from '../lib/codeUtil';
 import { normalizeMaterialName } from '../lib/wasteCompute';
 import {
   BomIndex, BomIngredient, MasterIngredient, ProductReport, ResolvedRow,
-  bomFor, cleanName, parseDevSheet, resolveSheet,
+  bomFor, bomSourceFor, cleanName, parseDevSheet, resolveSheet,
 } from '../lib/devRecipeMatch';
 
 const KIND_LABEL: Record<string, { t: string; cls: string }> = {
@@ -496,8 +496,16 @@ export default function DevRecipeImport() {
                   {/* 이 제품 BOM 전체를 펼쳐 볼 수 있어야 한다.
                       '안 쓰인 것' 만 보여주면 그게 맞는 말인지 확인할 방법이 없다. */}
                   {(() => {
-                    const list = bomFor(bom, p.prodCode);
-                    if (list.length === 0) return null;
+                    const src = bomSourceFor(bom, p.prodCode);
+                    const list = src.list;
+                    if (list.length === 0) return (
+                      <div className="px-3 py-2 bg-red-600 text-white text-[12px] font-bold border-b">
+                        🚨 레시피 DB 에 <span className="bg-white text-red-700 rounded px-1.5">{p.prodCode}</span> 문서가 없습니다
+                        <span className="font-normal text-red-100 ml-1">
+                          — 코드를 확인하거나 레시피 DB 에 먼저 등록해 주세요
+                        </span>
+                      </div>
+                    );
                     const open = !!showBom[p.short];
                     const usedC = new Set(p.rows.map((r, k) => effOf(p, r, k).code).filter(Boolean));
                     const takenBy = new Map<string, string[]>();
@@ -510,9 +518,15 @@ export default function DevRecipeImport() {
                         <button onClick={() => setShowBom({ ...showBom, [p.short]: !open })}
                           className="w-full text-left px-3 py-1.5 text-[11px] text-gray-600 hover:bg-gray-50">
                           {open ? '▾' : '▸'} <b>이 제품 현장 BOM {list.length}종</b> 보기
-                          <span className="text-gray-400 ml-1">
-                            — 화면이 말하는 BOM 이 실제와 맞는지 여기서 확인하세요
-                          </span>
+                          {src.how === 'exact' ? (
+                            <span className="text-gray-400 ml-1">
+                              — 레시피 DB 의 <b className="font-mono">{p.prodCode}</b> 문서. ERP BOM 과 맞는지 확인하세요
+                            </span>
+                          ) : (
+                            <span className="ml-1 bg-red-600 text-white rounded px-1.5 py-0.5 font-bold">
+                              ⚠ {p.prodCode} 문서가 없어 단축코드 {src.key} 로 찾은 것입니다 — 다른 제품 BOM 일 수 있습니다
+                            </span>
+                          )}
                         </button>
                         {open && (
                           <div className="px-3 pb-2 flex flex-wrap gap-1">
