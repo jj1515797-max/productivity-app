@@ -475,8 +475,8 @@ export default function DevRecipeImport() {
                       포장중량 {p.packWeight === null ? '미등록' : `${p.packWeight}g`}
                     </span>
                     {leftoverBom.length > 0 && (
-                      <span className="bg-orange-100 text-orange-800 rounded px-1.5 py-0.5 font-semibold">
-                        BOM 잔여 {leftoverBom.length}종
+                      <span className="bg-red-600 text-white rounded px-2 py-0.5 font-bold">
+                        🚨 BOM 잔여 {leftoverBom.length}종
                       </span>
                     )}
                   </div>
@@ -501,10 +501,26 @@ export default function DevRecipeImport() {
                   {/* 자동 매칭 시점이 아니라 '지금' 기준으로 센다.
                       사람이 고른 걸 반영 안 하면, 이미 짝지어 준 원재료가 계속 남아 있다고 뜬다. */}
                   {leftoverBom.length > 0 && (
-                    <div className="px-3 py-1.5 bg-orange-50 border-b border-orange-200 text-[11px] text-orange-900">
-                      · <b>아직 아무 줄에도 안 쓰인 BOM 원재료 {leftoverBom.length}종</b>:
-                      {' '}<b>{leftoverBom.map((m) => m.name).join(', ')}</b>
-                      {' '}— 개발이 뺀 것인지, 아니면 시트의 다른 이름이 이것인지 확인하세요.
+                    <div className="px-3 py-2 bg-red-600 text-white border-b border-red-700">
+                      <div className="flex items-start gap-2">
+                        <span className="text-base leading-none mt-0.5">🚨</span>
+                        <div>
+                          <div className="font-bold text-[13px]">
+                            아직 아무 줄에도 안 쓰인 BOM 원재료 {leftoverBom.length}종
+                          </div>
+                          <div className="mt-1 flex flex-wrap gap-1">
+                            {leftoverBom.map((m) => (
+                              <span key={m.code}
+                                className="bg-white text-red-700 rounded px-1.5 py-0.5 text-[12px] font-bold">
+                                {m.name}
+                              </span>
+                            ))}
+                          </div>
+                          <div className="mt-1 text-[11px] text-red-100">
+                            개발이 뺀 것인지, 아니면 시트의 다른 이름이 이것인지 확인하세요.
+                          </div>
+                        </div>
+                      </div>
                     </div>
                   )}
 
@@ -548,7 +564,7 @@ export default function DevRecipeImport() {
                                 {/* 이 행이 이 제품 BOM 밖의 원재료를 잡고 있는데 BOM 엔 아직 남은 게 있다.
                                     하나씩 열어보지 않아도 어디를 볼지 바로 알 수 있게 표시한다. */}
                                 {leftoverBom.length > 0 && !inProductBom(e.code) && (
-                                  <span className="inline-block mt-0.5 ml-1 text-[10px] px-1.5 rounded bg-orange-100 text-orange-800 font-semibold"
+                                  <span className="inline-block mt-0.5 ml-1 text-[10px] px-1.5 rounded bg-red-600 text-white font-bold"
                                     title={`이 코드는 이 제품 BOM 에 없습니다.\n아직 안 쓰인 BOM 원재료: ${leftoverBom.map((m) => m.name).join(', ')}`}>
                                     ⚠ BOM 밖 · 잔여 {leftoverBom.length}
                                   </span>
