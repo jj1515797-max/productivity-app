@@ -46,6 +46,7 @@ export default function DevRecipeImport() {
   const [mCode, setMCode] = useState<Record<string, string>>({});       // ERP 코드 직접 입력
   const [applyAll, setApplyAll] = useState(true);   // 같은 이름은 한 번에
   const [lastBulk, setLastBulk] = useState<{ name: string; n: number; skip: number } | null>(null);
+  const [showBom, setShowBom] = useState<Record<string, boolean>>({});   // 제품별 BOM 펼침
   const [regBusy, setRegBusy] = useState('');
   const [saving, setSaving] = useState(false);
   const [done, setDone] = useState<string | null>(null);
@@ -492,6 +493,52 @@ export default function DevRecipeImport() {
                       {' '}<b>{p.skipped.map((x) => x.rawName).join(', ')}</b>
                     </div>
                   )}
+                  {/* 이 제품 BOM 전체를 펼쳐 볼 수 있어야 한다.
+                      '안 쓰인 것' 만 보여주면 그게 맞는 말인지 확인할 방법이 없다. */}
+                  {(() => {
+                    const list = bomFor(bom, p.prodCode);
+                    if (list.length === 0) return null;
+                    const open = !!showBom[p.short];
+                    const usedC = new Set(p.rows.map((r, k) => effOf(p, r, k).code).filter(Boolean));
+                    const takenBy = new Map<string, string[]>();
+                    p.rows.forEach((r, k) => {
+                      const c = effOf(p, r, k).code;
+                      if (c) takenBy.set(c, [...(takenBy.get(c) || []), r.rawName]);
+                    });
+                    return (
+                      <div className="border-b bg-white">
+                        <button onClick={() => setShowBom({ ...showBom, [p.short]: !open })}
+                          className="w-full text-left px-3 py-1.5 text-[11px] text-gray-600 hover:bg-gray-50">
+                          {open ? '▾' : '▸'} <b>이 제품 현장 BOM {list.length}종</b> 보기
+                          <span className="text-gray-400 ml-1">
+                            — 화면이 말하는 BOM 이 실제와 맞는지 여기서 확인하세요
+                          </span>
+                        </button>
+                        {open && (
+                          <div className="px-3 pb-2 flex flex-wrap gap-1">
+                            {list.map((ing) => {
+                              const c = normalizeCode(ing.code || '');
+                              const used = c && usedC.has(c);
+                              const by = takenBy.get(c) || [];
+                              return (
+                                <span key={c + ing.name}
+                                  title={used ? `시트의 '${by.join(', ')}' 가 이 원재료로 갔습니다` : '아무 줄도 이 원재료를 안 씁니다'}
+                                  className={`text-[11px] rounded px-1.5 py-0.5 border ${used
+                                    ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                                    : 'bg-red-600 border-red-700 text-white font-bold'}`}>
+                                  {used ? '✓' : '🚨'} {ing.name}
+                                  <span className={used ? 'text-emerald-500 ml-1' : 'text-red-100 ml-1'}>{c}</span>
+                                  {used && by.length > 0 && (
+                                    <span className="text-emerald-600 ml-1">← {by.join(', ')}</span>
+                                  )}
+                                </span>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </div>
+                    );
+                  })()}
                   {p.dupCodes.length > 0 && (
                     <div className="px-3 py-1.5 bg-blue-50 border-b border-blue-200 text-[11px] text-blue-900">
                       · 같은 원재료가 여러 줄로 쪼개져 있습니다 (합치지 않고 그대로 저장):
