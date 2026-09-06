@@ -117,8 +117,18 @@ export interface BomIngredient {
   code?: string;
   src?: MatSource;
 }
-/** 제품코드(canonicalShort) → 그 제품 BOM 의 원재료들 */
+/** 제품코드 → 그 제품 BOM 의 원재료들.
+ *  키는 두 가지로 들어간다 — 정규화한 전체코드(F-003-01)와 단축코드(F03).
+ *  단축코드만 쓰면 F-003-01 과 F-003-51 이 같은 F03 으로 뭉개져
+ *  서로 다른 제품의 원재료가 섞인다. 반드시 전체코드를 먼저 본다. */
 export type BomIndex = Map<string, BomIngredient[]>;
+
+/** 그 제품의 BOM. 전체코드로 먼저 찾고, 없을 때만 단축코드로 떨어진다. */
+export function bomFor(bom: BomIndex, prodCode: string): BomIngredient[] {
+  const exact = bom.get(normalizeCode(prodCode));
+  if (exact) return exact;
+  return bom.get(canonicalShort(prodCode)) || [];
+}
 
 /** 후보 원재료의 출처.
  *  BOM 에 아예 없는 원재료가 실제로 있다 — 정제수처럼 배합비에는 있지만
@@ -183,10 +193,10 @@ const EXACT_MIN = 0.999;
 export const AUTO_MIN = 0.72;
 
 /** 개발 시트의 원재료명 하나를 매칭한다.
- *  @param prodShort 제품 단축코드 (A01 등). BOM 후보를 좁히는 데 쓴다. */
+ *  @param prodCode 제품코드(전체코드 그대로). BOM 후보를 좁히는 데 쓴다. */
 export function matchIngredient(
   rawName: string,
-  prodShort: string,
+  prodCode: string,
   bom: BomIndex,
   master: MasterIngredient[],
 ): MatchResult {
@@ -245,8 +255,7 @@ export function matchIngredient(
     return cands.sort((a, b) => b.score - a.score);
   };
 
-  const short = canonicalShort(prodShort);
-  const inBom = bom.get(short) || [];
+  const inBom = bomFor(bom, prodCode);
 
   /* 고정 매핑이 있으면 두말 없이 그것. 판정 자체를 건너뛴다. */
   const pin = PINNED[n];
@@ -404,7 +413,7 @@ export function resolveSheet(
     const short = canonicalShort(prodCode);
     const pw = packWeightOf(short);
     const resolved: ResolvedRow[] = list.map((r) => {
-      const m = matchIngredient(r.rawName, short, bom, master);
+      const m = matchIngredient(r.rawName, prodCode, bom, master);
       return { ...r, match: m, gPerPiece: pw !== null ? (r.pct / 100) * pw : null };
     });
 
@@ -418,7 +427,7 @@ export function resolveSheet(
     // 시트에서 '삭제' 라고 한 원재료는 잔여 후보에서 빼야 한다.
     // 안 빼면 '알배추 삭제' 인데 남아 있다는 이유로 '양배추' 에 붙어버린다.
     const skipClean = new Set((skipByProd.get(prodCode) || []).map((x) => cleanName(x.rawName)));
-    const unused = (bom.get(short) || []).filter((ing) => {
+    const unused = bomFor(bom, prodCode).filter((ing) => {
       const c = normalizeCode(ing.code || '');
       return c && !claimed.has(c) && !skipClean.has(cleanName(ing.name));
     });
@@ -461,7 +470,7 @@ export function resolveSheet(
     const got = new Set(resolved.map((r) => r.match.code).filter(Boolean));
     // 삭제 표시된 원재료는 '시트에 없다' 고 또 경고하지 않는다 — 일부러 뺀 것이다
     const skippedNames = new Set((skipByProd.get(prodCode) || []).map((x) => cleanName(x.rawName)));
-    const missingFromDev = (bom.get(short) || []).filter((ing) => {
+    const missingFromDev = bomFor(bom, prodCode).filter((ing) => {
       const c = normalizeCode(ing.code || '');
       return c && !got.has(c) && !skippedNames.has(cleanName(ing.name));
     });
@@ -474,7 +483,7 @@ export function resolveSheet(
     const rv = resolved.filter((r) => r.match.code && r.match.needsReview).length;
     if (rv > 0) problems.push(`${rv}건 자동 매칭됨 — 눈으로 확인 권장`);
     if (missingFromDev.length > 0) problems.push(`BOM 에 있는데 시트에 없는 원재료 ${missingFromDev.length}종`);
-    if (!bom.has(short)) problems.push('이 제품의 기존 BOM 이 없어 후보를 좁히지 못했습니다');
+    if (bomFor(bom, prodCode).length === 0) problems.push('이 제품의 기존 BOM 이 없어 후보를 좁히지 못했습니다');
 
     out.push({
       prodCode, short, name: productNameOf(short), packWeight: pw,

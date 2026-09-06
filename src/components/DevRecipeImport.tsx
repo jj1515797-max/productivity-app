@@ -15,7 +15,7 @@ import { canonicalShort, normalizeCode } from '../lib/codeUtil';
 import { normalizeMaterialName } from '../lib/wasteCompute';
 import {
   BomIndex, BomIngredient, MasterIngredient, ProductReport, ResolvedRow,
-  cleanName, parseDevSheet, resolveSheet,
+  bomFor, cleanName, parseDevSheet, resolveSheet,
 } from '../lib/devRecipeMatch';
 
 const KIND_LABEL: Record<string, { t: string; cls: string }> = {
@@ -64,13 +64,25 @@ export default function DevRecipeImport() {
       const b: BomIndex = new Map();
       const useCount = new Map<string, { name: string; code: string; uses: number }>();
       const idMap = new Map<string, string>();
+      /* ⚠ 단축코드로만 색인하면 F-003-01 과 F-003-51 이 같은 F03 으로 뭉개져
+         서로 다른 제품의 원재료가 섞인다(엉뚱한 'BOM 잔여' 가 뜬다).
+         전체코드로 색인하고, 단축코드는 그 코드를 쓰는 제품이 하나뿐일 때만 만든다. */
+      const shortCount = new Map<string, number>();
+      rs.forEach((d) => {
+        const v = d.data() as { code?: string };
+        const sh = canonicalShort(v.code || d.id);
+        if (sh) shortCount.set(sh, (shortCount.get(sh) || 0) + 1);
+      });
       rs.forEach((d) => {
         const v = d.data() as { code?: string; name?: string; ingredients?: { name: string; code?: string }[] };
+        const full = normalizeCode(v.code || d.id);
         const short = canonicalShort(v.code || d.id);
-        if (!short) return;
-        idMap.set(short, d.id);
+        if (!full) return;
+        idMap.set(full, d.id);
+        if (short && shortCount.get(short) === 1) idMap.set(short, d.id);
         const list: BomIngredient[] = (v.ingredients || []).map((i) => ({ name: i.name, code: i.code }));
-        b.set(short, [...(b.get(short) || []), ...list]);
+        b.set(full, [...(b.get(full) || []), ...list]);
+        if (short && shortCount.get(short) === 1) b.set(short, list);
         list.forEach((i) => {
           const c = normalizeCode(i.code || '');
           if (!c) return;
@@ -193,7 +205,7 @@ export default function DevRecipeImport() {
       const codeInAnyBom = [...bom.values()].some((list) =>
         list.some((ing) => normalizeCode(ing.code || '') === val.code));
       reports.forEach((p2) => {
-        const pBomCodes = new Set((bom.get(p2.short) || [])
+        const pBomCodes = new Set(bomFor(bom, p2.prodCode)
           .map((ing) => normalizeCode(ing.code || '')).filter(Boolean));
         // 이 제품에서 아직 아무 줄도 안 가져간 BOM 원재료가 있나
         const used = new Set(p2.rows.map((r2, k2) => {
@@ -267,7 +279,8 @@ export default function DevRecipeImport() {
       for (let i = 0; i < reports.length; i += CHUNK) {
         const batch = writeBatch(db);
         reports.slice(i, i + CHUNK).forEach((p) => {
-          const id = docIdOf.get(p.short) || p.prodCode;
+          // 전체코드로 먼저 찾는다. 단축코드로만 찾으면 F-003-01 이 F-003-51 문서를 덮어쓸 수 있다.
+          const id = docIdOf.get(normalizeCode(p.prodCode)) || docIdOf.get(p.short) || p.prodCode;
           batch.set(doc(db, 'recipesYield', id), {
             code: p.prodCode,
             name: p.name || p.rows[0]?.prodName || '',
@@ -430,12 +443,12 @@ export default function DevRecipeImport() {
               // 지금 이 순간 기준으로 '아직 안 쓰인 BOM 원재료'. 사람이 고를 때마다 줄어든다.
               const usedNow = new Set(p.rows.map((r, k) => effOf(p, r, k).code).filter(Boolean));
               const skippedNow = new Set(p.skipped.map((x) => cleanName(x.rawName)));
-              const leftoverBom = (bom.get(p.short) || [])
+              const leftoverBom = bomFor(bom, p.prodCode)
                 .map((ing) => ({ name: ing.name, code: normalizeCode(ing.code || '') }))
                 .filter((m, k, a) => m.code && !usedNow.has(m.code)
                   && !skippedNow.has(cleanName(m.name))
                   && a.findIndex((y) => y.code === m.code) === k);
-              const bomCodes = new Set((bom.get(p.short) || [])
+              const bomCodes = new Set(bomFor(bom, p.prodCode)
                 .map((ing) => normalizeCode(ing.code || '')).filter(Boolean));
               const inProductBom = (c: string) => !!c && bomCodes.has(c);
               const shown = p.rows.map((r, i) => ({ r, i })).filter(({ r, i }) => {
