@@ -167,6 +167,10 @@ export function analyze(
         month: r.month, severity: 'warn', size: Math.abs(gap),
         title: `${mLabel(r.month)} 구매팀 투입량과 재고 계산값이 ${fmt(Math.abs(gap))} 다릅니다`,
         detail: `구매팀 ${fmt(r.entry.input)} vs 기초+입고−기말 ${fmt(r.calcInput)}. `
+          + (r.entry.open !== null && r.entry.inbound !== null
+            ? `구매팀 값이 맞다면 기말재고가 ${fmt(r.entry.open + r.entry.inbound - r.entry.input)} 이어야 합니다 `
+              + `(지금 넣으신 값 ${fmt(r.entry.close!)} 보다 ${fmt(Math.abs(gap))} ${gap > 0 ? '적음' : '많음'}). `
+            : '')
           + `같은 달을 두 방법으로 센 건데 값이 다르면 월말 입고 반영 시점이나 창고 이동분이 빠졌을 가능성이 큽니다. `
           + `아래 표는 구매팀 값을 기준으로 계산했습니다.`,
       });
