@@ -249,15 +249,26 @@ export function analyze(
       span.forEach((s) => { s.flag = 'timing'; s.cluster = label; claimed.add(s.month); });
       if (seenCluster.has(label)) continue;
       seenCluster.add(label);
-      const worst = span.reduce((m, s) => (Math.abs(s.diff!) > Math.abs(m.diff!) ? s : m), span[0]);
+      const worst = span.reduce((m, s2) => (Math.abs(s2.diff!) > Math.abs(m.diff!) ? s2 : m), span[0]);
+      const head = span[0];
+      // 기말재고 오차는 다음 달 기초재고가 되므로 반대 부호로 그대로 되돌아온다.
+      // 구간 첫 달이 오차가 처음 생긴 달이다.
+      const over = head.diff! < 0;
       findings.push({
-        month: worst.month, severity: 'warn', size: Math.abs(worst.diff!),
-        title: `${label} 은 따로 보면 이상하지만 합치면 맞습니다 (재고조사 시점 오차)`,
-        detail: span.map((s) => `${mLabel(s.month)} ${s.diff! > 0 ? '+' : ''}${fmt(s.diff!)}`).join(' / ')
+        month: head.month, severity: 'warn', size: Math.abs(worst.diff!),
+        title: `${label} 은 따로 보면 이상하지만 합치면 맞습니다 (한 달 이월 오차)`,
+        detail: span.map((s2) => `${mLabel(s2.month)} ${s2.diff! > 0 ? '+' : ''}${fmt(s2.diff!)}`).join(' / ')
           + ` → 합계 ${best.d > 0 ? '+' : ''}${fmt(best.d)} (${pct(best.d / best.t)}). `
-          + `${mLabel(worst.month)} 하나만 보면 ${worst.diff! < 0 ? '이론사용량이 더 많아 불가능해 보이지만' : '로스가 과해 보이지만'}, `
-          + `${span.length}개월을 합치면 정상 범위로 돌아옵니다. 재고 실사일이 월 마감일과 어긋나 한 달 몫이 옆 달로 밀린 것입니다. `
-          + `수량 자체는 맞으니 재고 실사일만 마감일에 맞추면 사라집니다.`,
+          + `어느 한 달의 기말재고가 틀리면 그 값이 그대로 다음 달 기초재고가 되므로, `
+          + `오차가 다음 달에 반대 부호로 되돌아옵니다. 이 구간이 정확히 그 모양이라 총량은 맞습니다. `
+          + `${mLabel(head.month)}에 오차가 시작됐으니 그 달을 보세요 — `
+          + (over
+            ? `${mLabel(head.month)} 기말재고를 실제보다 ${fmt(-head.diff!)}개쯤 많게 셌거나, `
+              + `${mLabel(head.month)} 입고가 그만큼 덜 잡혔을 가능성이 큽니다.`
+            : `${mLabel(head.month)} 기말재고를 실제보다 ${fmt(head.diff!)}개쯤 적게 셌거나, `
+              + `${mLabel(head.month)} 입고가 그만큼 더 잡혔을 가능성이 큽니다.`)
+          + ` 월말에 도착했지만 검수 전이라 실물은 창고에 있고 전표는 다음 달로 넘어간 물량이 대표적입니다. `
+          + `파렛트 단위로 세는 자재면 한 파렛트만 어긋나도 이만큼 벌어집니다.`,
       });
       continue;
     }

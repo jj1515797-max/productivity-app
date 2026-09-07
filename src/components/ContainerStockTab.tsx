@@ -45,7 +45,7 @@ const SEV: Record<Severity, { bg: string; bar: string; icon: string; label: stri
 
 const FLAG_STYLE: Record<string, { chip: string; text: string; bar: string }> = {
   ok: { chip: 'bg-emerald-100 text-emerald-700', text: '정상', bar: '#10b981' },
-  timing: { chip: 'bg-amber-100 text-amber-700', text: '시점오차', bar: '#f59e0b' },
+  timing: { chip: 'bg-amber-100 text-amber-700', text: '이월오차', bar: '#f59e0b' },
   bad: { chip: 'bg-red-100 text-red-700', text: '이상', bar: '#ef4444' },
   none: { chip: 'bg-gray-100 text-gray-400', text: '미입력', bar: '#cbd5e1' },
 };
@@ -269,7 +269,7 @@ export default function ContainerStockTab() {
         c.border = border;
       });
       r.rows.forEach((x) => {
-        const note = x.flag === 'timing' ? `시점오차 — ${x.cluster} 합치면 정상`
+        const note = x.flag === 'timing' ? `이월오차 — ${x.cluster} 합치면 정상`
           : x.flag === 'bad' ? (x.diff! < 0 ? '이론사용량이 투입량보다 많음 — 확인 필요' : '로스 기준 초과 — 확인 필요')
           : x.flag === 'ok' ? '' : '미입력';
         const row = ws.addRow([`${Number(x.month.slice(5, 7))}월`,
@@ -389,7 +389,7 @@ export default function ContainerStockTab() {
               <div className="flex items-center gap-1.5">
                 <span className="font-bold text-gray-800 text-sm">{t.mat.label}</span>
                 {t.bad > 0 && <span className="px-1.5 py-0.5 rounded-full bg-red-600 text-white text-[10px] font-bold">이상 {t.bad}</span>}
-                {t.bad === 0 && t.timing > 0 && <span className="px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 text-[10px] font-bold">시점 {t.timing}</span>}
+                {t.bad === 0 && t.timing > 0 && <span className="px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 text-[10px] font-bold">이월 {t.timing}</span>}
                 {t.bad === 0 && t.timing === 0 && t.filled > 0 && <span className="px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-bold">정상</span>}
               </div>
               {t.filled === 0 ? (
@@ -440,7 +440,7 @@ export default function ContainerStockTab() {
         <div className="px-4 py-2.5 border-b bg-slate-50 flex items-center gap-2 flex-wrap">
           <span className="font-bold text-gray-800 text-sm">{mat.label} · 월별 차이와 누적</span>
           <span className="ml-auto flex items-center gap-3 text-[11px] text-gray-600">
-            <Legend c="#10b981" t="정상" /><Legend c="#f59e0b" t="시점오차" /><Legend c="#ef4444" t="이상" />
+            <Legend c="#10b981" t="정상" /><Legend c="#f59e0b" t="이월오차" /><Legend c="#ef4444" t="이상" />
             <span className="flex items-center gap-1"><span className="inline-block w-4 h-0.5 bg-slate-800" />누적</span>
             <span className="flex items-center gap-1"><span className="inline-block w-3 h-3 rounded-sm bg-emerald-500/10 border border-emerald-300" />정상 로스 범위</span>
           </span>
@@ -565,10 +565,12 @@ export default function ContainerStockTab() {
           <p><b>3) 차이 = 투입 − 이론</b> 은 <b>항상 0 이상</b>이어야 합니다. 파손·시운전·불량만큼 더 쓰니까요.
             <span className="text-red-600 font-semibold"> 음수면 용기 없이 제품을 만들었다는 뜻이라 물리적으로 불가능</span>하고,
             재고조사·입고·생산량 중 하나가 틀린 것입니다.</p>
-          <p><b>4) 시점오차 판정.</b> 한 달이 크게 음수인데 옆 달이 그만큼 양수라면, 수량이 틀린 게 아니라
-            <b> 재고 실사 날짜가 월 마감일과 어긋나</b> 한 달 몫이 옆 달로 밀린 것입니다.
-            이 도구는 최대 3개월까지 합쳐 보고, 합쳐서 정상 범위로 돌아오면 <span className="text-amber-600 font-semibold">시점오차</span>로 표시합니다 — 수량 자체는 맞습니다.</p>
-          <p><b>5) 누적선이 진짜 답입니다.</b> 월별 막대는 실사 시점 때문에 흔들리지만, 누적은 상쇄되어 남습니다.
+          <p><b>4) 이월오차 판정.</b> 한 달이 크게 음수인데 옆 달이 그만큼 양수라면 수량이 틀린 게 아닙니다.
+            <b>어느 한 달의 기말재고가 틀리면 그 값이 그대로 다음 달 기초재고가 되기 때문에</b>,
+            오차가 다음 달에 반대 부호로 되돌아옵니다 — 실사 날짜와는 상관없이 생기는 현상입니다.
+            이 도구는 최대 3개월까지 합쳐 보고, 합쳐서 정상 범위로 돌아오면 <span className="text-amber-600 font-semibold">이월오차</span>로 표시하고
+            <b>오차가 처음 생긴 달</b>을 짚어 줍니다. 그 달의 실사표와 월말 입고 전표를 보시면 됩니다.</p>
+          <p><b>5) 누적선이 진짜 답입니다.</b> 월별 막대는 한 달치 오차가 되돌아오며 흔들리지만, 누적은 상쇄되어 남습니다.
             누적선이 완만하게 우상향하면 정상, 계속 아래로 내려가면 입고 누락이나 생산량 과다집계를 의심하세요.</p>
           <p><b>6) 기초재고 연속성.</b> 이번 달 기초재고는 지난달 기말재고와 같아야 합니다. 다르면 장부가 끊긴 것이라
             그 달 투입량 자체를 믿을 수 없어 <span className="text-red-600 font-semibold">가장 먼저</span> 짚어 줍니다.</p>
