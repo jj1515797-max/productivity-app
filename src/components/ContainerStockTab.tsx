@@ -319,6 +319,12 @@ export default function ContainerStockTab() {
      같은 말을 여섯 줄로 늘어놓는 대신 한 줄로 알리고 진단은 감춘다. */
   const specOff = fit ? fit.fitted / fit.spec - 1 : 0;
   const specStale = !!fit && Math.abs(specOff) > 0.03;
+  /* 역산값이 업체 표기와 30% 넘게 벌어지면 필름 로스로 설명되는 크기가 아니다.
+     그런 값을 '맞추기' 로 굳혀 버리면 틀린 기준이 정답처럼 저장된다. 먼저 기준부터 보게 한다. */
+  const curSrc: TheorySource = srcOverride[mat.id] || mat.source;
+  const srcChanged = curSrc !== mat.source;
+  const fitOff = fit && mat.roll ? fit.fitted / ROLL_DEFAULT[mat.roll] - 1 : 0;
+  const fitAbsurd = !!fit && Math.abs(fitOff) > 0.3;
 
   // 합계 행: 열마다 따로 더한다. 기초·기말은 재고 수준이라 더해도 뜻이 없어 비워 둔다.
   const colSum = useMemo(() => {
@@ -554,21 +560,52 @@ export default function ContainerStockTab() {
             <div className="px-4 py-2.5 border-b bg-slate-50 flex items-center gap-2 flex-wrap">
               <span className="font-bold text-gray-800 text-sm">🎞 1롤당 실제 포장수 역산</span>
               <span className="text-xs text-gray-500">필름은 이 값을 알아내는 게 목적입니다</span>
-              {Math.round(fit.fitted) !== rolls[mat.roll] && (
+              <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
+                srcChanged ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-gray-600'}`}>
+                기준: {SOURCE_LABEL[curSrc]}{srcChanged ? ' · 기본값 아님' : ''}
+              </span>
+              <span className="px-2 py-0.5 rounded-full bg-slate-100 text-gray-600 text-[11px] font-bold">
+                지금 설정: 1롤 {nf(rolls[mat.roll])}개
+              </span>
+              {!fitAbsurd && Math.round(fit.fitted) !== rolls[mat.roll] && (
                 <button onClick={() => { setRolls((p) => ({ ...p, [mat.roll!]: Math.round(fit.fitted) }));
                   setDirty((p) => new Set(p).add('_config')); }}
                   className="ml-auto px-3 py-1.5 text-xs rounded bg-blue-600 text-white font-bold hover:bg-blue-700">
                   이 값({nf(fit.fitted)})으로 맞추기
                 </button>
               )}
+              {rolls[mat.roll] !== ROLL_DEFAULT[mat.roll] && (
+                <button onClick={() => { setRolls((p) => ({ ...p, [mat.roll!]: ROLL_DEFAULT[mat.roll!] }));
+                  setDirty((p) => new Set(p).add('_config')); }}
+                  className={`px-3 py-1.5 text-xs rounded border font-semibold hover:bg-gray-50 ${fitAbsurd ? 'ml-auto' : ''}`}>
+                  업체 표기({nf(ROLL_DEFAULT[mat.roll])})로 되돌리기
+                </button>
+              )}
             </div>
             <div className="p-4 space-y-3">
+              {fitAbsurd && (
+                <div className="bg-red-50 border border-red-300 rounded-lg p-3 text-sm text-red-700">
+                  🚨 <b>역산값이 업체 표기와 {Math.abs(fitOff * 100).toFixed(0)}% 차이납니다 — 이건 필름 로스로 설명될 크기가 아닙니다.</b>
+                  <div className="text-xs text-red-600 mt-1.5 leading-relaxed">
+                    롤 갈이 버림이나 불량은 아무리 커도 수십 % 입니다. 이 정도로 벌어지면 <b>이론사용량 기준이 잘못 잡힌 것</b>입니다.
+                    지금 <b>「{SOURCE_LABEL[curSrc]}」</b>으로 계산 중인데, {mat.label}이라면 <b>「{SOURCE_LABEL[mat.source]}」</b>이어야 합니다.
+                    아래 표 오른쪽 위 <b>「이론사용량 기준」</b>을 바꿔 보세요. 기준이 맞을 때까지 「맞추기」는 잠가 뒀습니다 —
+                    틀린 값을 굳혀 놓으면 나중에 더 헷갈립니다.
+                  </div>
+                </div>
+              )}
               <p className="text-xs text-gray-600 leading-relaxed">
                 <b>누적 생산 {nf(fit.prod)}개 ÷ 누적 투입 {un(fit.used)}롤 = 롤당 {nf(fit.fitted)}개.</b>{' '}
-                업체 표기 {nf(ROLL_DEFAULT[mat.roll])}개와 {Math.abs(100 * (fit.fitted / ROLL_DEFAULT[mat.roll] - 1)).toFixed(1)}% 차이 나는데,
-                이 차이가 <b>롤 갈이할 때 버리는 앞부분 · 불량 · 시운전을 다 합친 필름 로스</b>입니다.
-                규격 자체가 표기보다 짧을 수도 있어 데이터만으로는 둘을 가르지 못합니다 —
-                <b> 새 롤 하나를 끝까지 쓰며 몇 개 포장하는지 한 번 세어 보면</b> 그 자리에서 갈립니다.
+                {fitAbsurd ? (
+                  <>이 숫자는 <b>기준을 바로잡기 전까지 믿을 수 없습니다</b> — 위의 빨간 칸을 먼저 보세요.</>
+                ) : (
+                  <>
+                    업체 표기 {nf(ROLL_DEFAULT[mat.roll])}개와 {Math.abs(fitOff * 100).toFixed(1)}% 차이 나는데,
+                    이 차이가 <b>롤 갈이할 때 버리는 앞부분 · 불량 · 시운전을 다 합친 필름 로스</b>입니다.
+                    규격 자체가 표기보다 짧을 수도 있어 데이터만으로는 둘을 가르지 못합니다 —
+                    <b> 새 롤 하나를 끝까지 쓰며 몇 개 포장하는지 한 번 세어 보면</b> 그 자리에서 갈립니다.
+                  </>
+                )}
               </p>
               <div>
                 <div className="text-xs font-bold text-gray-500 mb-1.5">달마다 따로 역산하면</div>
@@ -650,7 +687,7 @@ export default function ContainerStockTab() {
         <div className="px-4 py-2.5 border-b bg-slate-50 font-bold text-gray-800 text-sm">
           자동 진단 <span className="text-xs text-gray-500 font-normal">· {mat.label} · 심각한 순</span>
         </div>
-        {specStale ? (
+        {specStale && !fitAbsurd ? (
           <div className="p-4">
             <div className="border rounded-lg overflow-hidden flex bg-sky-50 border-sky-300">
               <div className="w-1.5 shrink-0 bg-sky-500" />
