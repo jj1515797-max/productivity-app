@@ -4,7 +4,7 @@
  *  이론사용량 = 그 달 생산량(EA) — 용기분석과 같은 숫자를 씀
  *  차이 = 투입량 − 이론사용량 → 실제 로스여야 하며, 음수면 어딘가 틀린 것
  */
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { collection, doc, getDocs, setDoc, writeBatch } from 'firebase/firestore';
 import ExcelJS from 'exceljs';
 import { db } from '../firebase';
@@ -171,18 +171,37 @@ export default function ContainerStockTab() {
           const c = d.data() as {
             sources?: Record<string, TheorySource>; lossLimit?: number; rolls?: Partial<Record<RollKind, number>>;
           };
-          setSrcOverride(c.sources || {});
-          if (typeof c.lossLimit === 'number') setLossLimit(c.lossLimit);
-          if (c.rolls) setRolls({ r2: c.rolls.r2 || ROLL_DEFAULT.r2, r4: c.rolls.r4 || ROLL_DEFAULT.r4 });
+          const sr = c.sources || {};
+          const ll = typeof c.lossLimit === 'number' ? c.lossLimit : lossLimit;
+          const rl = { r2: c.rolls?.r2 || ROLL_DEFAULT.r2, r4: c.rolls?.r4 || ROLL_DEFAULT.r4 };
+          cfgSaved.current = JSON.stringify({ sources: sr, lossLimit: ll, rolls: rl });
+          setSrcOverride(sr); setLossLimit(ll); setRolls(rl);
           return;
         }
         if (d.id.startsWith('_')) return;      // 설정용 문서는 월이 아니다
         next[d.id] = d.data() as Record<string, StockEntry>;
       });
       setStock(next);
+      cfgLoaded.current = true;
     }).catch((e) => setErr(e instanceof Error ? e.message : String(e)));
     return () => { cancelled = true; };
   }, []);
+
+  /* 설정(이론사용량 기준·롤당 포장수·로스 기준)은 바꾸는 즉시 올린다.
+     재고 입력값처럼 '저장' 을 눌러야 하게 두었더니, 드롭다운만 바꾸고 넘어가면
+     새로고침할 때마다 옛 값으로 되돌아갔다. 설정은 입력이 아니라 설정이다. */
+  const cfgLoaded = useRef(false);
+  const cfgSaved = useRef('');
+  useEffect(() => {
+    if (!cfgLoaded.current) return;
+    const body = JSON.stringify({ sources: srcOverride, lossLimit, rolls });
+    if (body === cfgSaved.current) return;      // 읽어 온 그대로면 도로 쓸 이유가 없다
+    cfgSaved.current = body;
+    // merge 로 쓰면 sources 에서 지운 키가 남는다 (중첩 맵은 키 단위로 병합된다).
+    // 이 문서는 우리가 통째로 소유하므로 항상 전체를 덮어쓴다.
+    setDoc(doc(db, 'containerStock', '_config'), { sources: srcOverride, lossLimit, rolls })
+      .catch((e) => setErr(`설정 저장 실패: ${e instanceof Error ? e.message : String(e)}`));
+  }, [srcOverride, lossLimit, rolls]);
 
   // 저장 안 한 채로 창을 닫거나 새로고침하면 입력이 날아간다
   useEffect(() => {
@@ -244,10 +263,7 @@ export default function ContainerStockTab() {
     setSaving(true); setErr('');
     try {
       const batch = writeBatch(db);
-      dirty.forEach((m) => {
-        if (m === '_config') batch.set(doc(db, 'containerStock', '_config'), { sources: srcOverride, lossLimit, rolls }, { merge: true });
-        else batch.set(doc(db, 'containerStock', m), stock[m] || {}, { merge: true });
-      });
+      dirty.forEach((m) => batch.set(doc(db, 'containerStock', m), stock[m] || {}, { merge: true }));
       await batch.commit();
       setDirty(new Set());
     } catch (e) {
@@ -447,7 +463,7 @@ export default function ContainerStockTab() {
         <label className="text-xs text-gray-600 flex items-center gap-1">
           정상 로스 기준
           <input type="number" step={0.1} min={0} max={20} value={(lossLimit * 100).toFixed(1)}
-            onChange={(e) => { setLossLimit(Math.max(0, Number(e.target.value) || 0) / 100); setDirty((p) => new Set(p).add('_config')); }}
+            onChange={(e) => setLossLimit(Math.max(0, Number(e.target.value) || 0) / 100)}
             className="w-16 border rounded px-1.5 py-1 text-right tabular-nums" />%
         </label>
         {busy && <span className="text-xs text-blue-600 font-semibold">{busy}</span>}
@@ -580,15 +596,13 @@ export default function ContainerStockTab() {
                 지금 설정: 1롤 {nf(rolls[mat.roll])}개
               </span>
               {!fitAbsurd && Math.round(fit.fitted) !== rolls[mat.roll] && (
-                <button onClick={() => { setRolls((p) => ({ ...p, [mat.roll!]: Math.round(fit.fitted) }));
-                  setDirty((p) => new Set(p).add('_config')); }}
+                <button onClick={() => setRolls((p) => ({ ...p, [mat.roll!]: Math.round(fit.fitted) }))}
                   className="ml-auto px-3 py-1.5 text-xs rounded bg-blue-600 text-white font-bold hover:bg-blue-700">
                   이 값({nf(fit.fitted)})으로 맞추기
                 </button>
               )}
               {rolls[mat.roll] !== ROLL_DEFAULT[mat.roll] && (
-                <button onClick={() => { setRolls((p) => ({ ...p, [mat.roll!]: ROLL_DEFAULT[mat.roll!] }));
-                  setDirty((p) => new Set(p).add('_config')); }}
+                <button onClick={() => setRolls((p) => ({ ...p, [mat.roll!]: ROLL_DEFAULT[mat.roll!] }))}
                   className={`px-3 py-1.5 text-xs rounded border font-semibold hover:bg-gray-50 ${fitAbsurd ? 'ml-auto' : ''}`}>
                   업체 표기({nf(ROLL_DEFAULT[mat.roll])})로 되돌리기
                 </button>
@@ -751,13 +765,11 @@ export default function ContainerStockTab() {
                 onChange={(e) => {
                   const v = Math.max(1, Math.round(Number(e.target.value) || 0));
                   setRolls((p) => ({ ...p, [mat.roll!]: v }));
-                  setDirty((p) => new Set(p).add('_config'));
                 }}
                 className="w-24 border rounded px-2 py-1 text-right tabular-nums font-bold" />
               개
               {rolls[mat.roll] !== ROLL_DEFAULT[mat.roll] && (
-                <button onClick={() => { setRolls((p) => ({ ...p, [mat.roll!]: ROLL_DEFAULT[mat.roll!] }));
-                  setDirty((p) => new Set(p).add('_config')); }}
+                <button onClick={() => setRolls((p) => ({ ...p, [mat.roll!]: ROLL_DEFAULT[mat.roll!] }))}
                   className="text-gray-400 underline">기본값 {nf(ROLL_DEFAULT[mat.roll])}</button>
               )}
             </label>
@@ -765,13 +777,18 @@ export default function ContainerStockTab() {
           {!readOnly && (
             <label className={`text-xs text-gray-600 flex items-center gap-1.5 ${mat.roll ? '' : 'ml-auto'}`}>
               이론사용량 기준
-              <select value={(srcOverride[mat.id] || mat.source)}
-                onChange={(e) => { setSrcOverride((p) => ({ ...p, [mat.id]: e.target.value as TheorySource })); setDirty((p) => new Set(p).add('_config')); }}
-                className="border rounded px-2 py-1 text-xs">
+              <select value={curSrc}
+                onChange={(e) => setSrcOverride((p) => ({ ...p, [mat.id]: e.target.value as TheorySource }))}
+                className={`border rounded px-2 py-1 text-xs ${srcChanged ? 'border-amber-400 bg-amber-50 font-bold' : ''}`}>
                 {(Object.keys(SOURCE_LABEL) as TheorySource[]).map((k) => (
-                  <option key={k} value={k}>{SOURCE_LABEL[k]}</option>
+                  <option key={k} value={k}>{SOURCE_LABEL[k]}{k === mat.source ? ' ← 기본' : ''}</option>
                 ))}
               </select>
+              {srcChanged && (
+                <button onClick={() => setSrcOverride((p) => {
+                  const n = { ...p }; delete n[mat.id]; return n;
+                })} className="text-amber-700 underline whitespace-nowrap">기본값으로</button>
+              )}
             </label>
           )}
         </div>
