@@ -153,7 +153,12 @@ export default function ContainerStockTab() {
       if (cancelled) return;
       const next: Record<string, Record<string, StockEntry>> = {};
       snap.forEach((d) => {
-        if (d.id === '_config') { setSrcOverride((d.data().sources || {}) as Record<string, TheorySource>); return; }
+        if (d.id === '_config') {
+          const c = d.data() as { sources?: Record<string, TheorySource>; lossLimit?: number };
+          setSrcOverride(c.sources || {});
+          if (typeof c.lossLimit === 'number') setLossLimit(c.lossLimit);
+          return;
+        }
         next[d.id] = d.data() as Record<string, StockEntry>;
       });
       setStock(next);
@@ -167,6 +172,14 @@ export default function ContainerStockTab() {
     months.forEach((m) => { const v = readTheory(m); if (v) next[m] = v; });
     setTheory((p) => ({ ...p, ...next }));
   }, [months]);
+
+  // 저장 안 한 채로 창을 닫거나 새로고침하면 입력이 날아간다
+  useEffect(() => {
+    if (!dirty.size) return;
+    const h = (e: BeforeUnloadEvent) => { e.preventDefault(); e.returnValue = ''; };
+    window.addEventListener('beforeunload', h);
+    return () => window.removeEventListener('beforeunload', h);
+  }, [dirty]);
 
   const missing = months.filter((m) => !theory[m]);
   // 제품 DB 에 없어 용기 구분을 못 한 수량 — 그만큼 이론사용량이 적게 잡힌다
@@ -214,7 +227,7 @@ export default function ContainerStockTab() {
     try {
       const batch = writeBatch(db);
       dirty.forEach((m) => {
-        if (m === '_config') batch.set(doc(db, 'containerStock', '_config'), { sources: srcOverride }, { merge: true });
+        if (m === '_config') batch.set(doc(db, 'containerStock', '_config'), { sources: srcOverride, lossLimit }, { merge: true });
         else batch.set(doc(db, 'containerStock', m), stock[m] || {}, { merge: true });
       });
       await batch.commit();
@@ -355,7 +368,7 @@ export default function ContainerStockTab() {
         <label className="text-xs text-gray-600 flex items-center gap-1">
           정상 로스 기준
           <input type="number" step={0.1} min={0} max={20} value={(lossLimit * 100).toFixed(1)}
-            onChange={(e) => setLossLimit(Math.max(0, Number(e.target.value) || 0) / 100)}
+            onChange={(e) => { setLossLimit(Math.max(0, Number(e.target.value) || 0) / 100); setDirty((p) => new Set(p).add('_config')); }}
             className="w-16 border rounded px-1.5 py-1 text-right tabular-nums" />%
         </label>
         {busy && <span className="text-xs text-blue-600 font-semibold">{busy}</span>}
@@ -373,6 +386,17 @@ export default function ContainerStockTab() {
             className="px-3 py-1.5 text-xs rounded bg-blue-600 text-white font-bold hover:bg-blue-700 disabled:bg-gray-300">
             {saving ? '저장 중…' : dirty.size ? `저장 (${dirty.size}개월)` : '저장됨'}
           </button>
+        </div>
+        <div className="w-full text-xs">
+          {dirty.size > 0 ? (
+            <span className="text-amber-700 font-semibold">
+              ⚠ 아직 저장 안 된 입력이 있습니다 — <b>저장</b>을 눌러야 다른 사람 화면에도 보입니다.
+            </span>
+          ) : (
+            <span className="text-gray-400">
+              입력값은 저장하면 회사 DB 에 올라가 모두가 같은 숫자를 봅니다. 생산량(이론사용량)은 각자 화면에서 계산하지만 결과는 같습니다.
+            </span>
+          )}
         </div>
       </div>
 
@@ -460,7 +484,7 @@ export default function ContainerStockTab() {
       {missing.length > 0 && (
         <div className="bg-sky-50 border border-sky-300 rounded-lg p-3 text-sm text-sky-800">
           📊 이론사용량이 아직 없는 달이 {missing.length}개 있습니다 ({missing.map((m) => `${Number(m.slice(5, 7))}월`).join(', ')}).
-          위의 <b>「생산량 불러오기」</b>를 누르면 생산 데이터에서 자동으로 계산합니다. 한 번 계산한 지난달은 저장돼 다시 계산하지 않습니다.
+          위의 <b>「생산량 불러오기」</b>를 누르면 생산 데이터에서 자동으로 계산합니다. 계산한 지난달은 이 브라우저에 남아 다시 계산하지 않습니다 — 다른 사람 컴퓨터에서는 한 번씩 눌러야 하지만 나오는 값은 같습니다.
         </div>
       )}
 
