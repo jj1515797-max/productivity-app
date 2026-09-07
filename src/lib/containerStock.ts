@@ -141,6 +141,8 @@ export function analyze(
 
   const findings: Finding[] = [];
   const filled = rows.filter((r) => r.diff !== null && r.theory !== null && r.theory > 0);
+  /** 기말 = 기초 + 입고 인 달. 출고가 반영 안 된 장부재고를 넣은 것이라 투입량이 0 이 된다. */
+  const bookOnly = new Set<string>();
 
   for (let i = 0; i < rows.length; i++) {
     const r = rows[i];
@@ -170,7 +172,22 @@ export function analyze(
       });
     }
 
-    // ③ 입고 0 인데 투입 큼
+    // ③ 출고 미반영 — 기말이 '기초+입고' 그대로면 투입량이 0 으로 나온다
+    if (r.calcInput === 0 && r.entry.open !== null && r.entry.inbound !== null && r.entry.close !== null
+        && r.theory !== null && r.theory > 0) {
+      bookOnly.add(r.month);
+      findings.push({
+        month: r.month, severity: 'critical', size: r.theory,
+        title: `${mLabel(r.month)} 기말재고가 '기초 + 입고' 와 정확히 같습니다 — 출고가 반영되지 않았습니다`,
+        detail: `${fmt(r.entry.open)} + ${fmt(r.entry.inbound)} − ${fmt(r.entry.close)} = 0. `
+          + `그 달에 ${fmt(r.theory)}개를 생산했는데 창고에서 나간 게 하나도 없다는 뜻이라 성립하지 않습니다. `
+          + `ERP 재고수불부의 출고합계가 0 이면 아직 생산출고가 안 잡힌 마감 전 장부입니다. `
+          + `여기 넣을 기말재고는 반드시 「재고조사(실사)로 센 실물 수량」이어야 합니다 — `
+          + `ERP 장부상 기말을 그대로 넣으면 투입량이 ERP 출고량과 같아져 이 검증 자체가 의미를 잃습니다.`,
+      });
+    }
+
+    // ④ 입고 0 인데 투입 큼
     if (r.entry.inbound === 0 && r.input !== null && r.theory !== null && r.input > r.theory * 0.5) {
       findings.push({
         month: r.month, severity: 'info', size: r.input,
@@ -202,6 +219,7 @@ export function analyze(
   for (let k = 0; k < filled.length; k++) {
     const r = filled[k];
     if (r.flag !== 'bad' || claimed.has(r.month)) continue;
+    if (bookOnly.has(r.month)) { claimed.add(r.month); continue; }   // 원인이 이미 밝혀진 달
 
     // r 을 포함하는 가장 짧은 구간을 찾는다 (짧을수록, 그다음 편차 작을수록 좋다)
     let best: { a: number; b: number; d: number; t: number } | null = null;
