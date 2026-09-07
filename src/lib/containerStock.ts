@@ -15,16 +15,28 @@ export interface MaterialDef {
   id: string;
   label: string;
   source: TheorySource;
-  color: string;      // tailwind 색 이름 (violet / cyan / amber / slate)
+  group: '용기' | '필름';
+  /** 채워져 있으면 그 자재들의 입력값을 더한 합계 행 (직접 입력하지 않음) */
+  sum?: string[];
 }
 
-/** 자재 정의. 이론사용량은 용기분석의 생산량에서 자동으로 끌어온다. */
+/** 자재 정의. 이론사용량은 용기분석의 생산량에서 자동으로 끌어온다.
+ *  제품 1개 = 용기 1개 = 필름 1장 이므로 필름도 같은 생산량을 기준으로 삼는다. */
 export const MATERIALS: MaterialDef[] = [
-  { id: 'c210', label: '210ml 용기', source: 'large', color: 'violet' },
-  { id: 'c185', label: '185ml 용기', source: 'small', color: 'cyan' },
-  { id: 'retort', label: '레토르트', source: 'ambient', color: 'amber' },
-  { id: 'film', label: '실링필름', source: 'cold', color: 'slate' },
+  { id: 'c210', label: '210ml 용기', source: 'large', group: '용기' },
+  { id: 'c185', label: '185ml 용기', source: 'small', group: '용기' },
+  { id: 'retort', label: '레토르트', source: 'ambient', group: '용기' },
+  { id: 'cSum', label: '용기 합계', source: 'all', group: '용기', sum: ['c210', 'c185', 'retort'] },
+  { id: 'f2', label: '냉장 2열기 필름', source: 'large', group: '필름' },
+  { id: 'f4', label: '냉장 4열기 필름', source: 'small', group: '필름' },
+  { id: 'fr', label: '레토르트 4열기 필름', source: 'ambient', group: '필름' },
+  { id: 'fSum', label: '필름 합계', source: 'all', group: '필름', sum: ['f2', 'f4', 'fr'] },
 ];
+
+export const SOURCE_LABEL: Record<TheorySource, string> = {
+  large: '210ml 생산량', small: '185ml 생산량', ambient: '레토르트(실온) 생산량',
+  cold: '냉장 합계 (210+185)', all: '전체 합계 (210+185+레토르트)',
+};
 
 /** 한 달 생산량(이론사용량의 원천) */
 export interface TheoryMonth {
@@ -34,8 +46,9 @@ export interface TheoryMonth {
   unknown: number;    // 제품 DB 에 없어 용기 구분 못 한 수량
 }
 
-export function theoryOf(t: TheoryMonth | undefined, src: TheorySource): number | null {
+export function theoryOf(t: TheoryMonth | undefined, src: TheorySource | TheorySource[]): number | null {
   if (!t) return null;
+  if (Array.isArray(src)) return src.reduce((s, x) => s + (theoryOf(t, x) || 0), 0);
   switch (src) {
     case 'large': return t.large;
     case 'small': return t.small;
@@ -117,7 +130,7 @@ export function analyze(
   months: string[],
   entries: Record<string, StockEntry>,
   theory: Record<string, TheoryMonth>,
-  src: TheorySource,
+  src: TheorySource | TheorySource[],
   lossLimit = 0.03,
 ): Analysis {
   const rows: MonthRow[] = [];

@@ -11,9 +11,19 @@ import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
 import { loadContainerMonth, isPastMonth } from '../lib/containerLoad';
 import {
-  MATERIALS, analyze, emptyEntry,
+  MATERIALS, SOURCE_LABEL, analyze, emptyEntry,
   type StockEntry, type TheoryMonth, type Severity, type MonthRow,
+  type TheorySource, type MaterialDef,
 } from '../lib/containerStock';
+
+/** 합계 행은 구성 자재의 입력값을 그대로 더한다 (직접 입력하지 않는다) */
+function sumEntry(parts: (StockEntry | undefined)[]): StockEntry {
+  const add = (f: keyof StockEntry) => {
+    const vs = parts.map((p) => (p ? (p[f] as number | null | undefined) : null)).filter((v) => v != null) as number[];
+    return vs.length ? vs.reduce((a, b) => a + b, 0) : null;
+  };
+  return { open: add('open'), inbound: add('inbound'), close: add('close'), input: add('input') };
+}
 
 const TCK = 'containerTheory:';
 const readTheory = (m: string): TheoryMonth | null => {
@@ -126,6 +136,7 @@ export default function ContainerStockTab() {
   const [pasteField, setPasteField] = useState<keyof StockEntry>('input');
   const [pasteStart, setPasteStart] = useState(1);
   const [pasteText, setPasteText] = useState('');
+  const [srcOverride, setSrcOverride] = useState<Record<string, TheorySource>>({});
 
   const months = useMemo(() => {
     const cap = year === nowY ? Number(todayKey().slice(5, 7)) : 12;
@@ -133,6 +144,7 @@ export default function ContainerStockTab() {
   }, [year, nowY]);
 
   const mat = MATERIALS.find((m) => m.id === matId)!;
+  const readOnly = !!mat.sum;
 
   /* 재고 입력값 불러오기 (컬렉션 전체 1회) */
   useEffect(() => {
@@ -140,7 +152,10 @@ export default function ContainerStockTab() {
     getDocs(collection(db, 'containerStock')).then((snap) => {
       if (cancelled) return;
       const next: Record<string, Record<string, StockEntry>> = {};
-      snap.forEach((d) => { next[d.id] = d.data() as Record<string, StockEntry>; });
+      snap.forEach((d) => {
+        if (d.id === '_config') { setSrcOverride((d.data().sources || {}) as Record<string, TheorySource>); return; }
+        next[d.id] = d.data() as Record<string, StockEntry>;
+      });
       setStock(next);
     }).catch((e) => setErr(e instanceof Error ? e.message : String(e)));
     return () => { cancelled = true; };
@@ -176,13 +191,20 @@ export default function ContainerStockTab() {
     setBusy('');
   }, []);
 
-  const entryOf = (m: string): StockEntry => stock[m]?.[matId] || emptyEntry();
+  const srcOf = (mm: MaterialDef): TheorySource | TheorySource[] =>
+    mm.sum ? mm.sum.map((id) => srcOverride[id] || MATERIALS.find((x) => x.id === id)!.source)
+           : (srcOverride[mm.id] || mm.source);
+  const rawEntry = (m: string, id: string): StockEntry => stock[m]?.[id] || emptyEntry();
+  const entryFor = (m: string, mm: MaterialDef): StockEntry =>
+    mm.sum ? sumEntry(mm.sum.map((id) => stock[m]?.[id])) : rawEntry(m, mm.id);
+  const entryOf = (m: string): StockEntry => entryFor(m, mat);
 
   const setField = (m: string, field: keyof StockEntry, raw: string) => {
+    if (readOnly) return;
     const t = raw.replace(/[,\s]/g, '');
     const v = t === '' ? null : Number(t);
     if (v !== null && !Number.isFinite(v)) return;
-    setStock((p) => ({ ...p, [m]: { ...(p[m] || {}), [matId]: { ...entryOf(m), [field]: v } } }));
+    setStock((p) => ({ ...p, [m]: { ...(p[m] || {}), [matId]: { ...rawEntry(m, matId), [field]: v } } }));
     setDirty((p) => new Set(p).add(m));
   };
 
@@ -191,7 +213,10 @@ export default function ContainerStockTab() {
     setSaving(true); setErr('');
     try {
       const batch = writeBatch(db);
-      dirty.forEach((m) => batch.set(doc(db, 'containerStock', m), stock[m] || {}, { merge: true }));
+      dirty.forEach((m) => {
+        if (m === '_config') batch.set(doc(db, 'containerStock', '_config'), { sources: srcOverride }, { merge: true });
+        else batch.set(doc(db, 'containerStock', m), stock[m] || {}, { merge: true });
+      });
       await batch.commit();
       setDirty(new Set());
     } catch (e) {
@@ -200,6 +225,7 @@ export default function ContainerStockTab() {
   };
 
   const applyPaste = () => {
+    if (readOnly) { setErr('합계 행에는 직접 넣을 수 없습니다. 아래 세 자재에 각각 넣으면 자동으로 더해집니다.'); return; }
     // 엑셀에서 복사하면 1,234 처럼 천단위 콤마가 붙어 온다.
     // 탭·줄바꿈·공백이 있으면 그게 칸 구분이고, 콤마는 전부 천단위로 본다.
     // 구분자가 콤마밖에 없을 때(CSV 한 줄)만 콤마로 나눈다.
@@ -231,20 +257,23 @@ export default function ContainerStockTab() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [months, stock, matId]);
 
-  const a = useMemo(() => analyze(months, entries, theory, mat.source, lossLimit),
-    [months, entries, theory, mat.source, lossLimit]);
+  const matSrc = srcOf(mat);
+  const a = useMemo(() => analyze(months, entries, theory, matSrc, lossLimit),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [months, entries, theory, JSON.stringify(matSrc), lossLimit]);
 
   /* 자재 타일용 요약 (선택 안 된 것도 한눈에) */
   const tiles = useMemo(() => MATERIALS.map((mm) => {
     const e: Record<string, StockEntry> = {};
-    months.forEach((m) => { e[m] = stock[m]?.[mm.id] || emptyEntry(); });
-    const r = analyze(months, e, theory, mm.source, lossLimit);
+    months.forEach((m) => { e[m] = entryFor(m, mm); });
+    const r = analyze(months, e, theory, srcOf(mm), lossLimit);
     return {
       mat: mm, filled: r.filledCount, rate: r.totalLossRate, diff: r.totalDiff,
       bad: r.rows.filter((x) => x.flag === 'bad').length,
       timing: r.rows.filter((x) => x.flag === 'timing').length,
     };
-  }), [months, stock, theory, lossLimit]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [months, stock, theory, lossLimit, srcOverride]);
 
   const download = async () => {
     const wb = new ExcelJS.Workbook();
@@ -252,8 +281,8 @@ export default function ContainerStockTab() {
     const border = { top: thin, left: thin, right: thin, bottom: thin };
     for (const mm of MATERIALS) {
       const e: Record<string, StockEntry> = {};
-      months.forEach((m) => { e[m] = stock[m]?.[mm.id] || emptyEntry(); });
-      const r = analyze(months, e, theory, mm.source, lossLimit);
+      months.forEach((m) => { e[m] = entryFor(m, mm); });
+      const r = analyze(months, e, theory, srcOf(mm), lossLimit);
       const ws = wb.addWorksheet(mm.label);
       ws.columns = [{ width: 10 }, { width: 13 }, { width: 13 }, { width: 13 }, { width: 14 },
         { width: 14 }, { width: 14 }, { width: 13 }, { width: 11 }, { width: 13 }, { width: 12 }, { width: 44 }];
@@ -331,8 +360,9 @@ export default function ContainerStockTab() {
         </label>
         {busy && <span className="text-xs text-blue-600 font-semibold">{busy}</span>}
         <div className="ml-auto flex gap-1.5">
-          <button onClick={() => setPasteOpen((v) => !v)}
-            className="px-2.5 py-1.5 text-xs rounded border hover:bg-gray-50">📋 엑셀 붙여넣기</button>
+          <button onClick={() => setPasteOpen((v) => !v)} disabled={readOnly}
+            title={readOnly ? '합계 행에는 직접 넣을 수 없습니다' : ''}
+            className="px-2.5 py-1.5 text-xs rounded border hover:bg-gray-50 disabled:text-gray-300">📋 엑셀 붙여넣기</button>
           <button onClick={() => loadTheory(missing.length ? missing : months)} disabled={!!busy}
             className="px-2.5 py-1.5 text-xs rounded border hover:bg-gray-50 disabled:text-gray-300">
             {missing.length ? `📊 생산량 불러오기 (${missing.length}개월)` : '🔄 생산량 다시 계산'}
@@ -378,35 +408,43 @@ export default function ContainerStockTab() {
         </div>
       )}
 
-      {/* 자재 타일 */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        {tiles.map((t) => {
-          const on = t.mat.id === matId;
-          return (
-            <button key={t.mat.id} onClick={() => setMatId(t.mat.id)}
-              className={`text-left rounded-xl p-3.5 border-2 transition ${
-                on ? 'border-blue-500 bg-blue-50/60 shadow-sm' : 'border-gray-200 bg-white hover:border-gray-300'}`}>
-              <div className="flex items-center gap-1.5">
-                <span className="font-bold text-gray-800 text-sm">{t.mat.label}</span>
-                {t.bad > 0 && <span className="px-1.5 py-0.5 rounded-full bg-red-600 text-white text-[10px] font-bold">이상 {t.bad}</span>}
-                {t.bad === 0 && t.timing > 0 && <span className="px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 text-[10px] font-bold">이월 {t.timing}</span>}
-                {t.bad === 0 && t.timing === 0 && t.filled > 0 && <span className="px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-bold">정상</span>}
-              </div>
-              {t.filled === 0 ? (
-                <div className="text-2xl font-extrabold text-gray-300 mt-1">미입력</div>
-              ) : (
-                <>
-                  <div className={`text-3xl font-extrabold tabular-nums mt-1 ${
-                    t.rate === null ? 'text-gray-400' : t.rate < 0 ? 'text-red-600' : t.rate > lossLimit ? 'text-amber-600' : 'text-emerald-600'}`}>
-                    {pctS(t.rate)}
+      {/* 자재 타일 — 용기 한 줄, 필름 한 줄 */}
+      {(['용기', '필름'] as const).map((g) => (
+        <div key={g}>
+          <div className="text-xs font-bold text-gray-500 mb-1.5 px-0.5">{g}</div>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            {tiles.filter((t) => t.mat.group === g).map((t) => {
+              const on = t.mat.id === matId;
+              return (
+                <button key={t.mat.id} onClick={() => setMatId(t.mat.id)}
+                  className={`text-left rounded-xl p-3.5 border-2 transition ${
+                    on ? 'border-blue-500 bg-blue-50/60 shadow-sm'
+                       : t.mat.sum ? 'border-gray-300 bg-slate-50 hover:border-gray-400'
+                       : 'border-gray-200 bg-white hover:border-gray-300'}`}>
+                  <div className="flex items-center gap-1.5 flex-wrap">
+                    <span className="font-bold text-gray-800 text-sm">{t.mat.label}</span>
+                    {t.mat.sum && <span className="px-1.5 py-0.5 rounded-full bg-gray-200 text-gray-600 text-[10px] font-bold">자동합산</span>}
+                    {t.bad > 0 && <span className="px-1.5 py-0.5 rounded-full bg-red-600 text-white text-[10px] font-bold">이상 {t.bad}</span>}
+                    {t.bad === 0 && t.timing > 0 && <span className="px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 text-[10px] font-bold">이월 {t.timing}</span>}
+                    {t.bad === 0 && t.timing === 0 && t.filled > 0 && <span className="px-1.5 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-bold">정상</span>}
                   </div>
-                  <div className="text-xs text-gray-500 mt-0.5">누적 로스율 · {sgn(t.diff)}개 · {t.filled}개월</div>
-                </>
-              )}
-            </button>
-          );
-        })}
-      </div>
+                  {t.filled === 0 ? (
+                    <div className="text-2xl font-extrabold text-gray-300 mt-1">미입력</div>
+                  ) : (
+                    <>
+                      <div className={`text-3xl font-extrabold tabular-nums mt-1 ${
+                        t.rate === null ? 'text-gray-400' : t.rate < 0 ? 'text-red-600' : t.rate > lossLimit ? 'text-amber-600' : 'text-emerald-600'}`}>
+                        {pctS(t.rate)}
+                      </div>
+                      <div className="text-xs text-gray-500 mt-0.5">누적 로스율 · {sgn(t.diff)}개 · {t.filled}개월</div>
+                    </>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      ))}
 
       {/* 요약 4카드 */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
@@ -449,7 +487,7 @@ export default function ContainerStockTab() {
           <DiffChart rows={a.rows} lossLimit={lossLimit} />
           <p className="text-xs text-gray-500 mt-1 px-1">
             막대 = 그 달 <b>투입량 − 이론사용량</b>. 굵은 선 = 누적. <b>막대가 0 아래(음수)</b>면 용기를 쓰지 않고 제품을 만들었다는 뜻이라 불가능한 값입니다.
-            막대가 위아래로 톱니처럼 흔들려도 <b>누적선이 완만하게 우상향</b>하면 수량은 맞고 재고 실사 날짜만 어긋난 것입니다.
+            막대가 위아래로 톱니처럼 흔들려도 <b>누적선이 완만하게 우상향</b>하면 총량은 맞습니다 — 한 달 기말재고 오차가 다음 달에 되돌아온 것뿐입니다.
           </p>
         </div>
       </div>
@@ -480,11 +518,25 @@ export default function ContainerStockTab() {
 
       {/* 입력 표 */}
       <div className="bg-white border rounded-lg overflow-hidden">
-        <div className="px-4 py-2.5 border-b bg-slate-50 flex items-center gap-2">
+        <div className="px-4 py-2.5 border-b bg-slate-50 flex items-center gap-2 flex-wrap">
           <span className="font-bold text-gray-800 text-sm">{mat.label} · 월별 입력</span>
           <span className="text-xs text-gray-500">
-            기초·입고·기말을 넣으면 투입량이 자동 계산됩니다. 구매팀 투입량만 있으면 그 칸만 채우세요.
+            {readOnly
+              ? `${mat.sum!.map((id) => MATERIALS.find((x) => x.id === id)!.label).join(' + ')} 을 그대로 더한 값입니다. 고치려면 각 자재에서 수정하세요.`
+              : '기초·입고·기말을 넣으면 투입량이 자동 계산됩니다. 구매팀 투입량만 있으면 그 칸만 채우세요.'}
           </span>
+          {!readOnly && (
+            <label className="ml-auto text-xs text-gray-600 flex items-center gap-1.5">
+              이론사용량 기준
+              <select value={(srcOverride[mat.id] || mat.source)}
+                onChange={(e) => { setSrcOverride((p) => ({ ...p, [mat.id]: e.target.value as TheorySource })); setDirty((p) => new Set(p).add('_config')); }}
+                className="border rounded px-2 py-1 text-xs">
+                {(Object.keys(SOURCE_LABEL) as TheorySource[]).map((k) => (
+                  <option key={k} value={k}>{SOURCE_LABEL[k]}</option>
+                ))}
+              </select>
+            </label>
+          )}
         </div>
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
@@ -512,7 +564,8 @@ export default function ContainerStockTab() {
                     {(['open', 'inbound', 'close'] as const).map((f) => (
                       <td key={f} className="px-1.5 py-1">
                         <input value={e[f] === null ? '' : e[f]!.toLocaleString()} onChange={(ev) => setField(r.month, f, ev.target.value)}
-                          inputMode="numeric" className={cell} />
+                          inputMode="numeric" disabled={readOnly}
+                          className={`${cell} ${readOnly ? 'bg-slate-100 text-gray-600' : ''}`} />
                       </td>
                     ))}
                     <td className={`px-2 py-1 text-right tabular-nums ${mismatch ? 'text-amber-600 font-bold' : 'text-gray-500'}`}>
@@ -520,7 +573,8 @@ export default function ContainerStockTab() {
                     </td>
                     <td className="px-1.5 py-1">
                       <input value={e.input === null ? '' : e.input.toLocaleString()} onChange={(ev) => setField(r.month, 'input', ev.target.value)}
-                        inputMode="numeric" className={`${cell} ${e.input !== null ? 'bg-blue-50/60 font-semibold' : ''}`} />
+                        inputMode="numeric" disabled={readOnly}
+                        className={`${cell} ${readOnly ? 'bg-slate-100 text-gray-600' : e.input !== null ? 'bg-blue-50/60 font-semibold' : ''}`} />
                     </td>
                     <td className="px-2 py-1 text-right tabular-nums text-gray-700">
                       {r.theory === null ? <span className="text-gray-300">미계산</span> : nf(r.theory)}
