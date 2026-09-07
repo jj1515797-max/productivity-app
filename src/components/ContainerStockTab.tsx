@@ -5,7 +5,7 @@
  *  차이 = 투입량 − 이론사용량 → 실제 로스여야 하며, 음수면 어딘가 틀린 것
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { collection, doc, getDocs, writeBatch } from 'firebase/firestore';
+import { collection, doc, getDocs, setDoc, writeBatch } from 'firebase/firestore';
 import ExcelJS from 'exceljs';
 import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
@@ -25,21 +25,17 @@ function sumEntry(parts: (StockEntry | undefined)[]): StockEntry {
   return { open: add('open'), inbound: add('inbound'), close: add('close'), input: add('input') };
 }
 
-const TCK = 'containerTheory:';
-const readTheory = (m: string): TheoryMonth | null => {
-  try {
-    const raw = localStorage.getItem(TCK + m);
-    if (!raw) return null;
-    const { ts, v } = JSON.parse(raw);
-    if (isPastMonth(m)) {
-      const [y, mm] = m.split('-').map(Number);
-      return ts < new Date(y, mm, 1).getTime() ? null : v;   // 진행중에 캐시된 부분집계는 버림
-    }
-    return Date.now() - ts > 5 * 60 * 1000 ? null : v;
-  } catch { return null; }
-};
-const writeTheory = (m: string, v: TheoryMonth) => {
-  try { localStorage.setItem(TCK + m, JSON.stringify({ ts: Date.now(), v })); } catch { /* 용량초과 무시 */ }
+/** 이론사용량은 생산 데이터에서 계산한 파생값이지만, 한 달치 계산에 34개 쿼리가 든다.
+ *  사람마다 다시 돌릴 이유가 없으므로 계산한 사람이 DB 에 올려 모두가 같이 쓴다.
+ *  지난달 값은 그 달이 끝난 뒤 계산된 것만 신뢰한다 (진행중 부분집계 배제). */
+const THEORY_DOC = '_theory';
+interface TheoryCell extends TheoryMonth { ts: number }
+
+const usable = (m: string, c: TheoryCell | undefined): boolean => {
+  if (!c) return false;
+  if (!isPastMonth(m)) return Date.now() - c.ts < 5 * 60 * 1000;
+  const [y, mm] = m.split('-').map(Number);
+  return c.ts >= new Date(y, mm, 1).getTime();
 };
 
 const nf = (n: number) => Math.round(n).toLocaleString();
@@ -153,25 +149,26 @@ export default function ContainerStockTab() {
       if (cancelled) return;
       const next: Record<string, Record<string, StockEntry>> = {};
       snap.forEach((d) => {
+        if (d.id === THEORY_DOC) {
+          const raw = d.data() as Record<string, TheoryCell>;
+          const seen: Record<string, TheoryMonth> = {};
+          Object.entries(raw).forEach(([m, c]) => { if (usable(m, c)) seen[m] = c; });
+          setTheory((p) => ({ ...seen, ...p }));
+          return;
+        }
         if (d.id === '_config') {
           const c = d.data() as { sources?: Record<string, TheorySource>; lossLimit?: number };
           setSrcOverride(c.sources || {});
           if (typeof c.lossLimit === 'number') setLossLimit(c.lossLimit);
           return;
         }
+        if (d.id.startsWith('_')) return;      // 설정용 문서는 월이 아니다
         next[d.id] = d.data() as Record<string, StockEntry>;
       });
       setStock(next);
     }).catch((e) => setErr(e instanceof Error ? e.message : String(e)));
     return () => { cancelled = true; };
   }, []);
-
-  /* 캐시에 있는 이론사용량 먼저 반영 */
-  useEffect(() => {
-    const next: Record<string, TheoryMonth> = {};
-    months.forEach((m) => { const v = readTheory(m); if (v) next[m] = v; });
-    setTheory((p) => ({ ...p, ...next }));
-  }, [months]);
 
   // 저장 안 한 채로 창을 닫거나 새로고침하면 입력이 날아간다
   useEffect(() => {
@@ -194,8 +191,9 @@ export default function ContainerStockTab() {
       try {
         const r = await loadContainerMonth(m);
         const t: TheoryMonth = { small: r.small, large: r.large, ambient: r.ambient, unknown: r.unknown };
-        writeTheory(m, t);
         setTheory((p) => ({ ...p, [m]: t }));
+        // 다른 사람이 같은 계산을 다시 돌리지 않도록 바로 올린다
+        await setDoc(doc(db, 'containerStock', THEORY_DOC), { [m]: { ...t, ts: Date.now() } }, { merge: true });
       } catch (e) {
         setErr(`${m} 계산 실패: ${e instanceof Error ? e.message : String(e)}`);
         break;
@@ -394,7 +392,7 @@ export default function ContainerStockTab() {
             </span>
           ) : (
             <span className="text-gray-400">
-              입력값은 저장하면 회사 DB 에 올라가 모두가 같은 숫자를 봅니다. 생산량(이론사용량)은 각자 화면에서 계산하지만 결과는 같습니다.
+              입력값은 저장하면 회사 DB 에 올라가 모두가 같은 숫자를 봅니다. 생산량(이론사용량)도 한 번 계산해 두면 모두가 같이 씁니다.
             </span>
           )}
         </div>
@@ -484,7 +482,7 @@ export default function ContainerStockTab() {
       {missing.length > 0 && (
         <div className="bg-sky-50 border border-sky-300 rounded-lg p-3 text-sm text-sky-800">
           📊 이론사용량이 아직 없는 달이 {missing.length}개 있습니다 ({missing.map((m) => `${Number(m.slice(5, 7))}월`).join(', ')}).
-          위의 <b>「생산량 불러오기」</b>를 누르면 생산 데이터에서 자동으로 계산합니다. 계산한 지난달은 이 브라우저에 남아 다시 계산하지 않습니다 — 다른 사람 컴퓨터에서는 한 번씩 눌러야 하지만 나오는 값은 같습니다.
+          위의 <b>「생산량 불러오기」</b>를 누르면 생산 데이터에서 자동으로 계산합니다. 한 번 계산하면 회사 DB 에 올라가 <b>다른 사람 컴퓨터에서도 그대로</b> 보입니다.
         </div>
       )}
 
