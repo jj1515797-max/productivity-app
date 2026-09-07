@@ -285,6 +285,21 @@ export default function ContainerStockTab() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [months, entries, theory, JSON.stringify(matSpec), lossLimit]);
 
+  // 합계 행: 열마다 따로 더한다. 기초·기말은 재고 수준이라 더해도 뜻이 없어 비워 둔다.
+  const colSum = useMemo(() => {
+    const pick = (f: (r: MonthRow) => number | null) => {
+      const vs = a.rows.map(f).filter((v): v is number => v !== null);
+      return vs.length ? vs.reduce((x, y) => x + y, 0) : null;
+    };
+    return {
+      inbound: pick((r) => r.entry.inbound),
+      calc: pick((r) => r.calcInput),
+      direct: pick((r) => r.entry.input),
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [a]);
+
+
   /* 자재 타일용 요약 (선택 안 된 것도 한눈에) */
   const tiles = useMemo(() => MATERIALS.map((mm) => {
     const e: Record<string, StockEntry> = {};
@@ -639,7 +654,11 @@ export default function ContainerStockTab() {
               })}
               <tr className="bg-slate-50 font-bold">
                 <td className="px-2 py-2 text-center">합계</td>
-                <td colSpan={5} />
+                <td />
+                <td className="px-2 py-2 text-right tabular-nums">{colSum.inbound === null ? '' : un(colSum.inbound)}</td>
+                <td />
+                <td className="px-2 py-2 text-right tabular-nums">{colSum.calc === null ? '' : un(colSum.calc)}</td>
+                <td className="px-2 py-2 text-right tabular-nums">{colSum.direct === null ? '' : un(colSum.direct)}</td>
                 <td className="px-2 py-2 text-right tabular-nums">{un(a.totalTheory)}</td>
                 <td className={`px-2 py-2 text-right tabular-nums ${a.totalDiff < 0 ? 'text-red-600' : 'text-gray-800'}`}>{usgn(a.totalDiff)}</td>
                 <td className="px-2 py-2 text-right tabular-nums">{pctS(a.totalLossRate)}</td>
