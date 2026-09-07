@@ -291,6 +291,35 @@ export default function ContainerStockTab() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [months, entries, theory, JSON.stringify(matSpec), lossLimit]);
 
+  /* 필름 역산 — 롤당 실제로 몇 개가 나오는지.
+     이론사용량 × 지금 설정값 = 그 달 생산량(개) 이므로, 설정값을 뭘로 두든 결과는 같다.
+     누적으로 나누는 게 핵심이다. 월별로는 반쯤 쓴 롤을 어느 달로 세느냐에 따라 ±1롤이 통째로
+     움직여 5% 넘게 흔들리지만, 여러 달을 합치면 그 오차가 상쇄된다. */
+  const fit = useMemo(() => {
+    if (!mat.roll) return null;
+    const spec = rolls[mat.roll];
+    const rs = a.rows.filter((r) => r.input !== null && r.input > 0 && r.theory !== null && r.theory > 0);
+    if (rs.length < 2) return null;
+    const prod = rs.reduce((x, r) => x + r.theory! * spec, 0);
+    const used = rs.reduce((x, r) => x + r.input!, 0);
+    if (used <= 1) return null;
+    return {
+      n: rs.length, prod, used,
+      fitted: prod / used,
+      // 누적 투입량은 첫 기초와 마지막 기말 두 번의 실사에만 걸린다 → 누적 오차는 ±1롤 수준
+      lo: prod / (used + 1),
+      hi: prod / (used - 1),
+      spec,
+      byMonth: rs.map((r) => ({ month: r.month, v: (r.theory! * spec) / r.input!, input: r.input! })),
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [a, mat, rolls]);
+
+  /* 롤당 포장수가 아직 실측값과 크게 다르면 월별 판정은 전부 그 한 가지 이유로 뜬다.
+     같은 말을 여섯 줄로 늘어놓는 대신 한 줄로 알리고 진단은 감춘다. */
+  const specOff = fit ? fit.fitted / fit.spec - 1 : 0;
+  const specStale = !!fit && Math.abs(specOff) > 0.03;
+
   // 합계 행: 열마다 따로 더한다. 기초·기말은 재고 수준이라 더해도 뜻이 없어 비워 둔다.
   const colSum = useMemo(() => {
     const pick = (f: (r: MonthRow) => number | null) => {
@@ -507,18 +536,79 @@ export default function ContainerStockTab() {
         </div>
       ))}
 
-      {/* 요약 4카드 */}
-      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <Card label={`투입량 합계 (${mat.unit})`} sub="재고조사 기준 실제 소모" v={un(a.totalInput)} />
-        <Card label={`이론사용량 합계 (${mat.unit})`}
-          sub={mat.roll ? `생산량 ÷ ${nf(rolls[mat.roll])}개(1롤) · 로스 0%` : '생산량 기준 · 로스 0%'}
-          v={un(a.totalTheory)} />
-        <Card label="실질 로스" sub={`투입 − 이론 (${mat.unit})`}
-          v={usgn(a.totalDiff)} tone={a.totalDiff < 0 ? 'bad' : 'ok'} />
-        <Card label="누적 로스율" sub={`기준 ${(lossLimit * 100).toFixed(1)}% 이내면 정상`}
-          v={pctS(a.totalLossRate)}
-          tone={a.totalLossRate === null ? undefined : a.totalLossRate < 0 ? 'bad' : a.totalLossRate > lossLimit ? 'warn' : 'ok'} />
-      </div>
+      {/* 요약 — 용기는 투입/이론/로스, 필름은 롤당 실사용을 알아내는 게 목적이라 다르게 본다 */}
+      {mat.roll && fit ? (
+        <>
+          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+            <Card label="누적 투입" sub={`재고조사 기준 · ${fit.n}개월`} v={`${un(fit.used)} 롤`} />
+            <Card label="누적 생산량" sub="이 필름으로 포장한 제품" v={`${nf(fit.prod)} 개`} />
+            <Card label="1롤당 실제 포장수" sub={`${nf(fit.lo)} ~ ${nf(fit.hi)} 개 (실사 ±1롤)`}
+              v={nf(fit.fitted)} tone="ok" />
+            <Card label="업체 표기 대비"
+              sub={`표기 ${nf(ROLL_DEFAULT[mat.roll])}개 → 실제 ${nf(fit.fitted)}개`}
+              v={`${(100 * (fit.fitted / ROLL_DEFAULT[mat.roll] - 1)).toFixed(1)}%`}
+              tone={fit.fitted < ROLL_DEFAULT[mat.roll] * 0.97 ? 'warn' : 'ok'} />
+          </div>
+
+          <div className="bg-white border rounded-lg overflow-hidden">
+            <div className="px-4 py-2.5 border-b bg-slate-50 flex items-center gap-2 flex-wrap">
+              <span className="font-bold text-gray-800 text-sm">🎞 1롤당 실제 포장수 역산</span>
+              <span className="text-xs text-gray-500">필름은 이 값을 알아내는 게 목적입니다</span>
+              {Math.round(fit.fitted) !== rolls[mat.roll] && (
+                <button onClick={() => { setRolls((p) => ({ ...p, [mat.roll!]: Math.round(fit.fitted) }));
+                  setDirty((p) => new Set(p).add('_config')); }}
+                  className="ml-auto px-3 py-1.5 text-xs rounded bg-blue-600 text-white font-bold hover:bg-blue-700">
+                  이 값({nf(fit.fitted)})으로 맞추기
+                </button>
+              )}
+            </div>
+            <div className="p-4 space-y-3">
+              <p className="text-xs text-gray-600 leading-relaxed">
+                <b>누적 생산 {nf(fit.prod)}개 ÷ 누적 투입 {un(fit.used)}롤 = 롤당 {nf(fit.fitted)}개.</b>{' '}
+                업체 표기 {nf(ROLL_DEFAULT[mat.roll])}개와 {Math.abs(100 * (fit.fitted / ROLL_DEFAULT[mat.roll] - 1)).toFixed(1)}% 차이 나는데,
+                이 차이가 <b>롤 갈이할 때 버리는 앞부분 · 불량 · 시운전을 다 합친 필름 로스</b>입니다.
+                규격 자체가 표기보다 짧을 수도 있어 데이터만으로는 둘을 가르지 못합니다 —
+                <b> 새 롤 하나를 끝까지 쓰며 몇 개 포장하는지 한 번 세어 보면</b> 그 자리에서 갈립니다.
+              </p>
+              <div>
+                <div className="text-xs font-bold text-gray-500 mb-1.5">달마다 따로 역산하면</div>
+                <div className="flex gap-1.5 flex-wrap">
+                  {fit.byMonth.map((b) => {
+                    const off = b.v / fit.fitted - 1;
+                    return (
+                      <div key={b.month} className={`px-2.5 py-1.5 rounded-lg border text-xs ${
+                        Math.abs(off) > 0.08 ? 'bg-amber-50 border-amber-300' : 'bg-slate-50 border-gray-200'}`}>
+                        <span className="text-gray-500">{Number(b.month.slice(5, 7))}월</span>{' '}
+                        <b className="tabular-nums text-gray-800">{nf(b.v)}</b>
+                        <span className={`ml-1 tabular-nums ${Math.abs(off) > 0.08 ? 'text-amber-600' : 'text-gray-400'}`}>
+                          {off > 0 ? '+' : ''}{(off * 100).toFixed(0)}%
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+                <p className="text-xs text-gray-500 mt-1.5">
+                  월별로는 이렇게 흔들립니다 — 반쯤 쓴 롤을 이번 달로 세느냐 다음 달로 세느냐에 따라
+                  <b> 한 롤이 통째로 움직이고, 월 {un(fit.used / fit.n)}롤 쓰는 자재에서 1롤은 {(100 / (fit.used / fit.n)).toFixed(0)}%</b>입니다.
+                  그래서 월별 값은 보지 마시고 <b>누적값</b>만 쓰세요. 개월 수가 쌓일수록 정확해집니다.
+                </p>
+              </div>
+            </div>
+          </div>
+        </>
+      ) : (
+        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+          <Card label={`투입량 합계 (${mat.unit})`} sub="재고조사 기준 실제 소모" v={un(a.totalInput)} />
+          <Card label={`이론사용량 합계 (${mat.unit})`}
+            sub={mat.roll ? `생산량 ÷ ${nf(rolls[mat.roll])}개(1롤) · 로스 0%` : '생산량 기준 · 로스 0%'}
+            v={un(a.totalTheory)} />
+          <Card label="실질 로스" sub={`투입 − 이론 (${mat.unit})`}
+            v={usgn(a.totalDiff)} tone={a.totalDiff < 0 ? 'bad' : 'ok'} />
+          <Card label="누적 로스율" sub={`기준 ${(lossLimit * 100).toFixed(1)}% 이내면 정상`}
+            v={pctS(a.totalLossRate)}
+            tone={a.totalLossRate === null ? undefined : a.totalLossRate < 0 ? 'bad' : a.totalLossRate > lossLimit ? 'warn' : 'ok'} />
+        </div>
+      )}
 
       {missing.length > 0 && (
         <div className="bg-sky-50 border border-sky-300 rounded-lg p-3 text-sm text-sky-800">
@@ -560,7 +650,24 @@ export default function ContainerStockTab() {
         <div className="px-4 py-2.5 border-b bg-slate-50 font-bold text-gray-800 text-sm">
           자동 진단 <span className="text-xs text-gray-500 font-normal">· {mat.label} · 심각한 순</span>
         </div>
-        {a.findings.length === 0 ? (
+        {specStale ? (
+          <div className="p-4">
+            <div className="border rounded-lg overflow-hidden flex bg-sky-50 border-sky-300">
+              <div className="w-1.5 shrink-0 bg-sky-500" />
+              <div className="p-3">
+                <div className="font-bold text-gray-800 text-sm">
+                  ℹ️ 지금은 1롤 {nf(fit!.spec)}개로 계산 중이라 월별 차이가 한 방향으로 쏠립니다
+                </div>
+                <div className="text-xs text-gray-600 mt-1 leading-relaxed">
+                  실제로는 롤당 {nf(fit!.fitted)}개가 나오고 있어, 매달 {(Math.abs(specOff) * 100).toFixed(1)}%씩
+                  {specOff < 0 ? ' 더 쓰는' : ' 덜 쓰는'} 것으로 잡힙니다. 원인이 하나뿐이라 월별 진단을 늘어놓아도 같은 말입니다.
+                  <b> 위에서 「{nf(fit!.fitted)}으로 맞추기」를 누르면</b> 그때부터 월별 값은 그 기준에서 벗어난 달만 짚어 줍니다 —
+                  그게 실제로 봐야 할 신호입니다. 업체 표기와의 차이(=필름 로스)는 위 카드에 그대로 남습니다.
+                </div>
+              </div>
+            </div>
+          </div>
+        ) : a.findings.length === 0 ? (
           <div className="p-10 text-center text-gray-400 text-sm">
             {a.filledCount === 0 ? '재고조사 값을 입력하면 자동으로 분석합니다.' : '짚을 것이 없습니다.'}
           </div>
