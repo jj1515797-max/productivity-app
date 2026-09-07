@@ -172,7 +172,6 @@ export function analyze(
 ): Analysis {
   const rows: MonthRow[] = [];
   let cum = 0;
-  let hasAny = false;
 
   for (const month of months) {
     const entry = entries[month] || emptyEntry();
@@ -180,11 +179,11 @@ export function analyze(
     const input = effectiveInput(entry);
     const th = theoryOf(theory[month], spec);
     const diff = input !== null && th !== null ? input - th : null;
-    if (diff !== null) { cum += diff; hasAny = true; }
+    if (diff !== null) cum += diff;
     rows.push({
       month, entry, calcInput, input, theory: th, diff,
       lossRate: diff !== null && th ? diff / th : null,
-      cumDiff: hasAny ? cum : null,
+      cumDiff: diff !== null ? cum : null,
       flag: 'none', cluster: null,
     });
   }

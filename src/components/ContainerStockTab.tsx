@@ -16,11 +16,13 @@ import {
   type TheorySource, type MaterialDef, type TheorySpec, type RollKind,
 } from '../lib/containerStock';
 
-/** 합계 행은 구성 자재의 입력값을 그대로 더한다 (직접 입력하지 않는다) */
+/** 합계 행은 구성 자재의 입력값을 그대로 더한다 (직접 입력하지 않는다).
+ *  셋 중 하나라도 비어 있으면 합계를 내지 않는다 — 일부만 더한 값을 전체 이론사용량과
+ *  견주면 그만큼 모자라 보여 없는 이상이 생긴다. */
 function sumEntry(parts: (StockEntry | undefined)[]): StockEntry {
   const add = (f: keyof StockEntry) => {
-    const vs = parts.map((p) => (p ? (p[f] as number | null | undefined) : null)).filter((v) => v != null) as number[];
-    return vs.length ? vs.reduce((a, b) => a + b, 0) : null;
+    const vs = parts.map((p) => (p ? (p[f] as number | null | undefined) ?? null : null));
+    return vs.every((v) => v !== null) ? (vs as number[]).reduce((a, b) => a + b, 0) : null;
   };
   return { open: add('open'), inbound: add('inbound'), close: add('close'), input: add('input') };
 }
@@ -365,8 +367,12 @@ export default function ContainerStockTab() {
       const ws = wb.addWorksheet(mm.label);
       ws.columns = [{ width: 10 }, { width: 13 }, { width: 13 }, { width: 13 }, { width: 14 },
         { width: 14 }, { width: 14 }, { width: 13 }, { width: 11 }, { width: 13 }, { width: 12 }, { width: 44 }];
+      const basis = mm.sum
+        ? mm.sum.map((id) => MATERIALS.find((x) => x.id === id)!.label).join(' + ')
+        : SOURCE_LABEL[srcOverride[mm.id] || mm.source];
       ws.addRow([`${mm.label} — ${year}년 재고 정합성`
-        + (mm.roll ? ` (단위: ${mm.unit} · 1롤 ${rolls[mm.roll].toLocaleString()}개)` : ` (단위: ${mm.unit})`)]);
+        + (mm.roll ? ` (단위: ${mm.unit} · 1롤 ${rolls[mm.roll].toLocaleString()}개)` : ` (단위: ${mm.unit})`)
+        + ` · 이론사용량 기준: ${basis}`]);
       ws.mergeCells('A1:L1');
       ws.getCell('A1').font = { size: 14, bold: true };
       ws.addRow([]);
@@ -393,11 +399,17 @@ export default function ContainerStockTab() {
         if (x.flag === 'bad') row.getCell(9).font = { bold: true, color: { argb: 'FFDC2626' } };
         else if (x.flag === 'timing') row.getCell(9).font = { bold: true, color: { argb: 'FFD97706' } };
       });
-      const tot = ws.addRow(['합계', null, null, null, null, null, r.totalInput, r.totalTheory,
-        r.totalDiff, r.totalLossRate, '', '']);
+      // 기초·기말은 그 시점의 재고 수준이라 더해도 뜻이 없어 비운다
+      const colTot = (f: (x: typeof r.rows[number]) => number | null) => {
+        const vs = r.rows.map(f).filter((v): v is number => v !== null);
+        return vs.length ? vs.reduce((a, b) => a + b, 0) : null;
+      };
+      const tot = ws.addRow(['합계', null, colTot((x) => x.entry.inbound), null,
+        colTot((x) => x.calcInput), colTot((x) => x.entry.input),
+        r.totalInput, r.totalTheory, r.totalDiff, r.totalLossRate, '', '']);
       tot.eachCell((c, i) => {
         c.border = border; c.font = { bold: true }; c.alignment = { horizontal: 'center' };
-        if (i >= 7 && i <= 9) c.numFmt = mm.unit === '롤' ? '#,##0.0' : '#,##0';
+        if (i >= 2 && i <= 9) c.numFmt = mm.unit === '롤' ? '#,##0.0' : '#,##0';
         if (i === 10) c.numFmt = '0.00%';
       });
       ws.addRow([]);
