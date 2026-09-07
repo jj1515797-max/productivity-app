@@ -60,8 +60,9 @@ export function theoryOf(t: TheoryMonth | undefined, src: TheorySource | TheoryS
     case 'ambient': return t.ambient;
     case 'cold': return t.small + t.large;
     case 'all': return t.small + t.large + t.ambient;
-    // 호기별 값이 없는 옛 저장분은 '미계산' 으로 두어 다시 계산하게 한다
-    case 'm12': return t.m1 == null || t.m2 == null ? null : t.m1 + t.m2;
+    // 호기별 값이 없는 옛 저장분은 '미계산' 으로 두어 다시 계산하게 한다.
+    // 호기를 알 수 없는 잔량은 2열기(1·2호기)로 본다 — 대부분 그쪽이고 양도 미미하다.
+    case 'm12': return t.m1 == null || t.m2 == null ? null : t.m1 + t.m2 + (t.mUnassigned || 0);
     case 'm3': return t.m3 == null ? null : t.m3;
   }
 }

@@ -183,8 +183,6 @@ export default function ContainerStockTab() {
   // 제품 DB 에 없어 용기 구분을 못 한 수량 — 그만큼 이론사용량이 적게 잡힌다
   const unknownMonths = months.filter((m) => (theory[m]?.unknown || 0) > 0);
   const unknownTotal = unknownMonths.reduce((s2, m) => s2 + (theory[m]?.unknown || 0), 0);
-  const mUnMonths = months.filter((m) => (theory[m]?.mUnassigned || 0) > 0);
-  const mUnTotal = mUnMonths.reduce((s2, m) => s2 + (theory[m]?.mUnassigned || 0), 0);
 
   const loadTheory = useCallback(async (list: string[]) => {
     setErr('');
@@ -501,14 +499,6 @@ export default function ContainerStockTab() {
         </div>
       )}
 
-      {mUnTotal > 0 && (mat.source === 'm12' || mat.source === 'm3') && (
-        <div className="bg-amber-50 border border-amber-300 rounded-lg p-3 text-sm text-amber-800">
-          ⚠ 그날 어느 호기가 돌렸는지 알 수 없어 호기별로 나누지 못한 냉장 생산량이 <b>{nf(mUnTotal)}개</b> 있습니다
-          ({mUnMonths.map((m) => `${Number(m.slice(5, 7))}월`).join(', ')}).
-          잔여량만 있고 그 코드의 호기 입력이 없는 날에 생깁니다. 그만큼 필름 이론사용량이 적게 잡힙니다.
-        </div>
-      )}
-
       {/* 그래프 */}
       <div className="bg-white border rounded-lg overflow-hidden">
         <div className="px-4 py-2.5 border-b bg-slate-50 flex items-center gap-2 flex-wrap">
@@ -650,6 +640,9 @@ export default function ContainerStockTab() {
         <div className="px-4 pb-4 text-xs text-gray-600 space-y-2 leading-relaxed">
           <p><b>1) 투입량</b> = 기초재고 + 당월입고 − 기말재고. 창고에서 실제로 빠져나간 수량입니다.
             구매팀에서 받은 값이 있으면 오른쪽 칸에 넣으세요. 둘 다 넣으면 서로 맞는지 자동으로 대조합니다.</p>
+          <p><b>2-1) 필름 기준.</b> 필름은 용기 구분이 아니라 호기로 갈립니다 — 1·2호기가 2열기, 3호기가 4열기,
+            레토르트는 실온 생산량입니다. 잔여량만 있고 호기 입력이 없는 날은 어느 호기인지 알 수 없는데,
+            그런 수량은 <b>2열기(1·2호기)로 잡습니다</b>.</p>
           <p><b>2) 이론사용량</b> = 그 달 생산량(EA). 1개 만들면 용기 1개니까, 로스가 0%일 때 써야 할 최소 수량입니다.
             용기분석 첫 탭의 숫자와 같은 계산입니다.</p>
           <p><b>3) 차이 = 투입 − 이론</b> 은 <b>항상 0 이상</b>이어야 합니다. 파손·시운전·불량만큼 더 쓰니까요.
