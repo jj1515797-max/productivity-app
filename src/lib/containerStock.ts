@@ -16,21 +16,29 @@ export interface MaterialDef {
   label: string;
   source: TheorySource;
   group: '용기' | '필름';
+  /** 이 자재 1개로 포장할 수 있는 제품 수. 용기는 1, 필름은 1롤당 포장수 */
+  perUnit: number;
+  /** 세는 단위 */
+  unit: string;
   /** 채워져 있으면 그 자재들의 입력값을 더한 합계 행 (직접 입력하지 않음) */
   sum?: string[];
 }
 
+/** 필름은 롤로 세고, 1롤로 여러 개를 포장한다 */
+export const ROLL_2 = 6450;    // 2열 필름 1롤 = 6,450개
+export const ROLL_4 = 12900;   // 4열 필름 1롤 = 12,900개
+
 /** 자재 정의. 이론사용량은 용기분석의 생산량에서 자동으로 끌어온다.
- *  제품 1개 = 용기 1개 = 필름 1장 이므로 필름도 같은 생산량을 기준으로 삼는다. */
+ *  용기는 제품 1개 = 1개지만, 필름은 생산량 ÷ 롤당 포장수 = 롤 수가 된다. */
 export const MATERIALS: MaterialDef[] = [
-  { id: 'c210', label: '210ml 용기', source: 'large', group: '용기' },
-  { id: 'c185', label: '185ml 용기', source: 'small', group: '용기' },
-  { id: 'retort', label: '레토르트', source: 'ambient', group: '용기' },
-  { id: 'cSum', label: '용기 합계', source: 'all', group: '용기', sum: ['c210', 'c185', 'retort'] },
-  { id: 'f2', label: '냉장 2열기 필름', source: 'm12', group: '필름' },
-  { id: 'f4', label: '냉장 4열기 필름', source: 'm3', group: '필름' },
-  { id: 'fr', label: '레토르트 4열기 필름', source: 'ambient', group: '필름' },
-  { id: 'fSum', label: '필름 합계', source: 'all', group: '필름', sum: ['f2', 'f4', 'fr'] },
+  { id: 'c210', label: '210ml 용기', source: 'large', group: '용기', perUnit: 1, unit: '개' },
+  { id: 'c185', label: '185ml 용기', source: 'small', group: '용기', perUnit: 1, unit: '개' },
+  { id: 'retort', label: '레토르트', source: 'ambient', group: '용기', perUnit: 1, unit: '개' },
+  { id: 'cSum', label: '용기 합계', source: 'all', group: '용기', perUnit: 1, unit: '개', sum: ['c210', 'c185', 'retort'] },
+  { id: 'f2', label: '냉장 2열기 필름', source: 'm12', group: '필름', perUnit: ROLL_2, unit: '롤' },
+  { id: 'f4', label: '냉장 4열기 필름', source: 'm3', group: '필름', perUnit: ROLL_4, unit: '롤' },
+  { id: 'fr', label: '레토르트 4열기 필름', source: 'ambient', group: '필름', perUnit: ROLL_4, unit: '롤' },
+  { id: 'fSum', label: '필름 합계', source: 'all', group: '필름', perUnit: ROLL_4, unit: '롤', sum: ['f2', 'f4', 'fr'] },
 ];
 
 export const SOURCE_LABEL: Record<TheorySource, string> = {
@@ -51,9 +59,10 @@ export interface TheoryMonth {
   mUnassigned?: number;
 }
 
-export function theoryOf(t: TheoryMonth | undefined, src: TheorySource | TheorySource[]): number | null {
-  if (!t) return null;
-  if (Array.isArray(src)) return src.reduce((s, x) => s + (theoryOf(t, x) || 0), 0);
+/** 이론사용량 산출 기준 하나. perUnit 으로 나누면 그 자재의 단위(개·롤)가 된다 */
+export interface TheorySpec { src: TheorySource; perUnit: number }
+
+function rawOf(t: TheoryMonth, src: TheorySource): number | null {
   switch (src) {
     case 'large': return t.large;
     case 'small': return t.small;
@@ -65,6 +74,18 @@ export function theoryOf(t: TheoryMonth | undefined, src: TheorySource | TheoryS
     case 'm12': return t.m1 == null || t.m2 == null ? null : t.m1 + t.m2 + (t.mUnassigned || 0);
     case 'm3': return t.m3 == null ? null : t.m3;
   }
+}
+
+export function theoryOf(t: TheoryMonth | undefined, spec: TheorySpec | TheorySpec[]): number | null {
+  if (!t) return null;
+  const list = Array.isArray(spec) ? spec : [spec];
+  let sum = 0;
+  for (const x of list) {
+    const v = rawOf(t, x.src);
+    if (v === null) return null;      // 한 조각이라도 없으면 합계도 못 낸다
+    sum += v / (x.perUnit || 1);
+  }
+  return sum;
 }
 
 /** 사용자가 입력하는 한 달치 재고조사 값. 비어 있으면 null. */
@@ -126,7 +147,10 @@ export interface Analysis {
   lossLimit: number;
 }
 
-const fmt = (n: number) => Math.round(n).toLocaleString();
+// 롤처럼 값이 작은 자재는 반올림하면 문장이 이상해진다 (0.4 → '0')
+const fmt = (n: number) => (Math.abs(n) < 100 && !Number.isInteger(n)
+  ? n.toLocaleString(undefined, { minimumFractionDigits: 1, maximumFractionDigits: 1 })
+  : Math.round(n).toLocaleString());
 const pct = (v: number) => `${(v * 100).toFixed(2)}%`;
 const mLabel = (m: string) => `${Number(m.slice(5, 7))}월`;
 
@@ -139,7 +163,7 @@ export function analyze(
   months: string[],
   entries: Record<string, StockEntry>,
   theory: Record<string, TheoryMonth>,
-  src: TheorySource | TheorySource[],
+  spec: TheorySpec | TheorySpec[],
   lossLimit = 0.03,
 ): Analysis {
   const rows: MonthRow[] = [];
@@ -150,7 +174,7 @@ export function analyze(
     const entry = entries[month] || emptyEntry();
     const calcInput = computedInput(entry);
     const input = effectiveInput(entry);
-    const th = theoryOf(theory[month], src);
+    const th = theoryOf(theory[month], spec);
     const diff = input !== null && th !== null ? input - th : null;
     if (diff !== null) { cum += diff; hasAny = true; }
     rows.push({
@@ -206,7 +230,7 @@ export function analyze(
         month: r.month, severity: 'critical', size: r.theory,
         title: `${mLabel(r.month)} 기말재고가 '기초 + 입고' 와 정확히 같습니다 — 출고가 반영되지 않았습니다`,
         detail: `${fmt(r.entry.open)} + ${fmt(r.entry.inbound)} − ${fmt(r.entry.close)} = 0. `
-          + `그 달에 ${fmt(r.theory)}개를 생산했는데 창고에서 나간 게 하나도 없다는 뜻이라 성립하지 않습니다. `
+          + `그 달에 ${fmt(r.theory)}만큼 써야 했는데 창고에서 나간 게 하나도 없다는 뜻이라 성립하지 않습니다. `
           + `ERP 재고수불부의 출고합계가 0 이면 아직 생산출고가 안 잡힌 마감 전 장부입니다. `
           + `여기 넣을 기말재고는 반드시 「재고조사(실사)로 센 실물 수량」이어야 합니다 — `
           + `ERP 장부상 기말을 그대로 넣으면 투입량이 ERP 출고량과 같아져 이 검증 자체가 의미를 잃습니다.`,
@@ -231,7 +255,11 @@ export function analyze(
        → 돌아오면 '재고 실사 시점이 월 경계를 넘긴 것'  (timing)
        → 안 돌아오면 진짜 문제                          (bad)     */
   const NEG_TOL = 0.005;
-  const inBand = (d: number, th: number) => th > 0 && d >= -th * NEG_TOL && d <= th * lossLimit;
+  // 필름은 롤로 세므로 반쯤 쓴 롤을 어느 쪽으로 세느냐에 따라 한 단위가 통째로 움직인다.
+  // 그래서 ±1 단위는 어떤 자재든 잡음으로 본다 (용기처럼 수십만 개인 자재에는 영향이 없다).
+  const UNIT_TOL = 1;
+  const inBand = (d: number, th: number) =>
+    th > 0 && d >= -Math.max(th * NEG_TOL, UNIT_TOL) && d <= Math.max(th * lossLimit, UNIT_TOL);
   const MAX_SPAN = 3;
 
   const claimed = new Set<string>();     // 이미 어느 구간에 묶인 달
@@ -285,9 +313,9 @@ export function analyze(
           + `오차가 다음 달에 반대 부호로 되돌아옵니다. 이 구간이 정확히 그 모양이라 총량은 맞습니다. `
           + `${mLabel(head.month)}에 오차가 시작됐으니 그 달을 보세요 — `
           + (over
-            ? `${mLabel(head.month)} 기말재고를 실제보다 ${fmt(-head.diff!)}개쯤 많게 셌거나, `
+            ? `${mLabel(head.month)} 기말재고를 실제보다 ${fmt(-head.diff!)}쯤 많게 셌거나, `
               + `${mLabel(head.month)} 입고가 그만큼 덜 잡혔을 가능성이 큽니다.`
-            : `${mLabel(head.month)} 기말재고를 실제보다 ${fmt(head.diff!)}개쯤 적게 셌거나, `
+            : `${mLabel(head.month)} 기말재고를 실제보다 ${fmt(head.diff!)}쯤 적게 셌거나, `
               + `${mLabel(head.month)} 입고가 그만큼 더 잡혔을 가능성이 큽니다.`)
           + ` 월말에 도착했지만 검수 전이라 실물은 창고에 있고 전표는 다음 달로 넘어간 물량이 대표적입니다. `
           + `파렛트 단위로 세는 자재면 한 파렛트만 어긋나도 이만큼 벌어집니다.`,
@@ -300,7 +328,7 @@ export function analyze(
     if (r.diff! < 0) {
       findings.push({
         month: r.month, severity: 'critical', size: -r.diff!,
-        title: `${mLabel(r.month)} 이론사용량이 투입량보다 ${fmt(-r.diff!)}개 많습니다`,
+        title: `${mLabel(r.month)} 이론사용량이 투입량보다 ${fmt(-r.diff!)} 많습니다`,
         detail: `투입 ${fmt(r.input!)} < 이론 ${fmt(r.theory!)} (${pct(r.diff! / r.theory!)}). `
           + `용기를 쓰지 않고 제품을 만들 수는 없으니 어딘가 틀린 값입니다. 앞뒤 ${MAX_SPAN}개월을 합쳐 봐도 메워지지 않습니다. `
           + `① 기말재고 과다계상(창고에 없는 걸 있다고 셈) ② 당월입고 누락 ③ 생산량 과다입력 순으로 확인하세요.`,
@@ -309,7 +337,7 @@ export function analyze(
       findings.push({
         month: r.month, severity: 'warn', size: r.diff!,
         title: `${mLabel(r.month)} 로스율 ${pct(r.diff! / r.theory!)} — 기준(${pct(lossLimit)}) 초과`,
-        detail: `투입 ${fmt(r.input!)} − 이론 ${fmt(r.theory!)} = ${fmt(r.diff!)}개가 생산에 쓰이지 않고 사라졌습니다. `
+        detail: `투입 ${fmt(r.input!)} − 이론 ${fmt(r.theory!)} = ${fmt(r.diff!)}만큼 생산에 쓰이지 않고 사라졌습니다. `
           + `앞뒤 달과 상쇄되지도 않습니다. 실제 파손·시운전이 그만큼 났는지, `
           + `아니면 기말재고를 덜 세었는지(창고에 남아 있는데 안 셈) 확인하세요.`,
       });
@@ -325,7 +353,7 @@ export function analyze(
     if (totalDiff < 0) {
       findings.push({
         month: '', severity: 'critical', size: -totalDiff,
-        title: `${filled.length}개월 합계로도 이론사용량이 ${fmt(-totalDiff)}개 많습니다`,
+        title: `${filled.length}개월 합계로도 이론사용량이 ${fmt(-totalDiff)} 많습니다`,
         detail: `기간 전체를 합치면 시점 오차는 상쇄되어야 합니다. 그런데도 음수라면 월 경계 문제가 아니라 `
           + `구조적인 누락입니다 — 입고분이 통째로 안 잡혔거나, 생산량이 과다하게 집계되고 있습니다.`,
       });
@@ -333,13 +361,13 @@ export function analyze(
       findings.push({
         month: '', severity: 'warn', size: totalDiff,
         title: `${filled.length}개월 누적 로스율 ${pct(rate)} — 기준 초과`,
-        detail: `누적 ${fmt(totalDiff)}개. 월별로는 흔들려도 누적이 기준을 넘으면 진짜 로스입니다.`,
+        detail: `누적 ${fmt(totalDiff)}. 월별로는 흔들려도 누적이 기준을 넘으면 진짜 로스입니다.`,
       });
     } else {
       findings.push({
         month: '', severity: 'ok', size: 0,
         title: `${filled.length}개월 누적 로스율 ${pct(rate)} — 정상 범위`,
-        detail: `누적 ${fmt(totalDiff)}개. 월별 값이 흔들리더라도 총량은 맞아떨어집니다.`,
+        detail: `누적 ${fmt(totalDiff)}. 월별 값이 흔들리더라도 총량은 맞아떨어집니다.`,
       });
     }
   }

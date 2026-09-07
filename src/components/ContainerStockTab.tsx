@@ -13,7 +13,7 @@ import { loadContainerMonth, isPastMonth } from '../lib/containerLoad';
 import {
   MATERIALS, SOURCE_LABEL, analyze, emptyEntry,
   type StockEntry, type TheoryMonth, type Severity, type MonthRow,
-  type TheorySource, type MaterialDef,
+  type TheorySource, type MaterialDef, type TheorySpec,
 } from '../lib/containerStock';
 
 /** 합계 행은 구성 자재의 입력값을 그대로 더한다 (직접 입력하지 않는다) */
@@ -40,7 +40,9 @@ const usable = (m: string, c: TheoryCell | undefined): boolean => {
 };
 
 const nf = (n: number) => Math.round(n).toLocaleString();
-const sgn = (n: number) => `${n > 0 ? '+' : ''}${nf(n)}`;
+/** 롤처럼 개수가 적은 자재는 반올림하면 오차가 커 보인다 — 소수 첫째 자리까지 보여준다 */
+const mk = (d: number) => (n: number) =>
+  n.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
 const pctS = (v: number | null) => (v === null ? '—' : `${(v * 100).toFixed(2)}%`);
 
 const SEV: Record<Severity, { bg: string; bar: string; icon: string; label: string }> = {
@@ -58,7 +60,9 @@ const FLAG_STYLE: Record<string, { chip: string; text: string; bar: string }> = 
 };
 
 /* ───────────────────────── 그래프 ───────────────────────── */
-function DiffChart({ rows, lossLimit }: { rows: MonthRow[]; lossLimit: number }) {
+function DiffChart({ rows, lossLimit, dec }: { rows: MonthRow[]; lossLimit: number; dec: number }) {
+  const f = mk(dec);
+  const g = (n: number) => `${n > 0 ? '+' : ''}${f(n)}`;
   const W = 1000, H = 260, PL = 64, PR = 56, PT = 18, PB = 28;
   const iw = W - PL - PR, ih = H - PT - PB;
   const vals: number[] = [];
@@ -96,7 +100,7 @@ function DiffChart({ rows, lossLimit }: { rows: MonthRow[]; lossLimit: number })
               rx={2} fill={FLAG_STYLE[r.flag].bar} opacity={0.88} />
             <text x={cx} y={r.diff >= 0 ? Math.min(y0, y1) - 4 : Math.max(y0, y1) + 12}
               textAnchor="middle" fontSize={10.5} fontWeight={700}
-              fill={FLAG_STYLE[r.flag].bar}>{sgn(r.diff)}</text>
+              fill={FLAG_STYLE[r.flag].bar}>{g(r.diff)}</text>
           </g>
         );
       })}
@@ -111,8 +115,8 @@ function DiffChart({ rows, lossLimit }: { rows: MonthRow[]; lossLimit: number })
           fontSize={11} fill="#64748b">{Number(r.month.slice(5, 7))}월</text>
       ))}
       <text x={PL - 8} y={y(0) + 4} textAnchor="end" fontSize={10} fill="#334155">0</text>
-      <text x={PL - 8} y={y(max * 0.92) + 4} textAnchor="end" fontSize={10} fill="#94a3b8">{nf(max * 0.92)}</text>
-      <text x={PL - 8} y={y(-max * 0.92) + 4} textAnchor="end" fontSize={10} fill="#94a3b8">-{nf(max * 0.92)}</text>
+      <text x={PL - 8} y={y(max * 0.92) + 4} textAnchor="end" fontSize={10} fill="#94a3b8">{f(max * 0.92)}</text>
+      <text x={PL - 8} y={y(-max * 0.92) + 4} textAnchor="end" fontSize={10} fill="#94a3b8">-{f(max * 0.92)}</text>
     </svg>
   );
 }
@@ -142,6 +146,9 @@ export default function ContainerStockTab() {
 
   const mat = MATERIALS.find((m) => m.id === matId)!;
   const readOnly = !!mat.sum;
+  const dec = mat.perUnit > 1 ? 1 : 0;          // 롤은 소수 첫째 자리까지
+  const un = mk(dec);
+  const usgn = (n: number) => `${n > 0 ? '+' : ''}${un(n)}`;
 
   /* 재고 입력값 불러오기 (컬렉션 전체 1회) */
   useEffect(() => {
@@ -206,9 +213,10 @@ export default function ContainerStockTab() {
     setBusy('');
   }, []);
 
-  const srcOf = (mm: MaterialDef): TheorySource | TheorySource[] =>
-    mm.sum ? mm.sum.map((id) => srcOverride[id] || MATERIALS.find((x) => x.id === id)!.source)
-           : (srcOverride[mm.id] || mm.source);
+  const specOf = (mm: MaterialDef): TheorySpec | TheorySpec[] => {
+    const one = (x: MaterialDef): TheorySpec => ({ src: srcOverride[x.id] || x.source, perUnit: x.perUnit });
+    return mm.sum ? mm.sum.map((id) => one(MATERIALS.find((x) => x.id === id)!)) : one(mm);
+  };
   const rawEntry = (m: string, id: string): StockEntry => stock[m]?.[id] || emptyEntry();
   const entryFor = (m: string, mm: MaterialDef): StockEntry =>
     mm.sum ? sumEntry(mm.sum.map((id) => stock[m]?.[id])) : rawEntry(m, mm.id);
@@ -272,16 +280,16 @@ export default function ContainerStockTab() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [months, stock, matId]);
 
-  const matSrc = srcOf(mat);
-  const a = useMemo(() => analyze(months, entries, theory, matSrc, lossLimit),
+  const matSpec = specOf(mat);
+  const a = useMemo(() => analyze(months, entries, theory, matSpec, lossLimit),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [months, entries, theory, JSON.stringify(matSrc), lossLimit]);
+    [months, entries, theory, JSON.stringify(matSpec), lossLimit]);
 
   /* 자재 타일용 요약 (선택 안 된 것도 한눈에) */
   const tiles = useMemo(() => MATERIALS.map((mm) => {
     const e: Record<string, StockEntry> = {};
     months.forEach((m) => { e[m] = entryFor(m, mm); });
-    const r = analyze(months, e, theory, srcOf(mm), lossLimit);
+    const r = analyze(months, e, theory, specOf(mm), lossLimit);
     return {
       mat: mm, filled: r.filledCount, rate: r.totalLossRate, diff: r.totalDiff,
       bad: r.rows.filter((x) => x.flag === 'bad').length,
@@ -297,11 +305,12 @@ export default function ContainerStockTab() {
     for (const mm of MATERIALS) {
       const e: Record<string, StockEntry> = {};
       months.forEach((m) => { e[m] = entryFor(m, mm); });
-      const r = analyze(months, e, theory, srcOf(mm), lossLimit);
+      const r = analyze(months, e, theory, specOf(mm), lossLimit);
       const ws = wb.addWorksheet(mm.label);
       ws.columns = [{ width: 10 }, { width: 13 }, { width: 13 }, { width: 13 }, { width: 14 },
         { width: 14 }, { width: 14 }, { width: 13 }, { width: 11 }, { width: 13 }, { width: 12 }, { width: 44 }];
-      ws.addRow([`${mm.label} — ${year}년 재고 정합성`]);
+      ws.addRow([`${mm.label} — ${year}년 재고 정합성`
+        + (mm.perUnit > 1 ? ` (단위: ${mm.unit} · 1롤 ${mm.perUnit.toLocaleString()}개)` : ` (단위: ${mm.unit})`)]);
       ws.mergeCells('A1:L1');
       ws.getCell('A1').font = { size: 14, bold: true };
       ws.addRow([]);
@@ -322,7 +331,7 @@ export default function ContainerStockTab() {
         row.eachCell((c, i) => {
           c.border = border;
           c.alignment = { horizontal: i === 12 ? 'left' : 'center' };
-          if (i >= 2 && i <= 9) c.numFmt = '#,##0';
+          if (i >= 2 && i <= 9) c.numFmt = mm.perUnit > 1 ? '#,##0.0' : '#,##0';
           if (i === 10) c.numFmt = '0.00%';
         });
         if (x.flag === 'bad') row.getCell(9).font = { bold: true, color: { argb: 'FFDC2626' } };
@@ -332,7 +341,7 @@ export default function ContainerStockTab() {
         r.totalDiff, r.totalLossRate, '', '']);
       tot.eachCell((c, i) => {
         c.border = border; c.font = { bold: true }; c.alignment = { horizontal: 'center' };
-        if (i >= 7 && i <= 9) c.numFmt = '#,##0';
+        if (i >= 7 && i <= 9) c.numFmt = mm.perUnit > 1 ? '#,##0.0' : '#,##0';
         if (i === 10) c.numFmt = '0.00%';
       });
       ws.addRow([]);
@@ -449,6 +458,9 @@ export default function ContainerStockTab() {
                        : 'border-gray-200 bg-white hover:border-gray-300'}`}>
                   <div className="flex items-center gap-1.5 flex-wrap">
                     <span className="font-bold text-gray-800 text-sm">{t.mat.label}</span>
+                    {t.mat.perUnit > 1 && !t.mat.sum && (
+                      <span className="text-[10px] text-gray-400 font-normal">1롤 {nf(t.mat.perUnit)}개</span>
+                    )}
                     {t.mat.sum && <span className="px-1.5 py-0.5 rounded-full bg-gray-200 text-gray-600 text-[10px] font-bold">자동합산</span>}
                     {t.bad > 0 && <span className="px-1.5 py-0.5 rounded-full bg-red-600 text-white text-[10px] font-bold">이상 {t.bad}</span>}
                     {t.bad === 0 && t.timing > 0 && <span className="px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 text-[10px] font-bold">이월 {t.timing}</span>}
@@ -462,7 +474,9 @@ export default function ContainerStockTab() {
                         t.rate === null ? 'text-gray-400' : t.rate < 0 ? 'text-red-600' : t.rate > lossLimit ? 'text-amber-600' : 'text-emerald-600'}`}>
                         {pctS(t.rate)}
                       </div>
-                      <div className="text-xs text-gray-500 mt-0.5">누적 로스율 · {sgn(t.diff)}개 · {t.filled}개월</div>
+                      <div className="text-xs text-gray-500 mt-0.5">
+                        누적 로스율 · {mk(t.mat.perUnit > 1 ? 1 : 0)(t.diff)}{t.mat.unit} · {t.filled}개월
+                      </div>
                     </>
                   )}
                 </button>
@@ -474,10 +488,12 @@ export default function ContainerStockTab() {
 
       {/* 요약 4카드 */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-        <Card label="투입량 합계" sub="재고조사 기준 실제 소모" v={nf(a.totalInput)} />
-        <Card label="이론사용량 합계" sub="생산량 기준 · 로스 0%" v={nf(a.totalTheory)} />
-        <Card label="실질 로스" sub="투입 − 이론"
-          v={sgn(a.totalDiff)} tone={a.totalDiff < 0 ? 'bad' : 'ok'} />
+        <Card label={`투입량 합계 (${mat.unit})`} sub="재고조사 기준 실제 소모" v={un(a.totalInput)} />
+        <Card label={`이론사용량 합계 (${mat.unit})`}
+          sub={mat.perUnit > 1 ? `생산량 ÷ ${nf(mat.perUnit)}개(1롤) · 로스 0%` : '생산량 기준 · 로스 0%'}
+          v={un(a.totalTheory)} />
+        <Card label="실질 로스" sub={`투입 − 이론 (${mat.unit})`}
+          v={usgn(a.totalDiff)} tone={a.totalDiff < 0 ? 'bad' : 'ok'} />
         <Card label="누적 로스율" sub={`기준 ${(lossLimit * 100).toFixed(1)}% 이내면 정상`}
           v={pctS(a.totalLossRate)}
           tone={a.totalLossRate === null ? undefined : a.totalLossRate < 0 ? 'bad' : a.totalLossRate > lossLimit ? 'warn' : 'ok'} />
@@ -502,7 +518,7 @@ export default function ContainerStockTab() {
       {/* 그래프 */}
       <div className="bg-white border rounded-lg overflow-hidden">
         <div className="px-4 py-2.5 border-b bg-slate-50 flex items-center gap-2 flex-wrap">
-          <span className="font-bold text-gray-800 text-sm">{mat.label} · 월별 차이와 누적</span>
+          <span className="font-bold text-gray-800 text-sm">{mat.label} · 월별 차이와 누적 <span className="text-xs font-normal text-gray-400">({mat.unit})</span></span>
           <span className="ml-auto flex items-center gap-3 text-[11px] text-gray-600">
             <Legend c="#10b981" t="정상" /><Legend c="#f59e0b" t="이월오차" /><Legend c="#ef4444" t="이상" />
             <span className="flex items-center gap-1"><span className="inline-block w-4 h-0.5 bg-slate-800" />누적</span>
@@ -510,7 +526,7 @@ export default function ContainerStockTab() {
           </span>
         </div>
         <div className="p-3">
-          <DiffChart rows={a.rows} lossLimit={lossLimit} />
+          <DiffChart rows={a.rows} lossLimit={lossLimit} dec={dec} />
           <p className="text-xs text-gray-500 mt-1 px-1">
             막대 = 그 달 <b>투입량 − 이론사용량</b>. 굵은 선 = 누적. <b>막대가 0 아래(음수)</b>면 용기를 쓰지 않고 제품을 만들었다는 뜻이라 불가능한 값입니다.
             막대가 위아래로 톱니처럼 흔들려도 <b>누적선이 완만하게 우상향</b>하면 총량은 맞습니다 — 한 달 기말재고 오차가 다음 달에 되돌아온 것뿐입니다.
@@ -574,7 +590,7 @@ export default function ContainerStockTab() {
                 <th className="px-2 py-2 w-24">기말재고</th>
                 <th className="px-2 py-2 w-24 text-right">투입량<div className="text-[10px] font-normal text-gray-400">기초+입고−기말</div></th>
                 <th className="px-2 py-2 w-24">투입량<div className="text-[10px] font-normal text-gray-400">구매팀 직접</div></th>
-                <th className="px-2 py-2 w-24 text-right">이론사용량</th>
+                <th className="px-2 py-2 w-24 text-right">이론사용량<div className="text-[10px] font-normal text-gray-400">{mat.unit}</div></th>
                 <th className="px-2 py-2 w-24 text-right">차이</th>
                 <th className="px-2 py-2 w-20 text-right">로스율</th>
                 <th className="px-2 py-2 w-24">판정</th>
@@ -603,11 +619,11 @@ export default function ContainerStockTab() {
                         className={`${cell} ${readOnly ? 'bg-slate-100 text-gray-600' : e.input !== null ? 'bg-blue-50/60 font-semibold' : ''}`} />
                     </td>
                     <td className="px-2 py-1 text-right tabular-nums text-gray-700">
-                      {r.theory === null ? <span className="text-gray-300">미계산</span> : nf(r.theory)}
+                      {r.theory === null ? <span className="text-gray-300">미계산</span> : un(r.theory)}
                     </td>
                     <td className={`px-2 py-1 text-right tabular-nums font-bold ${
                       r.diff === null ? 'text-gray-300' : r.diff < 0 ? 'text-red-600' : 'text-gray-800'}`}>
-                      {r.diff === null ? '—' : sgn(r.diff)}
+                      {r.diff === null ? '—' : usgn(r.diff)}
                     </td>
                     <td className={`px-2 py-1 text-right tabular-nums ${
                       r.lossRate === null ? 'text-gray-300' : r.lossRate < 0 ? 'text-red-600' : r.lossRate > lossLimit ? 'text-amber-600' : 'text-gray-600'}`}>
@@ -624,8 +640,8 @@ export default function ContainerStockTab() {
               <tr className="bg-slate-50 font-bold">
                 <td className="px-2 py-2 text-center">합계</td>
                 <td colSpan={5} />
-                <td className="px-2 py-2 text-right tabular-nums">{nf(a.totalTheory)}</td>
-                <td className={`px-2 py-2 text-right tabular-nums ${a.totalDiff < 0 ? 'text-red-600' : 'text-gray-800'}`}>{sgn(a.totalDiff)}</td>
+                <td className="px-2 py-2 text-right tabular-nums">{un(a.totalTheory)}</td>
+                <td className={`px-2 py-2 text-right tabular-nums ${a.totalDiff < 0 ? 'text-red-600' : 'text-gray-800'}`}>{usgn(a.totalDiff)}</td>
                 <td className="px-2 py-2 text-right tabular-nums">{pctS(a.totalLossRate)}</td>
                 <td />
               </tr>
@@ -642,7 +658,10 @@ export default function ContainerStockTab() {
             구매팀에서 받은 값이 있으면 오른쪽 칸에 넣으세요. 둘 다 넣으면 서로 맞는지 자동으로 대조합니다.</p>
           <p><b>2-1) 필름 기준.</b> 필름은 용기 구분이 아니라 호기로 갈립니다 — 1·2호기가 2열기, 3호기가 4열기,
             레토르트는 실온 생산량입니다. 잔여량만 있고 호기 입력이 없는 날은 어느 호기인지 알 수 없는데,
-            그런 수량은 <b>2열기(1·2호기)로 잡습니다</b>.</p>
+            그런 수량은 <b>2열기(1·2호기)로 잡습니다</b>.
+            그리고 필름은 롤로 세므로 <b>생산량 ÷ 롤당 포장수</b>가 이론사용량입니다 —
+            2열 필름은 1롤 6,450개, 4열 필름은 1롤 12,900개입니다.
+            반쯤 쓴 롤을 어느 달로 세느냐에 따라 한 롤이 통째로 움직이므로, <b>±1롤은 정상으로 봅니다</b>.</p>
           <p><b>2) 이론사용량</b> = 그 달 생산량(EA). 1개 만들면 용기 1개니까, 로스가 0%일 때 써야 할 최소 수량입니다.
             용기분석 첫 탭의 숫자와 같은 계산입니다.</p>
           <p><b>3) 차이 = 투입 − 이론</b> 은 <b>항상 0 이상</b>이어야 합니다. 파손·시운전·불량만큼 더 쓰니까요.
