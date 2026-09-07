@@ -1,4 +1,7 @@
-/** 분석 > 용기분석 — 월별 용기 사용량 (냉장이유식 기준)
+/** 분석 > 용기분석
+ *
+ *  탭 ① 월별 사용량 — 그 달 생산량(EA)을 용기 구분별로 집계
+ *  탭 ② 재고 정합성 — 재고조사 투입량 vs 이론사용량 검증
  *
  *  용기 구분: 제품 DB(productSettings)의 ERP 코드 끝자리
  *    · '-51' 로 끝나면  → 작은용기 185ml   (예: F-045-51)
@@ -8,13 +11,10 @@
  *  생산량은 잔여량(물류) 보정이 들어간 computeMonthlyProduction 결과를 그대로 사용한다.
  */
 import { useEffect, useMemo, useState } from 'react';
-import { collection, collectionGroup, getDocs, query, where } from 'firebase/firestore';
 import ExcelJS from 'exceljs';
-import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
-import { canonicalShort, compareCode } from '../lib/codeUtil';
-import { computeMonthlyProduction } from '../lib/monthlyProduction';
-import type { Item, MachineEntry } from '../types';
+import { loadContainerMonth, isPastMonth, type ContainerRow } from '../lib/containerLoad';
+import ContainerStockTab from '../components/ContainerStockTab';
 
 const SMALL_ML = 185, LARGE_ML = 210;
 
@@ -23,7 +23,6 @@ function shiftMonth(m: string, delta: number): string {
   const d = new Date(y, mm - 1 + delta, 1);
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
 }
-const isPastMonth = (m: string) => m < todayKey().slice(0, 7);
 
 /** 캐시: 지난달은 '월 마감 이후 계산된 것'만 신뢰, 현재달은 5분 */
 const CK = 'containerAnalysis:';
@@ -44,9 +43,9 @@ const setCache = (m: string, data: unknown) => {
   try { localStorage.setItem(CK + m, JSON.stringify({ ts: Date.now(), data })); } catch { /* 용량초과 무시 */ }
 };
 
-interface Row { code: string; name: string; qty: number; size: 'small' | 'large' | 'unknown'; erpCode?: string }
+type Row = ContainerRow;
 
-export default function ContainerAnalysis() {
+function MonthlyUsageTab() {
   const [month, setMonth] = useState(todayKey().slice(0, 7));
   const [loading, setLoading] = useState(true);
   const [err, setErr] = useState('');
@@ -66,98 +65,12 @@ export default function ContainerAnalysis() {
 
     (async () => {
       try {
-        const start = `${month}-01`, end = `${month}-31`;
-        const [entSnap, itemSnap, prodSnap] = await Promise.all([
-          getDocs(query(collectionGroup(db, 'entries'), where('date', '>=', start), where('date', '<=', end))),
-          getDocs(query(collectionGroup(db, 'items'), where('date', '>=', start), where('date', '<=', end))),
-          getDocs(collection(db, 'productSettings')),
-        ]);
-        // 월 물류(잔여량) — 일자별 합
-        const [yy, mm] = month.split('-').map(Number);
-        const lastDay = new Date(yy, mm, 0).getDate();
-        const dates = Array.from({ length: lastDay }, (_, i) => `${month}-${String(i + 1).padStart(2, '0')}`);
-        const logSnaps = await Promise.all(dates.map((d) => getDocs(collection(db, 'days', d, 'logistics'))));
-        const logisticsByDay: Record<string, number> = {};
-        const logisticsByDayCode: Record<string, Record<string, number>> = {};
-        logSnaps.forEach((s, i) => {
-          if (s.empty) return;
-          let sum = 0;
-          const perCode: Record<string, number> = {};
-          s.forEach((d) => {
-            const data = d.data() as { code?: string; qty?: number };
-            const q = data.qty || 0;
-            sum += q;
-            const k = canonicalShort(data.code || d.id);
-            if (k) perCode[k] = (perCode[k] || 0) + q;
-          });
-          logisticsByDay[dates[i]] = sum;
-          logisticsByDayCode[dates[i]] = perCode;
-        });
+        const r = await loadContainerMonth(month);
         if (cancelled) return;
-
-        // days/ 하위만 (waste/entries · remix/items 섞이지 않게 경로로 거름)
-        const entries = entSnap.docs
-          .filter((d) => d.ref.path.startsWith('days/') && d.ref.path.includes('/machines/'))
-          .map((d) => d.data() as MachineEntry)
-          .filter((e) => !!e.machine);
-        const items = itemSnap.docs
-          .filter((d) => d.ref.path.startsWith('days/'))
-          .map((d) => d.data() as Item);
-
-        // 제품 DB → 단축코드별 용기 구분 (ERP 코드 끝 '-51' = 작은용기)
-        const sizeByShort = new Map<string, 'small' | 'large'>();
-        const erpByShort = new Map<string, string>();
-        const nameByShort = new Map<string, string>();
-        const conflict = new Set<string>();
-        prodSnap.forEach((d) => {
-          const data = d.data() as { code?: string; name?: string };
-          const erp = (data.code || d.id || '').trim();
-          if (!erp) return;
-          const short = canonicalShort(erp);
-          const size: 'small' | 'large' = /-51$/.test(erp) ? 'small' : 'large';
-          const prev = sizeByShort.get(short);
-          if (prev && prev !== size) conflict.add(short);   // -01/-51 이 같은 단축코드로 겹치는 경우
-          sizeByShort.set(short, size);
-          erpByShort.set(short, erp);
-          if (data.name) nameByShort.set(short, data.name);
-        });
-
-        const prod = computeMonthlyProduction(entries, items, [], logisticsByDay, logisticsByDayCode);
-        const list: Row[] = [];
-        prod.coldByCode.forEach((qty, short) => {
-          if (Math.round(qty) === 0) return;
-          const size = sizeByShort.get(short);
-          list.push({
-            code: short,
-            name: nameByShort.get(short) || prod.stages.flatMap((s) => s.items).find((i) => i.code === short)?.name || short,
-            qty,                                   // 원값 유지 (합계는 원값으로, 표시만 반올림)
-            size: size || 'unknown',
-            erpCode: erpByShort.get(short),
-          });
-        });
-        list.sort((a, b) => b.qty - a.qty || compareCode(a.code, b.code));
-
-        // 교차검증: 월별현황(AnalyticsMonthly)과 동일한 일자 단위 공식으로 냉장 총량 재계산
-        //   물류 있는 날 = 목표합 + 잔여합 / 없는 날 = entries 합
-        const rawColdByDay: Record<string, number> = {};
-        entries.forEach((e) => {
-          rawColdByDay[e.date] = (rawColdByDay[e.date] || 0) + (e.actualProduction || 0) + (e.additionalProduction || 0);
-        });
-        const totalQtyByDay: Record<string, number> = {};
-        items.forEach((it) => { totalQtyByDay[it.date] = (totalQtyByDay[it.date] || 0) + (it.totalQty || 0); });
-        let monthlyTotal = 0;
-        new Set([...Object.keys(rawColdByDay), ...Object.keys(logisticsByDay), ...Object.keys(totalQtyByDay)])
-          .forEach((d) => {
-            monthlyTotal += logisticsByDay[d] !== undefined
-              ? (totalQtyByDay[d] || 0) + logisticsByDay[d]
-              : (rawColdByDay[d] || 0);
-          });
-
-        if (cancelled) return;
-        setRows(list);
-        setAmbiguous([...conflict]);
-        setMonthlyTotal(monthlyTotal);
-        setCache(month, { rows: list, ambiguous: [...conflict], monthlyTotal });
+        setRows(r.rows);
+        setAmbiguous(r.ambiguous);
+        setMonthlyTotal(r.monthlyTotal);
+        setCache(month, { rows: r.rows, ambiguous: r.ambiguous, monthlyTotal: r.monthlyTotal });
       } catch (e) {
         if (!cancelled) setErr(e instanceof Error ? e.message : String(e));
       } finally {
@@ -220,9 +133,7 @@ export default function ContainerAnalysis() {
     <div className="space-y-5">
       {/* 상단 */}
       <div className="bg-white border rounded-lg p-4 flex items-center gap-3 flex-wrap">
-        <span className="font-bold text-gray-800 text-lg">🥣 용기 분석</span>
         <span className="text-xs text-gray-400">냉장이유식 기준</span>
-        <span className="text-gray-300">|</span>
         <div className="flex items-center gap-1">
           <button onClick={() => setMonth(shiftMonth(month, -1))} className="w-8 h-8 rounded hover:bg-gray-100">◀</button>
           <input type="month" value={month} onChange={(e) => e.target.value && setMonth(e.target.value)}
@@ -330,6 +241,33 @@ export default function ContainerAnalysis() {
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+const TABS = [
+  { id: 'usage', label: '📦 월별 사용량', sub: '생산량 기준 용기 사용량' },
+  { id: 'stock', label: '🧮 재고 정합성', sub: '재고조사 투입량 검증' },
+] as const;
+
+export default function ContainerAnalysis() {
+  const [tab, setTab] = useState<'usage' | 'stock'>('usage');
+  return (
+    <div className="space-y-4">
+      <div className="bg-white border rounded-lg px-3 pt-3 flex items-end gap-1 flex-wrap">
+        <span className="font-bold text-gray-800 text-lg mr-3 mb-2">🥣 용기 분석</span>
+        {TABS.map((t) => (
+          <button key={t.id} onClick={() => setTab(t.id)}
+            className={`px-4 py-2 rounded-t-lg border-b-[3px] transition text-sm ${
+              tab === t.id
+                ? 'border-blue-600 text-blue-700 font-bold bg-blue-50/60'
+                : 'border-transparent text-gray-500 hover:text-gray-800 hover:bg-gray-50'}`}>
+            {t.label}
+            <span className={`block text-[10px] font-normal ${tab === t.id ? 'text-blue-500' : 'text-gray-400'}`}>{t.sub}</span>
+          </button>
+        ))}
+      </div>
+      {tab === 'usage' ? <MonthlyUsageTab /> : <ContainerStockTab />}
     </div>
   );
 }
