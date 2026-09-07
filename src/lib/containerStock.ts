@@ -102,15 +102,22 @@ export interface StockEntry {
 export const emptyEntry = (): StockEntry => ({ open: null, inbound: null, close: null, input: null });
 
 /** 기초+입고−기말 이 모두 채워졌을 때만 계산값을 낸다 */
+/** 값 하나를 안전하게 읽는다. Firestore 문서에 필드가 없으면 undefined 로 오는데,
+ *  그걸 그대로 쓰면 산술이 NaN 이 되고 화면 전체가 조용히 망가진다. */
+const num = (v: number | null | undefined): number | null =>
+  typeof v === 'number' && Number.isFinite(v) ? v : null;
+
 export function computedInput(e: StockEntry | undefined): number | null {
   if (!e) return null;
-  if (e.open === null || e.inbound === null || e.close === null) return null;
-  return e.open + e.inbound - e.close;
+  const o = num(e.open), i = num(e.inbound), c = num(e.close);
+  if (o === null || i === null || c === null) return null;
+  return o + i - c;
 }
 /** 실제로 쓸 투입량: 직접입력이 있으면 그것, 없으면 계산값 */
 export function effectiveInput(e: StockEntry | undefined): number | null {
   if (!e) return null;
-  return e.input !== null ? e.input : computedInput(e);
+  const d = num(e.input);
+  return d !== null ? d : computedInput(e);
 }
 
 export type Severity = 'critical' | 'warn' | 'info' | 'ok';
@@ -177,19 +184,20 @@ export function analyze(
     const entry = entries[month] || emptyEntry();
     const calcInput = computedInput(entry);
     const input = effectiveInput(entry);
-    const th = theoryOf(theory[month], spec);
+    const th0 = theoryOf(theory[month], spec);
+    const th = th0 !== null && Number.isFinite(th0) ? th0 : null;
     const diff = input !== null && th !== null ? input - th : null;
     if (diff !== null) cum += diff;
     rows.push({
       month, entry, calcInput, input, theory: th, diff,
-      lossRate: diff !== null && th ? diff / th : null,
+      lossRate: diff !== null && th !== null && th > 0 ? diff / th : null,
       cumDiff: diff !== null ? cum : null,
       flag: 'none', cluster: null,
     });
   }
 
   const findings: Finding[] = [];
-  const filled = rows.filter((r) => r.diff !== null && r.theory !== null && r.theory > 0);
+  const filled = rows.filter((r) => r.diff !== null);
   /** 기말 = 기초 + 입고 인 달. 출고가 반영 안 된 장부재고를 넣은 것이라 투입량이 0 이 된다. */
   const bookOnly = new Set<string>();
 
@@ -210,7 +218,8 @@ export function analyze(
     }
 
     // ② 계산 투입량 ≠ 구매팀 직접입력
-    if (r.entry.input !== null && r.calcInput !== null && r.entry.input !== r.calcInput) {
+    const EPS = 1e-6;
+    if (r.entry.input != null && r.calcInput !== null && Math.abs(r.entry.input - r.calcInput) > EPS) {
       const gap = r.entry.input - r.calcInput;
       findings.push({
         month: r.month, severity: 'warn', size: Math.abs(gap),
@@ -226,7 +235,7 @@ export function analyze(
     }
 
     // ③ 출고 미반영 — 기말이 '기초+입고' 그대로면 투입량이 0 으로 나온다
-    if (r.calcInput === 0 && r.entry.open !== null && r.entry.inbound !== null && r.entry.close !== null
+    if (r.calcInput !== null && Math.abs(r.calcInput) < EPS && r.entry.open != null && r.entry.inbound !== null && r.entry.close !== null
         && r.theory !== null && r.theory > 0) {
       bookOnly.add(r.month);
       findings.push({
@@ -262,16 +271,19 @@ export function analyze(
   // 그래서 ±1 단위는 어떤 자재든 잡음으로 본다 (용기처럼 수십만 개인 자재에는 영향이 없다).
   const UNIT_TOL = 1;
   const inBand = (d: number, th: number) =>
-    th > 0 && d >= -Math.max(th * NEG_TOL, UNIT_TOL) && d <= Math.max(th * lossLimit, UNIT_TOL);
+    d >= -Math.max(th * NEG_TOL, UNIT_TOL) && d <= Math.max(th * lossLimit, UNIT_TOL);
   const MAX_SPAN = 3;
 
   const claimed = new Set<string>();     // 이미 어느 구간에 묶인 달
   const seenCluster = new Set<string>();
 
   for (const r of rows) {
-    if (r.diff === null || r.theory === null || r.theory <= 0) { r.flag = 'none'; continue; }
+    if (r.diff === null || r.theory === null) { r.flag = 'none'; continue; }
     r.flag = inBand(r.diff, r.theory) ? 'ok' : 'bad';
   }
+
+  // 달력 위치. 구간이 달력상 이어지는지 확인하는 데 쓴다.
+  const posOf = new Map(rows.map((r, i) => [r.month, i]));
 
   for (let k = 0; k < filled.length; k++) {
     const r = filled[k];
@@ -283,6 +295,12 @@ export function analyze(
     for (let len = 2; len <= MAX_SPAN && !best; len++) {
       for (let a = Math.max(0, k - len + 1); a + len - 1 < filled.length && a <= k; a++) {
         const b = a + len - 1;
+        // 달력상 이어지지 않으면(사이에 미입력 달이 있으면) 기말→기초 이월이 성립하지 않는다
+        if (posOf.get(filled[b].month)! - posOf.get(filled[a].month)! !== b - a) continue;
+        // 원인이 이미 밝혀진 달을 끌어들이지 않는다
+        let skip = false;
+        for (let x = a; x <= b; x++) if (bookOnly.has(filled[x].month)) { skip = true; break; }
+        if (skip) continue;
         let d = 0, t = 0, pos = 0, neg = 0;
         for (let x = a; x <= b; x++) {
           d += filled[x].diff!; t += filled[x].theory!;

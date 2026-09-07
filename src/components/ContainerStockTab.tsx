@@ -141,6 +141,8 @@ export default function ContainerStockTab() {
   const [pasteText, setPasteText] = useState('');
   const [srcOverride, setSrcOverride] = useState<Record<string, TheorySource>>({});
   const [rolls, setRolls] = useState<Record<RollKind, number>>({ ...ROLL_DEFAULT });
+  // 입력 도중에는 빈 칸이 될 수 있어야 한다. 확정된 값만 rolls 로 올린다.
+  const [rollDraft, setRollDraft] = useState<string | null>(null);
 
   const months = useMemo(() => {
     const cap = year === nowY ? Number(todayKey().slice(5, 7)) : 12;
@@ -149,6 +151,7 @@ export default function ContainerStockTab() {
 
   const mat = MATERIALS.find((m) => m.id === matId)!;
   const readOnly = !!mat.sum;
+  useEffect(() => { setRollDraft(null); }, [matId]);
   const dec = mat.unit === '롤' ? 1 : 0;        // 롤은 소수 첫째 자리까지
   const un = mk(dec);
   const usgn = (n: number) => `${n > 0 ? '+' : ''}${un(n)}`;
@@ -181,9 +184,17 @@ export default function ContainerStockTab() {
         if (d.id.startsWith('_')) return;      // 설정용 문서는 월이 아니다
         next[d.id] = d.data() as Record<string, StockEntry>;
       });
-      setStock(next);
+      // 로드가 늦게 도착해도 그 사이 입력한 값은 살린다
+      setStock((prev) => {
+        const merged = { ...next };
+        Object.keys(prev).forEach((m) => { merged[m] = { ...(next[m] || {}), ...prev[m] }; });
+        return merged;
+      });
       cfgLoaded.current = true;
-    }).catch((e) => setErr(e instanceof Error ? e.message : String(e)));
+    }).catch((e) => {
+      setErr(e instanceof Error ? e.message : String(e));
+      cfgLoaded.current = true;   // 읽기가 실패해도 설정 저장까지 죽이지는 않는다
+    });
     return () => { cancelled = true; };
   }, []);
 
@@ -254,18 +265,28 @@ export default function ContainerStockTab() {
     const t = raw.replace(/[,\s]/g, '');
     const v = t === '' ? null : Number(t);
     if (v !== null && !Number.isFinite(v)) return;
-    setStock((p) => ({ ...p, [m]: { ...(p[m] || {}), [matId]: { ...rawEntry(m, matId), [field]: v } } }));
-    setDirty((p) => new Set(p).add(m));
+    setStock((p) => ({ ...p, [m]: { ...(p[m] || {}), [matId]: { ...(p[m]?.[matId] || emptyEntry()), [field]: v } } }));
+    setDirty((p) => new Set(p).add(`${m}|${matId}`));
   };
 
   const save = async () => {
     if (!dirty.size) return;
     setSaving(true); setErr('');
     try {
+      /* 손댄 자재만 쓴다. 그 달 문서를 통째로 쓰면, 내가 화면을 연 뒤 다른 사람이 고친
+         다른 자재까지 내 옛 스냅샷으로 되돌려 버린다. */
+      const byMonth = new Map<string, Record<string, StockEntry>>();
+      dirty.forEach((key) => {
+        const [m, id] = key.split('|');
+        if (!byMonth.has(m)) byMonth.set(m, {});
+        byMonth.get(m)![id] = stock[m]?.[id] || emptyEntry();
+      });
+      const sent = new Set(dirty);
       const batch = writeBatch(db);
-      dirty.forEach((m) => batch.set(doc(db, 'containerStock', m), stock[m] || {}, { merge: true }));
+      byMonth.forEach((payload, m) => batch.set(doc(db, 'containerStock', m), payload, { merge: true }));
       await batch.commit();
-      setDirty(new Set());
+      // 커밋 도중 들어온 입력은 남긴다
+      setDirty((p) => new Set([...p].filter((k) => !sent.has(k))));
     } catch (e) {
       setErr(`저장 실패: ${e instanceof Error ? e.message : String(e)}`);
     } finally { setSaving(false); }
@@ -273,27 +294,32 @@ export default function ContainerStockTab() {
 
   const applyPaste = () => {
     if (readOnly) { setErr('합계 행에는 직접 넣을 수 없습니다. 아래 세 자재에 각각 넣으면 자동으로 더해집니다.'); return; }
-    // 엑셀에서 복사하면 1,234 처럼 천단위 콤마가 붙어 온다.
-    // 탭·줄바꿈·공백이 있으면 그게 칸 구분이고, 콤마는 전부 천단위로 본다.
-    // 구분자가 콤마밖에 없을 때(CSV 한 줄)만 콤마로 나눈다.
-    const src = pasteText.replace(/\((\s*[\d,.]+\s*)\)/g, '-$1');   // 엑셀 음수 표기 (1,234) → -1234
-    const hasSpaceDelim = /[\t\n\r ]/.test(src.trim());
-    const nums = (hasSpaceDelim ? src.split(/[\t\n\r ]+/) : src.split(','))
-      .map((t) => t.replace(/,/g, '').trim())
-      .filter((t) => /^-?\d+(\.\d+)?$/.test(t))
-      .map(Number);
-    if (!nums.length) { setErr('붙여넣은 내용에서 숫자를 찾지 못했습니다.'); return; }
+    /* 엑셀에서 가로 한 줄을 복사하면 칸이 탭으로 온다. 빈 칸도 칸이므로 자리를 지켜야 한다 —
+       걸러내 버리면 그 뒤 달이 통째로 한 칸씩 밀린다.
+       콤마는 천단위 구분이라 칸 구분이 따로 있을 때는 자르지 않는다.
+       (1,234) 같은 괄호 음수는 안쪽 공백까지 감안해 먼저 부호로 바꾼다. */
+    const src = pasteText.replace(/\(\s*([\d,.]+)\s*\)/g, '-$1');
+    const hasCell = /[\t\n\r]/.test(src);
+    const cells = hasCell ? src.split(/[\t\n\r]/) : (/,/.test(src) && !/\d,\d{3}(\D|$)/.test(src) ? src.split(',') : src.split(/\s+/));
+    const nums = cells.map((t) => {
+      const v = t.replace(/,/g, '').trim();
+      return /^-?\d+(\.\d+)?$/.test(v) ? Number(v) : null;   // 빈 칸은 null 로 자리만 지킨다
+    });
+    if (!nums.some((v) => v !== null)) { setErr('붙여넣은 내용에서 숫자를 찾지 못했습니다.'); return; }
     setErr('');
     const next = { ...stock };
     const touched = new Set(dirty);
+    let dropped = 0;
     nums.forEach((v, i) => {
+      if (v === null) return;                       // 빈 칸은 건너뛴다 (자리는 이미 지켰다)
       const mi = pasteStart - 1 + i;
-      if (mi > 11) return;
       const m = `${year}-${String(mi + 1).padStart(2, '0')}`;
+      if (mi > 11 || !months.includes(m)) { dropped++; return; }   // 화면에 없는 달에는 넣지 않는다
       const cur = next[m]?.[matId] || emptyEntry();
       next[m] = { ...(next[m] || {}), [matId]: { ...cur, [pasteField]: v } };
-      touched.add(m);
+      touched.add(`${m}|${matId}`);
     });
+    if (dropped) setErr(`${dropped}개 값은 이 화면에 없는 달이라 넣지 않았습니다 (${months[0].slice(0, 4)}년 ${months.length}개월까지).`);
     setStock(next); setDirty(touched); setPasteText(''); setPasteOpen(false);
   };
 
@@ -342,7 +368,9 @@ export default function ContainerStockTab() {
   const curSrc: TheorySource = srcOverride[mat.id] || mat.source;
   const srcChanged = curSrc !== mat.source;
   const fitOff = fit && mat.roll ? fit.fitted / ROLL_DEFAULT[mat.roll] - 1 : 0;
-  const fitAbsurd = !!fit && Math.abs(fitOff) > 0.3;
+  // 기준이 이미 기본값이면 '기준을 고치라' 고 할 수 없다 — 그때는 잠그지 않고 경고만 한다
+  const fitAbsurd = !!fit && Math.abs(fitOff) > 0.3 && srcChanged;
+  const fitFar = !!fit && Math.abs(fitOff) > 0.3 && !srcChanged;
 
   // 합계 행: 열마다 따로 더한다. 기초·기말은 재고 수준이라 더해도 뜻이 없어 비워 둔다.
   const colSum = useMemo(() => {
@@ -479,7 +507,7 @@ export default function ContainerStockTab() {
             className="px-2.5 py-1.5 text-xs rounded border hover:bg-gray-50">📥 엑셀</button>
           <button onClick={save} disabled={!dirty.size || saving}
             className="px-3 py-1.5 text-xs rounded bg-blue-600 text-white font-bold hover:bg-blue-700 disabled:bg-gray-300">
-            {saving ? '저장 중…' : dirty.size ? `저장 (${dirty.size}개월)` : '저장됨'}
+            {saving ? '저장 중…' : dirty.size ? `저장 (${new Set([...dirty].map((k) => k.split('|')[0])).size}개월)` : '저장됨'}
           </button>
         </div>
         <div className="w-full text-xs">
@@ -595,20 +623,35 @@ export default function ContainerStockTab() {
               <span className="px-2 py-0.5 rounded-full bg-slate-100 text-gray-600 text-[11px] font-bold">
                 지금 설정: 1롤 {nf(rolls[mat.roll])}개
               </span>
+              {MATERIALS.filter((x) => x.roll === mat.roll && x.id !== mat.id).length > 0 && (
+                <span className="px-2 py-0.5 rounded-full bg-slate-100 text-gray-500 text-[11px]">
+                  {MATERIALS.filter((x) => x.roll === mat.roll && x.id !== mat.id).map((x) => x.label).join('·')} 와 같은 규격 — 함께 바뀝니다
+                </span>
+              )}
               {!fitAbsurd && Math.round(fit.fitted) !== rolls[mat.roll] && (
-                <button onClick={() => setRolls((p) => ({ ...p, [mat.roll!]: Math.round(fit.fitted) }))}
+                <button onClick={() => { setRollDraft(null); setRolls((p) => ({ ...p, [mat.roll!]: Math.round(fit.fitted) })); }}
                   className="ml-auto px-3 py-1.5 text-xs rounded bg-blue-600 text-white font-bold hover:bg-blue-700">
                   이 값({nf(fit.fitted)})으로 맞추기
                 </button>
               )}
               {rolls[mat.roll] !== ROLL_DEFAULT[mat.roll] && (
-                <button onClick={() => setRolls((p) => ({ ...p, [mat.roll!]: ROLL_DEFAULT[mat.roll!] }))}
+                <button onClick={() => { setRollDraft(null); setRolls((p) => ({ ...p, [mat.roll!]: ROLL_DEFAULT[mat.roll!] })); }}
                   className={`px-3 py-1.5 text-xs rounded border font-semibold hover:bg-gray-50 ${fitAbsurd ? 'ml-auto' : ''}`}>
                   업체 표기({nf(ROLL_DEFAULT[mat.roll])})로 되돌리기
                 </button>
               )}
             </div>
             <div className="p-4 space-y-3">
+              {fitFar && (
+                <div className="bg-amber-50 border border-amber-300 rounded-lg p-3 text-sm text-amber-800">
+                  ⚠ <b>역산값이 업체 표기와 {Math.abs(fitOff * 100).toFixed(0)}% 차이납니다.</b>
+                  <div className="text-xs text-amber-700 mt-1.5 leading-relaxed">
+                    기준(「{SOURCE_LABEL[curSrc]}」)은 기본값 그대로라 기준 문제는 아닙니다. 남은 가능성은
+                    ① 롤 규격이 표기보다 짧다 ② 재고조사에 다른 필름이 섞였다 ③ 로스가 정말 이만큼 크다 입니다.
+                    <b> 새 롤 하나를 끝까지 쓰며 몇 개 포장하는지 세어 보면</b> 갈립니다. 그 전에는 「맞추기」를 누르지 마세요.
+                  </div>
+                </div>
+              )}
               {fitAbsurd && (
                 <div className="bg-red-50 border border-red-300 rounded-lg p-3 text-sm text-red-700">
                   🚨 <b>역산값이 업체 표기와 {Math.abs(fitOff * 100).toFixed(0)}% 차이납니다 — 이건 필름 로스로 설명될 크기가 아닙니다.</b>
@@ -714,7 +757,18 @@ export default function ContainerStockTab() {
           자동 진단 <span className="text-xs text-gray-500 font-normal">· {mat.label} · 심각한 순</span>
         </div>
         {specStale && !fitAbsurd ? (
-          <div className="p-4">
+          <div className="p-4 space-y-2">
+            {/* 롤 규격 때문에 생기는 월별 판정만 감춘다. 규격과 무관한 critical 은 그대로 보여준다 —
+                기초재고 불연속·출고 미반영은 규격을 맞춰도 사라지지 않는다. */}
+            {a.findings.filter((f) => f.severity === 'critical').map((f, i) => (
+              <div key={i} className={`border rounded-lg overflow-hidden flex ${SEV[f.severity].bg}`}>
+                <div className={`w-1.5 shrink-0 ${SEV[f.severity].bar}`} />
+                <div className="p-3">
+                  <div className="font-bold text-gray-800 text-sm">{SEV[f.severity].icon} {f.title}</div>
+                  <div className="text-xs text-gray-600 mt-1 leading-relaxed">{f.detail}</div>
+                </div>
+              </div>
+            ))}
             <div className="border rounded-lg overflow-hidden flex bg-sky-50 border-sky-300">
               <div className="w-1.5 shrink-0 bg-sky-500" />
               <div className="p-3">
@@ -761,15 +815,18 @@ export default function ContainerStockTab() {
           {mat.roll && (
             <label className="ml-auto text-xs text-gray-600 flex items-center gap-1.5">
               <b className="text-gray-700">{ROLL_LABEL[mat.roll]}</b> 1롤 =
-              <input type="number" min={1} value={rolls[mat.roll]}
+              <input type="number" min={1} value={rollDraft ?? rolls[mat.roll]}
                 onChange={(e) => {
-                  const v = Math.max(1, Math.round(Number(e.target.value) || 0));
-                  setRolls((p) => ({ ...p, [mat.roll!]: v }));
+                  const t = e.target.value;
+                  setRollDraft(t);
+                  const v = Math.round(Number(t));
+                  if (t.trim() !== '' && Number.isFinite(v) && v >= 1) setRolls((p) => ({ ...p, [mat.roll!]: v }));
                 }}
+                onBlur={() => setRollDraft(null)}
                 className="w-24 border rounded px-2 py-1 text-right tabular-nums font-bold" />
               개
               {rolls[mat.roll] !== ROLL_DEFAULT[mat.roll] && (
-                <button onClick={() => setRolls((p) => ({ ...p, [mat.roll!]: ROLL_DEFAULT[mat.roll!] }))}
+                <button onClick={() => { setRollDraft(null); setRolls((p) => ({ ...p, [mat.roll!]: ROLL_DEFAULT[mat.roll!] })); }}
                   className="text-gray-400 underline">기본값 {nf(ROLL_DEFAULT[mat.roll])}</button>
               )}
             </label>
@@ -813,7 +870,7 @@ export default function ContainerStockTab() {
                 const e = r.entry;
                 const mismatch = e.input !== null && r.calcInput !== null && e.input !== r.calcInput;
                 return (
-                  <tr key={r.month} className={dirty.has(r.month) ? 'bg-blue-50/50' : 'hover:bg-slate-50/60'}>
+                  <tr key={r.month} className={dirty.has(`${r.month}|${matId}`) ? 'bg-blue-50/50' : 'hover:bg-slate-50/60'}>
                     <td className="px-2 py-1 text-center font-bold text-gray-700">{Number(r.month.slice(5, 7))}월</td>
                     {(['open', 'inbound', 'close'] as const).map((f) => (
                       <td key={f} className="px-1.5 py-1">
