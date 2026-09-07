@@ -18,6 +18,10 @@ export interface ContainerMonth {
   ambiguous: string[];
   monthlyTotal: number;      // 월별현황 공식으로 재계산한 냉장 총량 (교차검증용)
   small: number; large: number; unknown: number; ambient: number;
+  /** 호기별 냉장 생산량 — 필름처럼 호기로 갈리는 자재용 */
+  m1: number; m2: number; m3: number;
+  /** 호기를 알 수 없어 배분하지 못한 냉장 수량 */
+  mUnassigned: number;
 }
 
 export const isPastMonth = (m: string) => m < todayKey().slice(0, 7);
@@ -115,5 +119,9 @@ export async function loadContainerMonth(month: string): Promise<ContainerMonth>
     rows, ambiguous: [...conflict], monthlyTotal,
     small: Math.round(raw.small), large: Math.round(raw.large), unknown: Math.round(raw.unknown),
     ambient: Math.round(ambient.reduce((s, a) => s + (a.qty || 0), 0)),
+    m1: Math.round(prod.coldByMachine['1호기'] || 0),
+    m2: Math.round(prod.coldByMachine['2호기'] || 0),
+    m3: Math.round(prod.coldByMachine['3호기'] || 0),
+    mUnassigned: Math.round(prod.coldMachineUnassigned),
   };
 }

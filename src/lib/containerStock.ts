@@ -9,7 +9,7 @@
  */
 
 /** 이론사용량을 어디서 가져올지 */
-export type TheorySource = 'large' | 'small' | 'ambient' | 'cold' | 'all';
+export type TheorySource = 'large' | 'small' | 'ambient' | 'cold' | 'all' | 'm12' | 'm3';
 
 export interface MaterialDef {
   id: string;
@@ -27,15 +27,16 @@ export const MATERIALS: MaterialDef[] = [
   { id: 'c185', label: '185ml 용기', source: 'small', group: '용기' },
   { id: 'retort', label: '레토르트', source: 'ambient', group: '용기' },
   { id: 'cSum', label: '용기 합계', source: 'all', group: '용기', sum: ['c210', 'c185', 'retort'] },
-  { id: 'f2', label: '냉장 2열기 필름', source: 'large', group: '필름' },
-  { id: 'f4', label: '냉장 4열기 필름', source: 'small', group: '필름' },
+  { id: 'f2', label: '냉장 2열기 필름', source: 'm12', group: '필름' },
+  { id: 'f4', label: '냉장 4열기 필름', source: 'm3', group: '필름' },
   { id: 'fr', label: '레토르트 4열기 필름', source: 'ambient', group: '필름' },
   { id: 'fSum', label: '필름 합계', source: 'all', group: '필름', sum: ['f2', 'f4', 'fr'] },
 ];
 
 export const SOURCE_LABEL: Record<TheorySource, string> = {
   large: '210ml 생산량', small: '185ml 생산량', ambient: '레토르트(실온) 생산량',
-  cold: '냉장 합계 (210+185)', all: '전체 합계 (210+185+레토르트)',
+  cold: '냉장 합계 (210+185)', all: '전체 합계 (냉장+레토르트)',
+  m12: '1·2호기 생산량 (냉장 2열기)', m3: '3호기 생산량 (냉장 4열기)',
 };
 
 /** 한 달 생산량(이론사용량의 원천) */
@@ -44,6 +45,10 @@ export interface TheoryMonth {
   large: number;      // 210ml 용기
   ambient: number;    // 실온(레토르트)
   unknown: number;    // 제품 DB 에 없어 용기 구분 못 한 수량
+  /** 호기별 냉장 생산량. 필름은 용기 구분이 아니라 호기로 갈린다 */
+  m1?: number; m2?: number; m3?: number;
+  /** 호기를 알 수 없어 배분하지 못한 냉장 수량 */
+  mUnassigned?: number;
 }
 
 export function theoryOf(t: TheoryMonth | undefined, src: TheorySource | TheorySource[]): number | null {
@@ -55,6 +60,9 @@ export function theoryOf(t: TheoryMonth | undefined, src: TheorySource | TheoryS
     case 'ambient': return t.ambient;
     case 'cold': return t.small + t.large;
     case 'all': return t.small + t.large + t.ambient;
+    // 호기별 값이 없는 옛 저장분은 '미계산' 으로 두어 다시 계산하게 한다
+    case 'm12': return t.m1 == null || t.m2 == null ? null : t.m1 + t.m2;
+    case 'm3': return t.m3 == null ? null : t.m3;
   }
 }
 

@@ -53,6 +53,10 @@ export interface MonthlyProduction {
   maxStage: number;
   /** 코드 → qty (월합). 원재료 검색 시 단계별 사용량 분배에 사용 */
   coldByCode: Map<string, number>;
+  /** 호기 → 냉장 생산량 (월합). 필름처럼 호기로 갈리는 자재에 쓴다 */
+  coldByMachine: Record<string, number>;
+  /** 그날 그 코드로 돌린 호기를 알 수 없어 배분하지 못한 냉장 수량 */
+  coldMachineUnassigned: number;
 }
 
 export function computeMonthlyProduction(
@@ -78,13 +82,32 @@ export function computeMonthlyProduction(
     if (it.name && it.name !== it.code) codeName.set(k, it.name);
   });
   const entriesByDay: Record<string, { code: string; qty: number }[]> = {};
+  // 잔여수정일에는 items 로 수량이 정해지는데 items 에는 호기가 없다.
+  // 그래서 같은 날 같은 코드를 어느 호기가 돌렸는지를 entries 에서 가져와 그 비율로 나눈다.
+  const machineByDayCode: Record<string, Record<string, Record<string, number>>> = {};
   entries.forEach((e) => {
     if (!e.code) return;
     const q = (e.actualProduction || 0) + (e.additionalProduction || 0);
     if (q <= 0) return;
+    const k = canonicalShort(e.code);
     if (!entriesByDay[e.date]) entriesByDay[e.date] = [];
-    entriesByDay[e.date].push({ code: canonicalShort(e.code), qty: q });
+    entriesByDay[e.date].push({ code: k, qty: q });
+    if (!machineByDayCode[e.date]) machineByDayCode[e.date] = {};
+    if (!machineByDayCode[e.date][k]) machineByDayCode[e.date][k] = {};
+    const slot = machineByDayCode[e.date][k];
+    slot[e.machine] = (slot[e.machine] || 0) + q;
   });
+
+  const coldByMachine: Record<string, number> = { '1호기': 0, '2호기': 0, '3호기': 0 };
+  let coldMachineUnassigned = 0;
+  /** 그날 그 코드의 확정 수량을 코드합계와 호기별 합계에 동시에 반영한다 */
+  const addDay = (day: string, code: string, qty: number) => {
+    codeQty.set(code, (codeQty.get(code) || 0) + qty);
+    const mm = machineByDayCode[day]?.[code];
+    const tot = mm ? Object.values(mm).reduce((a, b) => a + b, 0) : 0;
+    if (!mm || tot <= 0) { coldMachineUnassigned += qty; return; }
+    Object.keys(mm).forEach((m) => { coldByMachine[m] = (coldByMachine[m] || 0) + qty * (mm[m] / tot); });
+  };
 
   const allDays = new Set<string>([
     ...Object.keys(itemsByDay),
@@ -100,7 +123,7 @@ export function computeMonthlyProduction(
       dayItems.forEach((it) => planned.set(it.code, (planned.get(it.code) || 0) + it.totalQty));
       const codes = new Set<string>([...planned.keys(), ...Object.keys(perCode)]);
       codes.forEach((code) => {
-        codeQty.set(code, (codeQty.get(code) || 0) + (planned.get(code) || 0) + (perCode[code] || 0));
+        addDay(d, code, (planned.get(code) || 0) + (perCode[code] || 0));
         if (!codeName.has(code)) codeName.set(code, code);
       });
     } else if (logisticsByDay[d] !== undefined) {
@@ -110,13 +133,12 @@ export function computeMonthlyProduction(
       const adj = logisticsByDay[d];
       dayItems.forEach((it) => {
         const share = plannedTot > 0 ? it.totalQty / plannedTot : 0;
-        const add = it.totalQty + adj * share;
-        codeQty.set(it.code, (codeQty.get(it.code) || 0) + add);
+        addDay(d, it.code, it.totalQty + adj * share);
       });
     } else {
       const dayEntries = entriesByDay[d] || [];
       dayEntries.forEach((e) => {
-        codeQty.set(e.code, (codeQty.get(e.code) || 0) + e.qty);
+        addDay(d, e.code, e.qty);
         if (!codeName.has(e.code)) codeName.set(e.code, e.code);
       });
     }
@@ -165,6 +187,8 @@ export function computeMonthlyProduction(
     ambient: ambientList,
     maxStage,
     coldByCode,
+    coldByMachine,
+    coldMachineUnassigned,
   };
 }
 
@@ -187,5 +211,9 @@ export function filterProduction(
   prod.coldByCode.forEach((v, k) => { if (coldCodes.has(k)) coldByCode.set(k, v); });
   const coldTotal = stages.reduce((a, s) => a + s.total, 0);
   const ambientTotal = ambient.reduce((a, x) => a + x.qty, 0);
-  return { coldTotal, ambientTotal, total: coldTotal + ambientTotal, stages, ambient, maxStage, coldByCode };
+  // 호기별 집계는 제품으로 걸러낼 수 없다 (필터 결과에는 의미가 없어 비워 둔다)
+  return {
+    coldTotal, ambientTotal, total: coldTotal + ambientTotal, stages, ambient, maxStage, coldByCode,
+    coldByMachine: {}, coldMachineUnassigned: 0,
+  };
 }

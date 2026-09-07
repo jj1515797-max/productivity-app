@@ -33,6 +33,7 @@ interface TheoryCell extends TheoryMonth { ts: number }
 
 const usable = (m: string, c: TheoryCell | undefined): boolean => {
   if (!c) return false;
+  if (c.m1 == null) return false;          // 호기별 값이 없는 옛 저장분
   if (!isPastMonth(m)) return Date.now() - c.ts < 5 * 60 * 1000;
   const [y, mm] = m.split('-').map(Number);
   return c.ts >= new Date(y, mm, 1).getTime();
@@ -182,6 +183,8 @@ export default function ContainerStockTab() {
   // 제품 DB 에 없어 용기 구분을 못 한 수량 — 그만큼 이론사용량이 적게 잡힌다
   const unknownMonths = months.filter((m) => (theory[m]?.unknown || 0) > 0);
   const unknownTotal = unknownMonths.reduce((s2, m) => s2 + (theory[m]?.unknown || 0), 0);
+  const mUnMonths = months.filter((m) => (theory[m]?.mUnassigned || 0) > 0);
+  const mUnTotal = mUnMonths.reduce((s2, m) => s2 + (theory[m]?.mUnassigned || 0), 0);
 
   const loadTheory = useCallback(async (list: string[]) => {
     setErr('');
@@ -190,7 +193,10 @@ export default function ContainerStockTab() {
       setBusy(`생산량 계산 중… ${m} (${i + 1}/${list.length})`);
       try {
         const r = await loadContainerMonth(m);
-        const t: TheoryMonth = { small: r.small, large: r.large, ambient: r.ambient, unknown: r.unknown };
+        const t: TheoryMonth = {
+          small: r.small, large: r.large, ambient: r.ambient, unknown: r.unknown,
+          m1: r.m1, m2: r.m2, m3: r.m3, mUnassigned: r.mUnassigned,
+        };
         setTheory((p) => ({ ...p, [m]: t }));
         // 다른 사람이 같은 계산을 다시 돌리지 않도록 바로 올린다
         await setDoc(doc(db, 'containerStock', THEORY_DOC), { [m]: { ...t, ts: Date.now() } }, { merge: true });
@@ -492,6 +498,14 @@ export default function ContainerStockTab() {
           ({unknownMonths.map((m) => `${Number(m.slice(5, 7))}월`).join(', ')}).
           그만큼 <b>이론사용량이 실제보다 적게</b> 잡혀 차이가 부풀려집니다.
           설정 → 제품 DB 에 해당 코드를 등록하면 자동으로 반영됩니다. 어느 품목인지는 <b>「월별 사용량」 탭</b>에서 미분류로 확인할 수 있습니다.
+        </div>
+      )}
+
+      {mUnTotal > 0 && (mat.source === 'm12' || mat.source === 'm3') && (
+        <div className="bg-amber-50 border border-amber-300 rounded-lg p-3 text-sm text-amber-800">
+          ⚠ 그날 어느 호기가 돌렸는지 알 수 없어 호기별로 나누지 못한 냉장 생산량이 <b>{nf(mUnTotal)}개</b> 있습니다
+          ({mUnMonths.map((m) => `${Number(m.slice(5, 7))}월`).join(', ')}).
+          잔여량만 있고 그 코드의 호기 입력이 없는 날에 생깁니다. 그만큼 필름 이론사용량이 적게 잡힙니다.
         </div>
       )}
 
