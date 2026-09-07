@@ -11,9 +11,9 @@ import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
 import { loadContainerMonth, isPastMonth } from '../lib/containerLoad';
 import {
-  MATERIALS, SOURCE_LABEL, analyze, emptyEntry,
+  MATERIALS, SOURCE_LABEL, ROLL_DEFAULT, ROLL_LABEL, analyze, emptyEntry,
   type StockEntry, type TheoryMonth, type Severity, type MonthRow,
-  type TheorySource, type MaterialDef, type TheorySpec,
+  type TheorySource, type MaterialDef, type TheorySpec, type RollKind,
 } from '../lib/containerStock';
 
 /** 합계 행은 구성 자재의 입력값을 그대로 더한다 (직접 입력하지 않는다) */
@@ -138,6 +138,7 @@ export default function ContainerStockTab() {
   const [pasteStart, setPasteStart] = useState(1);
   const [pasteText, setPasteText] = useState('');
   const [srcOverride, setSrcOverride] = useState<Record<string, TheorySource>>({});
+  const [rolls, setRolls] = useState<Record<RollKind, number>>({ ...ROLL_DEFAULT });
 
   const months = useMemo(() => {
     const cap = year === nowY ? Number(todayKey().slice(5, 7)) : 12;
@@ -146,7 +147,7 @@ export default function ContainerStockTab() {
 
   const mat = MATERIALS.find((m) => m.id === matId)!;
   const readOnly = !!mat.sum;
-  const dec = mat.perUnit > 1 ? 1 : 0;          // 롤은 소수 첫째 자리까지
+  const dec = mat.unit === '롤' ? 1 : 0;        // 롤은 소수 첫째 자리까지
   const un = mk(dec);
   const usgn = (n: number) => `${n > 0 ? '+' : ''}${un(n)}`;
 
@@ -165,9 +166,12 @@ export default function ContainerStockTab() {
           return;
         }
         if (d.id === '_config') {
-          const c = d.data() as { sources?: Record<string, TheorySource>; lossLimit?: number };
+          const c = d.data() as {
+            sources?: Record<string, TheorySource>; lossLimit?: number; rolls?: Partial<Record<RollKind, number>>;
+          };
           setSrcOverride(c.sources || {});
           if (typeof c.lossLimit === 'number') setLossLimit(c.lossLimit);
+          if (c.rolls) setRolls({ r2: c.rolls.r2 || ROLL_DEFAULT.r2, r4: c.rolls.r4 || ROLL_DEFAULT.r4 });
           return;
         }
         if (d.id.startsWith('_')) return;      // 설정용 문서는 월이 아니다
@@ -213,8 +217,10 @@ export default function ContainerStockTab() {
     setBusy('');
   }, []);
 
+  /** 필름은 롤당 포장수를 설정에서 가져온다 (업체 표기와 실사용이 다를 수 있어 고칠 수 있게 해 뒀다) */
+  const perUnitOf = (mm: MaterialDef) => (mm.roll ? rolls[mm.roll] : mm.perUnit);
   const specOf = (mm: MaterialDef): TheorySpec | TheorySpec[] => {
-    const one = (x: MaterialDef): TheorySpec => ({ src: srcOverride[x.id] || x.source, perUnit: x.perUnit });
+    const one = (x: MaterialDef): TheorySpec => ({ src: srcOverride[x.id] || x.source, perUnit: perUnitOf(x) });
     return mm.sum ? mm.sum.map((id) => one(MATERIALS.find((x) => x.id === id)!)) : one(mm);
   };
   const rawEntry = (m: string, id: string): StockEntry => stock[m]?.[id] || emptyEntry();
@@ -237,7 +243,7 @@ export default function ContainerStockTab() {
     try {
       const batch = writeBatch(db);
       dirty.forEach((m) => {
-        if (m === '_config') batch.set(doc(db, 'containerStock', '_config'), { sources: srcOverride, lossLimit }, { merge: true });
+        if (m === '_config') batch.set(doc(db, 'containerStock', '_config'), { sources: srcOverride, lossLimit, rolls }, { merge: true });
         else batch.set(doc(db, 'containerStock', m), stock[m] || {}, { merge: true });
       });
       await batch.commit();
@@ -311,7 +317,7 @@ export default function ContainerStockTab() {
       timing: r.rows.filter((x) => x.flag === 'timing').length,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [months, stock, theory, lossLimit, srcOverride]);
+  }), [months, stock, theory, lossLimit, srcOverride, rolls]);
 
   const download = async () => {
     const wb = new ExcelJS.Workbook();
@@ -325,7 +331,7 @@ export default function ContainerStockTab() {
       ws.columns = [{ width: 10 }, { width: 13 }, { width: 13 }, { width: 13 }, { width: 14 },
         { width: 14 }, { width: 14 }, { width: 13 }, { width: 11 }, { width: 13 }, { width: 12 }, { width: 44 }];
       ws.addRow([`${mm.label} — ${year}년 재고 정합성`
-        + (mm.perUnit > 1 ? ` (단위: ${mm.unit} · 1롤 ${mm.perUnit.toLocaleString()}개)` : ` (단위: ${mm.unit})`)]);
+        + (mm.roll ? ` (단위: ${mm.unit} · 1롤 ${rolls[mm.roll].toLocaleString()}개)` : ` (단위: ${mm.unit})`)]);
       ws.mergeCells('A1:L1');
       ws.getCell('A1').font = { size: 14, bold: true };
       ws.addRow([]);
@@ -346,7 +352,7 @@ export default function ContainerStockTab() {
         row.eachCell((c, i) => {
           c.border = border;
           c.alignment = { horizontal: i === 12 ? 'left' : 'center' };
-          if (i >= 2 && i <= 9) c.numFmt = mm.perUnit > 1 ? '#,##0.0' : '#,##0';
+          if (i >= 2 && i <= 9) c.numFmt = mm.unit === '롤' ? '#,##0.0' : '#,##0';
           if (i === 10) c.numFmt = '0.00%';
         });
         if (x.flag === 'bad') row.getCell(9).font = { bold: true, color: { argb: 'FFDC2626' } };
@@ -356,7 +362,7 @@ export default function ContainerStockTab() {
         r.totalDiff, r.totalLossRate, '', '']);
       tot.eachCell((c, i) => {
         c.border = border; c.font = { bold: true }; c.alignment = { horizontal: 'center' };
-        if (i >= 7 && i <= 9) c.numFmt = mm.perUnit > 1 ? '#,##0.0' : '#,##0';
+        if (i >= 7 && i <= 9) c.numFmt = mm.unit === '롤' ? '#,##0.0' : '#,##0';
         if (i === 10) c.numFmt = '0.00%';
       });
       ws.addRow([]);
@@ -473,8 +479,8 @@ export default function ContainerStockTab() {
                        : 'border-gray-200 bg-white hover:border-gray-300'}`}>
                   <div className="flex items-center gap-1.5 flex-wrap">
                     <span className="font-bold text-gray-800 text-sm">{t.mat.label}</span>
-                    {t.mat.perUnit > 1 && !t.mat.sum && (
-                      <span className="text-[10px] text-gray-400 font-normal">1롤 {nf(t.mat.perUnit)}개</span>
+                    {t.mat.roll && (
+                      <span className="text-[10px] text-gray-400 font-normal">1롤 {nf(rolls[t.mat.roll])}개</span>
                     )}
                     {t.mat.sum && <span className="px-1.5 py-0.5 rounded-full bg-gray-200 text-gray-600 text-[10px] font-bold">자동합산</span>}
                     {t.bad > 0 && <span className="px-1.5 py-0.5 rounded-full bg-red-600 text-white text-[10px] font-bold">이상 {t.bad}</span>}
@@ -490,7 +496,7 @@ export default function ContainerStockTab() {
                         {pctS(t.rate)}
                       </div>
                       <div className="text-xs text-gray-500 mt-0.5">
-                        누적 로스율 · {mk(t.mat.perUnit > 1 ? 1 : 0)(t.diff)}{t.mat.unit} · {t.filled}개월
+                        누적 로스율 · {mk(t.mat.unit === '롤' ? 1 : 0)(t.diff)}{t.mat.unit} · {t.filled}개월
                       </div>
                     </>
                   )}
@@ -505,7 +511,7 @@ export default function ContainerStockTab() {
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <Card label={`투입량 합계 (${mat.unit})`} sub="재고조사 기준 실제 소모" v={un(a.totalInput)} />
         <Card label={`이론사용량 합계 (${mat.unit})`}
-          sub={mat.perUnit > 1 ? `생산량 ÷ ${nf(mat.perUnit)}개(1롤) · 로스 0%` : '생산량 기준 · 로스 0%'}
+          sub={mat.roll ? `생산량 ÷ ${nf(rolls[mat.roll])}개(1롤) · 로스 0%` : '생산량 기준 · 로스 0%'}
           v={un(a.totalTheory)} />
         <Card label="실질 로스" sub={`투입 − 이론 (${mat.unit})`}
           v={usgn(a.totalDiff)} tone={a.totalDiff < 0 ? 'bad' : 'ok'} />
@@ -582,8 +588,26 @@ export default function ContainerStockTab() {
               ? `${mat.sum!.map((id) => MATERIALS.find((x) => x.id === id)!.label).join(' + ')} 을 그대로 더한 값입니다. 고치려면 각 자재에서 수정하세요.`
               : '기초·입고·기말을 넣으면 투입량이 자동 계산됩니다. 구매팀 투입량만 있으면 그 칸만 채우세요.'}
           </span>
-          {!readOnly && (
+          {mat.roll && (
             <label className="ml-auto text-xs text-gray-600 flex items-center gap-1.5">
+              <b className="text-gray-700">{ROLL_LABEL[mat.roll]}</b> 1롤 =
+              <input type="number" min={1} value={rolls[mat.roll]}
+                onChange={(e) => {
+                  const v = Math.max(1, Math.round(Number(e.target.value) || 0));
+                  setRolls((p) => ({ ...p, [mat.roll!]: v }));
+                  setDirty((p) => new Set(p).add('_config'));
+                }}
+                className="w-24 border rounded px-2 py-1 text-right tabular-nums font-bold" />
+              개
+              {rolls[mat.roll] !== ROLL_DEFAULT[mat.roll] && (
+                <button onClick={() => { setRolls((p) => ({ ...p, [mat.roll!]: ROLL_DEFAULT[mat.roll!] }));
+                  setDirty((p) => new Set(p).add('_config')); }}
+                  className="text-gray-400 underline">기본값 {nf(ROLL_DEFAULT[mat.roll])}</button>
+              )}
+            </label>
+          )}
+          {!readOnly && (
+            <label className={`text-xs text-gray-600 flex items-center gap-1.5 ${mat.roll ? '' : 'ml-auto'}`}>
               이론사용량 기준
               <select value={(srcOverride[mat.id] || mat.source)}
                 onChange={(e) => { setSrcOverride((p) => ({ ...p, [mat.id]: e.target.value as TheorySource })); setDirty((p) => new Set(p).add('_config')); }}
@@ -679,7 +703,8 @@ export default function ContainerStockTab() {
             레토르트는 실온 생산량입니다. 잔여량만 있고 호기 입력이 없는 날은 어느 호기인지 알 수 없는데,
             그런 수량은 <b>2열기(1·2호기)로 잡습니다</b>.
             그리고 필름은 롤로 세므로 <b>생산량 ÷ 롤당 포장수</b>가 이론사용량입니다 —
-            2열 필름은 1롤 6,450개, 4열 필름은 1롤 12,900개입니다.
+            롤당 포장수는 필름을 고른 뒤 <b>「월별 입력」 표 오른쪽 위</b>에서 고칠 수 있습니다 —
+            업체 표기와 실제로 뽑히는 개수가 다르면 그 값을 바꾸세요. 저장하면 모두에게 적용됩니다.
             반쯤 쓴 롤을 어느 달로 세느냐에 따라 한 롤이 통째로 움직이므로, <b>±1롤은 정상으로 봅니다</b>.</p>
           <p><b>2) 이론사용량</b> = 그 달 생산량(EA). 1개 만들면 용기 1개니까, 로스가 0%일 때 써야 할 최소 수량입니다.
             용기분석 첫 탭의 숫자와 같은 계산입니다.</p>

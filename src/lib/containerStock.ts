@@ -16,17 +16,21 @@ export interface MaterialDef {
   label: string;
   source: TheorySource;
   group: '용기' | '필름';
-  /** 이 자재 1개로 포장할 수 있는 제품 수. 용기는 1, 필름은 1롤당 포장수 */
+  /** 이 자재 1개로 포장할 수 있는 제품 수. 용기는 1, 필름은 1롤당 포장수(기본값) */
   perUnit: number;
+  /** 필름 규격. 이 값이 있으면 롤당 포장수를 설정에서 가져온다 */
+  roll?: RollKind;
   /** 세는 단위 */
   unit: string;
   /** 채워져 있으면 그 자재들의 입력값을 더한 합계 행 (직접 입력하지 않음) */
   sum?: string[];
 }
 
-/** 필름은 롤로 세고, 1롤로 여러 개를 포장한다 */
-export const ROLL_2 = 6450;    // 2열 필름 1롤 = 6,450개
-export const ROLL_4 = 12900;   // 4열 필름 1롤 = 12,900개
+/** 필름은 롤로 세고, 1롤로 여러 개를 포장한다.
+ *  업체 표기와 실사용이 다를 수 있어 화면에서 고칠 수 있게 해 두고, 여기 값은 기본값이다. */
+export type RollKind = 'r2' | 'r4';
+export const ROLL_DEFAULT: Record<RollKind, number> = { r2: 6450, r4: 12900 };
+export const ROLL_LABEL: Record<RollKind, string> = { r2: '2열 필름', r4: '4열 필름' };
 
 /** 자재 정의. 이론사용량은 용기분석의 생산량에서 자동으로 끌어온다.
  *  용기는 제품 1개 = 1개지만, 필름은 생산량 ÷ 롤당 포장수 = 롤 수가 된다. */
@@ -35,10 +39,10 @@ export const MATERIALS: MaterialDef[] = [
   { id: 'c185', label: '185ml 용기', source: 'small', group: '용기', perUnit: 1, unit: '개' },
   { id: 'retort', label: '레토르트', source: 'ambient', group: '용기', perUnit: 1, unit: '개' },
   { id: 'cSum', label: '용기 합계', source: 'all', group: '용기', perUnit: 1, unit: '개', sum: ['c210', 'c185', 'retort'] },
-  { id: 'f2', label: '냉장 2열기 필름', source: 'm12', group: '필름', perUnit: ROLL_2, unit: '롤' },
-  { id: 'f4', label: '냉장 4열기 필름', source: 'm3', group: '필름', perUnit: ROLL_4, unit: '롤' },
-  { id: 'fr', label: '레토르트 4열기 필름', source: 'ambient', group: '필름', perUnit: ROLL_4, unit: '롤' },
-  { id: 'fSum', label: '필름 합계', source: 'all', group: '필름', perUnit: ROLL_4, unit: '롤', sum: ['f2', 'f4', 'fr'] },
+  { id: 'f2', label: '냉장 2열기 필름', source: 'm12', group: '필름', perUnit: ROLL_DEFAULT.r2, roll: 'r2', unit: '롤' },
+  { id: 'f4', label: '냉장 4열기 필름', source: 'm3', group: '필름', perUnit: ROLL_DEFAULT.r4, roll: 'r4', unit: '롤' },
+  { id: 'fr', label: '레토르트 4열기 필름', source: 'ambient', group: '필름', perUnit: ROLL_DEFAULT.r4, roll: 'r4', unit: '롤' },
+  { id: 'fSum', label: '필름 합계', source: 'all', group: '필름', perUnit: ROLL_DEFAULT.r4, unit: '롤', sum: ['f2', 'f4', 'fr'] },
 ];
 
 export const SOURCE_LABEL: Record<TheorySource, string> = {
