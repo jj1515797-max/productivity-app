@@ -1,4 +1,4 @@
-/** 용기·필름 재고조사 정합성 검증 — 순수 계산 로직
+/** 용기 재고조사 정합성 검증 — 순수 계산 로직
  *
  *  투입량(실제 소모) = 기초재고 + 당월입고 − 기말재고
  *  이론사용량        = 그 달 생산량(EA). 로스 0% 기준.
@@ -15,35 +15,29 @@ export interface MaterialDef {
   id: string;
   label: string;
   source: TheorySource;
-  group: '용기' | '필름';
-  /** 이 자재 1개로 포장할 수 있는 제품 수. 용기는 1, 필름은 1롤당 포장수(기본값) */
+  group: '용기';
+  /** 이 자재 1개로 포장할 수 있는 제품 수. 용기는 1 */
   perUnit: number;
-  /** 필름 규격. 이 값이 있으면 롤당 포장수를 설정에서 가져온다 */
-  roll?: RollKind;
   /** 세는 단위 */
   unit: string;
   /** 채워져 있으면 그 자재들의 입력값을 더한 합계 행 (직접 입력하지 않음) */
   sum?: string[];
 }
 
-/** 필름은 롤로 세고, 1롤로 여러 개를 포장한다.
- *  업체 표기와 실사용이 다를 수 있어 화면에서 고칠 수 있게 해 두고, 여기 값은 기본값이다. */
-export type RollKind = 'r2' | 'r4';
-export const ROLL_DEFAULT: Record<RollKind, number> = { r2: 6450, r4: 12900 };
-export const ROLL_LABEL: Record<RollKind, string> = { r2: '2열 필름', r4: '4열 필름' };
-
-/** 자재 정의. 이론사용량은 용기분석의 생산량에서 자동으로 끌어온다.
- *  용기는 제품 1개 = 1개지만, 필름은 생산량 ÷ 롤당 포장수 = 롤 수가 된다. */
+/** 자재 정의. 이론사용량은 용기분석의 생산량에서 자동으로 끌어온다. 제품 1개 = 용기 1개.
+ *
+ *  필름은 뺐다. 롤로 세는데 재고조사가 0.5롤·0.7롤 같은 눈대중으로 들어와
+ *  월 20~50롤 규모에서 그 오차가 그대로 판정을 흔든다. 숫자가 안 맞는 게 아니라
+ *  애초에 비교할 만한 정밀도가 아니다. */
 export const MATERIALS: MaterialDef[] = [
   { id: 'c210', label: '210ml 용기', source: 'large', group: '용기', perUnit: 1, unit: '개' },
   { id: 'c185', label: '185ml 용기', source: 'small', group: '용기', perUnit: 1, unit: '개' },
   { id: 'retort', label: '레토르트', source: 'ambient', group: '용기', perUnit: 1, unit: '개' },
   { id: 'cSum', label: '용기 합계', source: 'all', group: '용기', perUnit: 1, unit: '개', sum: ['c210', 'c185', 'retort'] },
-  { id: 'f2', label: '냉장 2열기 필름', source: 'm12', group: '필름', perUnit: ROLL_DEFAULT.r2, roll: 'r2', unit: '롤' },
-  { id: 'f4', label: '냉장 4열기 필름', source: 'm3', group: '필름', perUnit: ROLL_DEFAULT.r4, roll: 'r4', unit: '롤' },
-  { id: 'fr', label: '레토르트 4열기 필름', source: 'ambient', group: '필름', perUnit: ROLL_DEFAULT.r4, roll: 'r4', unit: '롤' },
-  { id: 'fSum', label: '필름 합계', source: 'all', group: '필름', perUnit: ROLL_DEFAULT.r4, unit: '롤', sum: ['f2', 'f4', 'fr'] },
 ];
+
+/** 화면 드롭다운에 보여줄 이론사용량 기준 */
+export const SOURCE_OPTIONS: TheorySource[] = ['large', 'small', 'ambient', 'cold', 'all'];
 
 export const SOURCE_LABEL: Record<TheorySource, string> = {
   large: '210ml 생산량', small: '185ml 생산량', ambient: '레토르트(실온) 생산량',
@@ -267,8 +261,7 @@ export function analyze(
        → 돌아오면 '재고 실사 시점이 월 경계를 넘긴 것'  (timing)
        → 안 돌아오면 진짜 문제                          (bad)     */
   const NEG_TOL = 0.005;
-  // 필름은 롤로 세므로 반쯤 쓴 롤을 어느 쪽으로 세느냐에 따라 한 단위가 통째로 움직인다.
-  // 그래서 ±1 단위는 어떤 자재든 잡음으로 본다 (용기처럼 수십만 개인 자재에는 영향이 없다).
+  // ±1 단위는 세는 과정의 잡음으로 본다 (수십만 개짜리 용기에는 사실상 영향이 없다).
   const UNIT_TOL = 1;
   const inBand = (d: number, th: number) =>
     d >= -Math.max(th * NEG_TOL, UNIT_TOL) && d <= Math.max(th * lossLimit, UNIT_TOL);

@@ -11,9 +11,9 @@ import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
 import { loadContainerMonth, isPastMonth } from '../lib/containerLoad';
 import {
-  MATERIALS, SOURCE_LABEL, ROLL_DEFAULT, ROLL_LABEL, analyze, emptyEntry,
+  MATERIALS, SOURCE_LABEL, SOURCE_OPTIONS, analyze, emptyEntry,
   type StockEntry, type TheoryMonth, type Severity, type MonthRow,
-  type TheorySource, type MaterialDef, type TheorySpec, type RollKind,
+  type TheorySource, type MaterialDef, type TheorySpec,
 } from '../lib/containerStock';
 
 /** 합계 행은 구성 자재의 입력값을 그대로 더한다 (직접 입력하지 않는다).
@@ -42,7 +42,6 @@ const usable = (m: string, c: TheoryCell | undefined): boolean => {
 };
 
 const nf = (n: number) => Math.round(n).toLocaleString();
-/** 롤처럼 개수가 적은 자재는 반올림하면 오차가 커 보인다 — 소수 첫째 자리까지 보여준다 */
 const mk = (d: number) => (n: number) =>
   n.toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d });
 const pctS = (v: number | null) => (v === null ? '—' : `${(v * 100).toFixed(2)}%`);
@@ -140,9 +139,6 @@ export default function ContainerStockTab() {
   const [pasteStart, setPasteStart] = useState(1);
   const [pasteText, setPasteText] = useState('');
   const [srcOverride, setSrcOverride] = useState<Record<string, TheorySource>>({});
-  const [rolls, setRolls] = useState<Record<RollKind, number>>({ ...ROLL_DEFAULT });
-  // 입력 도중에는 빈 칸이 될 수 있어야 한다. 확정된 값만 rolls 로 올린다.
-  const [rollDraft, setRollDraft] = useState<string | null>(null);
 
   const months = useMemo(() => {
     const cap = year === nowY ? Number(todayKey().slice(5, 7)) : 12;
@@ -151,8 +147,7 @@ export default function ContainerStockTab() {
 
   const mat = MATERIALS.find((m) => m.id === matId)!;
   const readOnly = !!mat.sum;
-  useEffect(() => { setRollDraft(null); }, [matId]);
-  const dec = mat.unit === '롤' ? 1 : 0;        // 롤은 소수 첫째 자리까지
+  const dec = 0;
   const un = mk(dec);
   const usgn = (n: number) => `${n > 0 ? '+' : ''}${un(n)}`;
 
@@ -172,13 +167,12 @@ export default function ContainerStockTab() {
         }
         if (d.id === '_config') {
           const c = d.data() as {
-            sources?: Record<string, TheorySource>; lossLimit?: number; rolls?: Partial<Record<RollKind, number>>;
+            sources?: Record<string, TheorySource>; lossLimit?: number;
           };
           const sr = c.sources || {};
           const ll = typeof c.lossLimit === 'number' ? c.lossLimit : lossLimit;
-          const rl = { r2: c.rolls?.r2 || ROLL_DEFAULT.r2, r4: c.rolls?.r4 || ROLL_DEFAULT.r4 };
-          cfgSaved.current = JSON.stringify({ sources: sr, lossLimit: ll, rolls: rl });
-          setSrcOverride(sr); setLossLimit(ll); setRolls(rl);
+          cfgSaved.current = JSON.stringify({ sources: sr, lossLimit: ll });
+          setSrcOverride(sr); setLossLimit(ll);
           return;
         }
         if (d.id.startsWith('_')) return;      // 설정용 문서는 월이 아니다
@@ -198,21 +192,21 @@ export default function ContainerStockTab() {
     return () => { cancelled = true; };
   }, []);
 
-  /* 설정(이론사용량 기준·롤당 포장수·로스 기준)은 바꾸는 즉시 올린다.
+  /* 설정(이론사용량 기준·로스 기준)은 바꾸는 즉시 올린다.
      재고 입력값처럼 '저장' 을 눌러야 하게 두었더니, 드롭다운만 바꾸고 넘어가면
      새로고침할 때마다 옛 값으로 되돌아갔다. 설정은 입력이 아니라 설정이다. */
   const cfgLoaded = useRef(false);
   const cfgSaved = useRef('');
   useEffect(() => {
     if (!cfgLoaded.current) return;
-    const body = JSON.stringify({ sources: srcOverride, lossLimit, rolls });
+    const body = JSON.stringify({ sources: srcOverride, lossLimit });
     if (body === cfgSaved.current) return;      // 읽어 온 그대로면 도로 쓸 이유가 없다
     cfgSaved.current = body;
     // merge 로 쓰면 sources 에서 지운 키가 남는다 (중첩 맵은 키 단위로 병합된다).
     // 이 문서는 우리가 통째로 소유하므로 항상 전체를 덮어쓴다.
-    setDoc(doc(db, 'containerStock', '_config'), { sources: srcOverride, lossLimit, rolls })
+    setDoc(doc(db, 'containerStock', '_config'), { sources: srcOverride, lossLimit })
       .catch((e) => setErr(`설정 저장 실패: ${e instanceof Error ? e.message : String(e)}`));
-  }, [srcOverride, lossLimit, rolls]);
+  }, [srcOverride, lossLimit]);
 
   // 저장 안 한 채로 창을 닫거나 새로고침하면 입력이 날아간다
   useEffect(() => {
@@ -249,10 +243,8 @@ export default function ContainerStockTab() {
     setBusy('');
   }, []);
 
-  /** 필름은 롤당 포장수를 설정에서 가져온다 (업체 표기와 실사용이 다를 수 있어 고칠 수 있게 해 뒀다) */
-  const perUnitOf = (mm: MaterialDef) => (mm.roll ? rolls[mm.roll] : mm.perUnit);
   const specOf = (mm: MaterialDef): TheorySpec | TheorySpec[] => {
-    const one = (x: MaterialDef): TheorySpec => ({ src: srcOverride[x.id] || x.source, perUnit: perUnitOf(x) });
+    const one = (x: MaterialDef): TheorySpec => ({ src: srcOverride[x.id] || x.source, perUnit: x.perUnit });
     return mm.sum ? mm.sum.map((id) => one(MATERIALS.find((x) => x.id === id)!)) : one(mm);
   };
   const rawEntry = (m: string, id: string): StockEntry => stock[m]?.[id] || emptyEntry();
@@ -335,42 +327,8 @@ export default function ContainerStockTab() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [months, entries, theory, JSON.stringify(matSpec), lossLimit]);
 
-  /* 필름 역산 — 롤당 실제로 몇 개가 나오는지.
-     이론사용량 × 지금 설정값 = 그 달 생산량(개) 이므로, 설정값을 뭘로 두든 결과는 같다.
-     누적으로 나누는 게 핵심이다. 월별로는 반쯤 쓴 롤을 어느 달로 세느냐에 따라 ±1롤이 통째로
-     움직여 5% 넘게 흔들리지만, 여러 달을 합치면 그 오차가 상쇄된다. */
-  const fit = useMemo(() => {
-    if (!mat.roll) return null;
-    const spec = rolls[mat.roll];
-    const rs = a.rows.filter((r) => r.input !== null && r.input > 0 && r.theory !== null && r.theory > 0);
-    if (rs.length < 2) return null;
-    const prod = rs.reduce((x, r) => x + r.theory! * spec, 0);
-    const used = rs.reduce((x, r) => x + r.input!, 0);
-    if (used <= 1) return null;
-    return {
-      n: rs.length, prod, used,
-      fitted: prod / used,
-      // 누적 투입량은 첫 기초와 마지막 기말 두 번의 실사에만 걸린다 → 누적 오차는 ±1롤 수준
-      lo: prod / (used + 1),
-      hi: prod / (used - 1),
-      spec,
-      byMonth: rs.map((r) => ({ month: r.month, v: (r.theory! * spec) / r.input!, input: r.input! })),
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [a, mat, rolls]);
-
-  /* 롤당 포장수가 아직 실측값과 크게 다르면 월별 판정은 전부 그 한 가지 이유로 뜬다.
-     같은 말을 여섯 줄로 늘어놓는 대신 한 줄로 알리고 진단은 감춘다. */
-  const specOff = fit ? fit.fitted / fit.spec - 1 : 0;
-  const specStale = !!fit && Math.abs(specOff) > 0.03;
-  /* 역산값이 업체 표기와 30% 넘게 벌어지면 필름 로스로 설명되는 크기가 아니다.
-     그런 값을 '맞추기' 로 굳혀 버리면 틀린 기준이 정답처럼 저장된다. 먼저 기준부터 보게 한다. */
   const curSrc: TheorySource = srcOverride[mat.id] || mat.source;
   const srcChanged = curSrc !== mat.source;
-  const fitOff = fit && mat.roll ? fit.fitted / ROLL_DEFAULT[mat.roll] - 1 : 0;
-  // 기준이 이미 기본값이면 '기준을 고치라' 고 할 수 없다 — 그때는 잠그지 않고 경고만 한다
-  const fitAbsurd = !!fit && Math.abs(fitOff) > 0.3 && srcChanged;
-  const fitFar = !!fit && Math.abs(fitOff) > 0.3 && !srcChanged;
 
   // 합계 행: 열마다 따로 더한다. 기초·기말은 재고 수준이라 더해도 뜻이 없어 비워 둔다.
   const colSum = useMemo(() => {
@@ -398,7 +356,7 @@ export default function ContainerStockTab() {
       timing: r.rows.filter((x) => x.flag === 'timing').length,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }), [months, stock, theory, lossLimit, srcOverride, rolls]);
+  }), [months, stock, theory, lossLimit, srcOverride]);
 
   const download = async () => {
     const wb = new ExcelJS.Workbook();
@@ -414,9 +372,7 @@ export default function ContainerStockTab() {
       const basis = mm.sum
         ? mm.sum.map((id) => MATERIALS.find((x) => x.id === id)!.label).join(' + ')
         : SOURCE_LABEL[srcOverride[mm.id] || mm.source];
-      ws.addRow([`${mm.label} — ${year}년 재고 정합성`
-        + (mm.roll ? ` (단위: ${mm.unit} · 1롤 ${rolls[mm.roll].toLocaleString()}개)` : ` (단위: ${mm.unit})`)
-        + ` · 이론사용량 기준: ${basis}`]);
+      ws.addRow([`${mm.label} — ${year}년 재고 정합성 (단위: ${mm.unit}) · 이론사용량 기준: ${basis}`]);
       ws.mergeCells('A1:L1');
       ws.getCell('A1').font = { size: 14, bold: true };
       ws.addRow([]);
@@ -437,7 +393,7 @@ export default function ContainerStockTab() {
         row.eachCell((c, i) => {
           c.border = border;
           c.alignment = { horizontal: i === 12 ? 'left' : 'center' };
-          if (i >= 2 && i <= 9) c.numFmt = mm.unit === '롤' ? '#,##0.0' : '#,##0';
+          if (i >= 2 && i <= 9) c.numFmt = '#,##0';
           if (i === 10) c.numFmt = '0.00%';
         });
         if (x.flag === 'bad') row.getCell(9).font = { bold: true, color: { argb: 'FFDC2626' } };
@@ -453,7 +409,7 @@ export default function ContainerStockTab() {
         r.totalInput, r.totalTheory, r.totalDiff, r.totalLossRate, '', '']);
       tot.eachCell((c, i) => {
         c.border = border; c.font = { bold: true }; c.alignment = { horizontal: 'center' };
-        if (i >= 2 && i <= 9) c.numFmt = mm.unit === '롤' ? '#,##0.0' : '#,##0';
+        if (i >= 2 && i <= 9) c.numFmt = '#,##0';
         if (i === 10) c.numFmt = '0.00%';
       });
       ws.addRow([]);
@@ -555,10 +511,9 @@ export default function ContainerStockTab() {
         </div>
       )}
 
-      {/* 자재 타일 — 용기 한 줄, 필름 한 줄 */}
-      {(['용기', '필름'] as const).map((g) => (
+      {/* 자재 타일 */}
+      {(['용기'] as const).map((g) => (
         <div key={g}>
-          <div className="text-xs font-bold text-gray-500 mb-1.5 px-0.5">{g}</div>
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
             {tiles.filter((t) => t.mat.group === g).map((t) => {
               const on = t.mat.id === matId;
@@ -570,9 +525,6 @@ export default function ContainerStockTab() {
                        : 'border-gray-200 bg-white hover:border-gray-300'}`}>
                   <div className="flex items-center gap-1.5 flex-wrap">
                     <span className="font-bold text-gray-800 text-sm">{t.mat.label}</span>
-                    {t.mat.roll && (
-                      <span className="text-[10px] text-gray-400 font-normal">1롤 {nf(rolls[t.mat.roll])}개</span>
-                    )}
                     {t.mat.sum && <span className="px-1.5 py-0.5 rounded-full bg-gray-200 text-gray-600 text-[10px] font-bold">자동합산</span>}
                     {t.bad > 0 && <span className="px-1.5 py-0.5 rounded-full bg-red-600 text-white text-[10px] font-bold">이상 {t.bad}</span>}
                     {t.bad === 0 && t.timing > 0 && <span className="px-1.5 py-0.5 rounded-full bg-amber-100 text-amber-700 text-[10px] font-bold">이월 {t.timing}</span>}
@@ -587,7 +539,7 @@ export default function ContainerStockTab() {
                         {pctS(t.rate)}
                       </div>
                       <div className="text-xs text-gray-500 mt-0.5">
-                        누적 로스율 · {mk(t.mat.unit === '롤' ? 1 : 0)(t.diff)}{t.mat.unit} · {t.filled}개월
+                        누적 로스율 · {mk(0)(t.diff)}{t.mat.unit} · {t.filled}개월
                       </div>
                     </>
                   )}
@@ -598,123 +550,15 @@ export default function ContainerStockTab() {
         </div>
       ))}
 
-      {/* 요약 — 용기는 투입/이론/로스, 필름은 롤당 실사용을 알아내는 게 목적이라 다르게 본다 */}
-      {mat.roll && fit ? (
-        <>
-          <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-            <Card label="누적 투입" sub={`재고조사 기준 · ${fit.n}개월`} v={`${un(fit.used)} 롤`} />
-            <Card label="누적 생산량" sub="이 필름으로 포장한 제품" v={`${nf(fit.prod)} 개`} />
-            <Card label="1롤당 실제 포장수" sub={`${nf(fit.lo)} ~ ${nf(fit.hi)} 개 (실사 ±1롤)`}
-              v={nf(fit.fitted)} tone="ok" />
-            <Card label="업체 표기 대비"
-              sub={`표기 ${nf(ROLL_DEFAULT[mat.roll])}개 → 실제 ${nf(fit.fitted)}개`}
-              v={`${(100 * (fit.fitted / ROLL_DEFAULT[mat.roll] - 1)).toFixed(1)}%`}
-              tone={fit.fitted < ROLL_DEFAULT[mat.roll] * 0.97 ? 'warn' : 'ok'} />
-          </div>
-
-          <div className="bg-white border rounded-lg overflow-hidden">
-            <div className="px-4 py-2.5 border-b bg-slate-50 flex items-center gap-2 flex-wrap">
-              <span className="font-bold text-gray-800 text-sm">🎞 1롤당 실제 포장수 역산</span>
-              <span className="text-xs text-gray-500">필름은 이 값을 알아내는 게 목적입니다</span>
-              <span className={`px-2 py-0.5 rounded-full text-[11px] font-bold ${
-                srcChanged ? 'bg-amber-100 text-amber-700' : 'bg-slate-100 text-gray-600'}`}>
-                기준: {SOURCE_LABEL[curSrc]}{srcChanged ? ' · 기본값 아님' : ''}
-              </span>
-              <span className="px-2 py-0.5 rounded-full bg-slate-100 text-gray-600 text-[11px] font-bold">
-                지금 설정: 1롤 {nf(rolls[mat.roll])}개
-              </span>
-              {MATERIALS.filter((x) => x.roll === mat.roll && x.id !== mat.id).length > 0 && (
-                <span className="px-2 py-0.5 rounded-full bg-slate-100 text-gray-500 text-[11px]">
-                  {MATERIALS.filter((x) => x.roll === mat.roll && x.id !== mat.id).map((x) => x.label).join('·')} 와 같은 규격 — 함께 바뀝니다
-                </span>
-              )}
-              {!fitAbsurd && Math.round(fit.fitted) !== rolls[mat.roll] && (
-                <button onClick={() => { setRollDraft(null); setRolls((p) => ({ ...p, [mat.roll!]: Math.round(fit.fitted) })); }}
-                  className="ml-auto px-3 py-1.5 text-xs rounded bg-blue-600 text-white font-bold hover:bg-blue-700">
-                  이 값({nf(fit.fitted)})으로 맞추기
-                </button>
-              )}
-              {rolls[mat.roll] !== ROLL_DEFAULT[mat.roll] && (
-                <button onClick={() => { setRollDraft(null); setRolls((p) => ({ ...p, [mat.roll!]: ROLL_DEFAULT[mat.roll!] })); }}
-                  className={`px-3 py-1.5 text-xs rounded border font-semibold hover:bg-gray-50 ${fitAbsurd ? 'ml-auto' : ''}`}>
-                  업체 표기({nf(ROLL_DEFAULT[mat.roll])})로 되돌리기
-                </button>
-              )}
-            </div>
-            <div className="p-4 space-y-3">
-              {fitFar && (
-                <div className="bg-amber-50 border border-amber-300 rounded-lg p-3 text-sm text-amber-800">
-                  ⚠ <b>역산값이 업체 표기와 {Math.abs(fitOff * 100).toFixed(0)}% 차이납니다.</b>
-                  <div className="text-xs text-amber-700 mt-1.5 leading-relaxed">
-                    기준(「{SOURCE_LABEL[curSrc]}」)은 기본값 그대로라 기준 문제는 아닙니다. 남은 가능성은
-                    ① 롤 규격이 표기보다 짧다 ② 재고조사에 다른 필름이 섞였다 ③ 로스가 정말 이만큼 크다 입니다.
-                    <b> 새 롤 하나를 끝까지 쓰며 몇 개 포장하는지 세어 보면</b> 갈립니다. 그 전에는 「맞추기」를 누르지 마세요.
-                  </div>
-                </div>
-              )}
-              {fitAbsurd && (
-                <div className="bg-red-50 border border-red-300 rounded-lg p-3 text-sm text-red-700">
-                  🚨 <b>역산값이 업체 표기와 {Math.abs(fitOff * 100).toFixed(0)}% 차이납니다 — 이건 필름 로스로 설명될 크기가 아닙니다.</b>
-                  <div className="text-xs text-red-600 mt-1.5 leading-relaxed">
-                    롤 갈이 버림이나 불량은 아무리 커도 수십 % 입니다. 이 정도로 벌어지면 <b>이론사용량 기준이 잘못 잡힌 것</b>입니다.
-                    지금 <b>「{SOURCE_LABEL[curSrc]}」</b>으로 계산 중인데, {mat.label}이라면 <b>「{SOURCE_LABEL[mat.source]}」</b>이어야 합니다.
-                    아래 표 오른쪽 위 <b>「이론사용량 기준」</b>을 바꿔 보세요. 기준이 맞을 때까지 「맞추기」는 잠가 뒀습니다 —
-                    틀린 값을 굳혀 놓으면 나중에 더 헷갈립니다.
-                  </div>
-                </div>
-              )}
-              <p className="text-xs text-gray-600 leading-relaxed">
-                <b>누적 생산 {nf(fit.prod)}개 ÷ 누적 투입 {un(fit.used)}롤 = 롤당 {nf(fit.fitted)}개.</b>{' '}
-                {fitAbsurd ? (
-                  <>이 숫자는 <b>기준을 바로잡기 전까지 믿을 수 없습니다</b> — 위의 빨간 칸을 먼저 보세요.</>
-                ) : (
-                  <>
-                    업체 표기 {nf(ROLL_DEFAULT[mat.roll])}개와 {Math.abs(fitOff * 100).toFixed(1)}% 차이 나는데,
-                    이 차이가 <b>롤 갈이할 때 버리는 앞부분 · 불량 · 시운전을 다 합친 필름 로스</b>입니다.
-                    규격 자체가 표기보다 짧을 수도 있어 데이터만으로는 둘을 가르지 못합니다 —
-                    <b> 새 롤 하나를 끝까지 쓰며 몇 개 포장하는지 한 번 세어 보면</b> 그 자리에서 갈립니다.
-                  </>
-                )}
-              </p>
-              <div>
-                <div className="text-xs font-bold text-gray-500 mb-1.5">달마다 따로 역산하면</div>
-                <div className="flex gap-1.5 flex-wrap">
-                  {fit.byMonth.map((b) => {
-                    const off = b.v / fit.fitted - 1;
-                    return (
-                      <div key={b.month} className={`px-2.5 py-1.5 rounded-lg border text-xs ${
-                        Math.abs(off) > 0.08 ? 'bg-amber-50 border-amber-300' : 'bg-slate-50 border-gray-200'}`}>
-                        <span className="text-gray-500">{Number(b.month.slice(5, 7))}월</span>{' '}
-                        <b className="tabular-nums text-gray-800">{nf(b.v)}</b>
-                        <span className={`ml-1 tabular-nums ${Math.abs(off) > 0.08 ? 'text-amber-600' : 'text-gray-400'}`}>
-                          {off > 0 ? '+' : ''}{(off * 100).toFixed(0)}%
-                        </span>
-                      </div>
-                    );
-                  })}
-                </div>
-                <p className="text-xs text-gray-500 mt-1.5">
-                  월별로는 이렇게 흔들립니다 — 반쯤 쓴 롤을 이번 달로 세느냐 다음 달로 세느냐에 따라
-                  <b> 한 롤이 통째로 움직이고, 월 {un(fit.used / fit.n)}롤 쓰는 자재에서 1롤은 {(100 / (fit.used / fit.n)).toFixed(0)}%</b>입니다.
-                  그래서 월별 값은 보지 마시고 <b>누적값</b>만 쓰세요. 개월 수가 쌓일수록 정확해집니다.
-                </p>
-              </div>
-            </div>
-          </div>
-        </>
-      ) : (
-        <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <Card label={`투입량 합계 (${mat.unit})`} sub="재고조사 기준 실제 소모" v={un(a.totalInput)} />
-          <Card label={`이론사용량 합계 (${mat.unit})`}
-            sub={mat.roll ? `생산량 ÷ ${nf(rolls[mat.roll])}개(1롤) · 로스 0%` : '생산량 기준 · 로스 0%'}
-            v={un(a.totalTheory)} />
-          <Card label="실질 로스" sub={`투입 − 이론 (${mat.unit})`}
-            v={usgn(a.totalDiff)} tone={a.totalDiff < 0 ? 'bad' : 'ok'} />
-          <Card label="누적 로스율" sub={`기준 ${(lossLimit * 100).toFixed(1)}% 이내면 정상`}
-            v={pctS(a.totalLossRate)}
-            tone={a.totalLossRate === null ? undefined : a.totalLossRate < 0 ? 'bad' : a.totalLossRate > lossLimit ? 'warn' : 'ok'} />
-        </div>
-      )}
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <Card label="투입량 합계 (개)" sub="재고조사 기준 실제 소모" v={un(a.totalInput)} />
+        <Card label="이론사용량 합계 (개)" sub="생산량 기준 · 로스 0%" v={un(a.totalTheory)} />
+        <Card label="실질 로스" sub="투입 − 이론 (개)"
+          v={usgn(a.totalDiff)} tone={a.totalDiff < 0 ? 'bad' : 'ok'} />
+        <Card label="누적 로스율" sub={`기준 ${(lossLimit * 100).toFixed(1)}% 이내면 정상`}
+          v={pctS(a.totalLossRate)}
+          tone={a.totalLossRate === null ? undefined : a.totalLossRate < 0 ? 'bad' : a.totalLossRate > lossLimit ? 'warn' : 'ok'} />
+      </div>
 
       {missing.length > 0 && (
         <div className="bg-sky-50 border border-sky-300 rounded-lg p-3 text-sm text-sky-800">
@@ -756,35 +600,7 @@ export default function ContainerStockTab() {
         <div className="px-4 py-2.5 border-b bg-slate-50 font-bold text-gray-800 text-sm">
           자동 진단 <span className="text-xs text-gray-500 font-normal">· {mat.label} · 심각한 순</span>
         </div>
-        {specStale && !fitAbsurd ? (
-          <div className="p-4 space-y-2">
-            {/* 롤 규격 때문에 생기는 월별 판정만 감춘다. 규격과 무관한 critical 은 그대로 보여준다 —
-                기초재고 불연속·출고 미반영은 규격을 맞춰도 사라지지 않는다. */}
-            {a.findings.filter((f) => f.severity === 'critical').map((f, i) => (
-              <div key={i} className={`border rounded-lg overflow-hidden flex ${SEV[f.severity].bg}`}>
-                <div className={`w-1.5 shrink-0 ${SEV[f.severity].bar}`} />
-                <div className="p-3">
-                  <div className="font-bold text-gray-800 text-sm">{SEV[f.severity].icon} {f.title}</div>
-                  <div className="text-xs text-gray-600 mt-1 leading-relaxed">{f.detail}</div>
-                </div>
-              </div>
-            ))}
-            <div className="border rounded-lg overflow-hidden flex bg-sky-50 border-sky-300">
-              <div className="w-1.5 shrink-0 bg-sky-500" />
-              <div className="p-3">
-                <div className="font-bold text-gray-800 text-sm">
-                  ℹ️ 지금은 1롤 {nf(fit!.spec)}개로 계산 중이라 월별 차이가 한 방향으로 쏠립니다
-                </div>
-                <div className="text-xs text-gray-600 mt-1 leading-relaxed">
-                  실제로는 롤당 {nf(fit!.fitted)}개가 나오고 있어, 매달 {(Math.abs(specOff) * 100).toFixed(1)}%씩
-                  {specOff < 0 ? ' 더 쓰는' : ' 덜 쓰는'} 것으로 잡힙니다. 원인이 하나뿐이라 월별 진단을 늘어놓아도 같은 말입니다.
-                  <b> 위에서 「{nf(fit!.fitted)}으로 맞추기」를 누르면</b> 그때부터 월별 값은 그 기준에서 벗어난 달만 짚어 줍니다 —
-                  그게 실제로 봐야 할 신호입니다. 업체 표기와의 차이(=필름 로스)는 위 카드에 그대로 남습니다.
-                </div>
-              </div>
-            </div>
-          </div>
-        ) : a.findings.length === 0 ? (
+        {a.findings.length === 0 ? (
           <div className="p-10 text-center text-gray-400 text-sm">
             {a.filledCount === 0 ? '재고조사 값을 입력하면 자동으로 분석합니다.' : '짚을 것이 없습니다.'}
           </div>
@@ -812,32 +628,13 @@ export default function ContainerStockTab() {
               ? `${mat.sum!.map((id) => MATERIALS.find((x) => x.id === id)!.label).join(' + ')} 을 그대로 더한 값입니다. 고치려면 각 자재에서 수정하세요.`
               : '기초·입고·기말을 넣으면 투입량이 자동 계산됩니다. 구매팀 투입량만 있으면 그 칸만 채우세요.'}
           </span>
-          {mat.roll && (
-            <label className="ml-auto text-xs text-gray-600 flex items-center gap-1.5">
-              <b className="text-gray-700">{ROLL_LABEL[mat.roll]}</b> 1롤 =
-              <input type="number" min={1} value={rollDraft ?? rolls[mat.roll]}
-                onChange={(e) => {
-                  const t = e.target.value;
-                  setRollDraft(t);
-                  const v = Math.round(Number(t));
-                  if (t.trim() !== '' && Number.isFinite(v) && v >= 1) setRolls((p) => ({ ...p, [mat.roll!]: v }));
-                }}
-                onBlur={() => setRollDraft(null)}
-                className="w-24 border rounded px-2 py-1 text-right tabular-nums font-bold" />
-              개
-              {rolls[mat.roll] !== ROLL_DEFAULT[mat.roll] && (
-                <button onClick={() => { setRollDraft(null); setRolls((p) => ({ ...p, [mat.roll!]: ROLL_DEFAULT[mat.roll!] })); }}
-                  className="text-gray-400 underline">기본값 {nf(ROLL_DEFAULT[mat.roll])}</button>
-              )}
-            </label>
-          )}
           {!readOnly && (
-            <label className={`text-xs text-gray-600 flex items-center gap-1.5 ${mat.roll ? '' : 'ml-auto'}`}>
+            <label className="ml-auto text-xs text-gray-600 flex items-center gap-1.5">
               이론사용량 기준
               <select value={curSrc}
                 onChange={(e) => setSrcOverride((p) => ({ ...p, [mat.id]: e.target.value as TheorySource }))}
                 className={`border rounded px-2 py-1 text-xs ${srcChanged ? 'border-amber-400 bg-amber-50 font-bold' : ''}`}>
-                {(Object.keys(SOURCE_LABEL) as TheorySource[]).map((k) => (
+                {SOURCE_OPTIONS.map((k) => (
                   <option key={k} value={k}>{SOURCE_LABEL[k]}{k === mat.source ? ' ← 기본' : ''}</option>
                 ))}
               </select>
@@ -929,13 +726,6 @@ export default function ContainerStockTab() {
         <div className="px-4 pb-4 text-xs text-gray-600 space-y-2 leading-relaxed">
           <p><b>1) 투입량</b> = 기초재고 + 당월입고 − 기말재고. 창고에서 실제로 빠져나간 수량입니다.
             구매팀에서 받은 값이 있으면 오른쪽 칸에 넣으세요. 둘 다 넣으면 서로 맞는지 자동으로 대조합니다.</p>
-          <p><b>2-1) 필름 기준.</b> 필름은 용기 구분이 아니라 호기로 갈립니다 — 1·2호기가 2열기, 3호기가 4열기,
-            레토르트는 실온 생산량입니다. 잔여량만 있고 호기 입력이 없는 날은 어느 호기인지 알 수 없는데,
-            그런 수량은 <b>2열기(1·2호기)로 잡습니다</b>.
-            그리고 필름은 롤로 세므로 <b>생산량 ÷ 롤당 포장수</b>가 이론사용량입니다 —
-            롤당 포장수는 필름을 고른 뒤 <b>「월별 입력」 표 오른쪽 위</b>에서 고칠 수 있습니다 —
-            업체 표기와 실제로 뽑히는 개수가 다르면 그 값을 바꾸세요. 저장하면 모두에게 적용됩니다.
-            반쯤 쓴 롤을 어느 달로 세느냐에 따라 한 롤이 통째로 움직이므로, <b>±1롤은 정상으로 봅니다</b>.</p>
           <p><b>2) 이론사용량</b> = 그 달 생산량(EA). 1개 만들면 용기 1개니까, 로스가 0%일 때 써야 할 최소 수량입니다.
             용기분석 첫 탭의 숫자와 같은 계산입니다.</p>
           <p><b>3) 차이 = 투입 − 이론</b> 은 <b>항상 0 이상</b>이어야 합니다. 파손·시운전·불량만큼 더 쓰니까요.
