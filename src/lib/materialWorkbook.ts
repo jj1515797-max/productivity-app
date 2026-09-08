@@ -4,6 +4,7 @@
  *  엑셀 수식으로 다시 계산되게 만든다. 생산개수·단가·공급가를 바꾸면 즉시 재계산된다.
  *
  *  시트
+ *   해석        : 요약 숫자를 사람 말로 — 무엇이 원재료비를 얼마나 밀었는지, 그게 큰 변화인지
  *   요약        : 입력(노란칸) + 원재료비율/개당재료비/고단가/믹스분해
  *   생산량      : 품목별 생산개수
  *   제품수익성  : 제품별 재료비·공급가·원가율 (공급가 입력하면 활성화)
@@ -258,7 +259,8 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
   wb.created = new Date();
   wb.calcProperties.fullCalcOnLoad = true;
 
-  wb.addWorksheet('요약');   // 첫 탭 선점
+  wb.addWorksheet('해석');   // 첫 탭 선점 (내용은 요약을 다 만든 뒤 채운다)
+  wb.addWorksheet('요약');
 
   const HEAD = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
   const headFill = (argb: string) => ({ type: 'pattern' as const, pattern: 'solid' as const, fgColor: { argb } });
@@ -1017,6 +1019,8 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     "     · [단가] 두 열에 같은 달 단가를 넣으면 '단가효과 제거(연동예산)' 이 됩니다.",
     "     · [단가] '그룹'열에 고단가 를 넣고 빼서 대상 원재료를 바꿀 수 있습니다.",
     '',
+    '■ 첫 탭 [해석] 을 먼저 보세요 — 이 요약 숫자를 사람 말로 풀어 놓았습니다 (전부 자동, 노란칸 바꾸면 같이 바뀝니다).',
+    '',
     '■ 계산식 (전부 엑셀 수식입니다 — 셀을 클릭하면 보입니다)',
     '  사용량(g)   = 개당 투입량(g) × 생산개수(EA)         … 레시피계산 I·J열',
     '  금액(원)    = 사용량(g) × 단가(원/g)                … 레시피계산 M·N열',
@@ -1038,6 +1042,220 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
       ? { bold: true, size: 10, color: { argb: 'FF1F4E79' } }
       : { size: 9, color: { argb: 'FF404040' } };
   });
+
+
+  /* ================= 해석 =================
+     요약 시트의 숫자를 읽어 사람 말로 바꾼다. 전부 수식이라 노란칸을 고치면 문장도 따라 바뀐다.
+
+     증감을 쪼개는 방법 (덧셈이 정확히 맞아떨어진다):
+       총 재료비 증감 = 물량효과 + 고단가 수량효과 + 고단가 단가효과 + 그 외 효과
+         물량효과      = (당월생산량 − 전월생산량) × 전월 개당재료비
+         고단가 수량효과 = 당월생산량 × (개당 고단가 사용량 증감) × 전월 단가
+         고단가 단가효과 = 당월생산량 × 당월 개당 고단가 사용량 × (단가 증감)
+         그 외 효과     = 당월생산량 × (개당 그 외 재료비 증감)
+     원재료비율(%p) 변화는 두 몫으로 나뉜다:
+       Δ비율 = (총 재료비 증감 − 전월비율 × 생산금액 증감) ÷ 당월 생산금액          */
+  const wsRead = wb.getWorksheet('해석')!;
+  {
+    const A0 = `요약!B${rAmt}`, A1 = `요약!C${rAmt}`;
+    const Q0 = `요약!B${rQty}`, Q1 = `요약!C${rQty}`;
+    const M0 = `요약!B${rMat}`, M1 = `요약!C${rMat}`;
+    const H0 = `요약!B${rHigh}`, H1 = `요약!C${rHigh}`;
+    const G0 = `요약!B${rHighG}`, G1 = `요약!C${rHighG}`;
+    const P0 = `요약!B${rAvgUnit}`, P1 = `요약!C${rAvgUnit}`;
+    const R0 = `요약!B${rRate}`, R1 = `요약!C${rRate}`;
+    const U0 = `요약!B${rUnit}`, U1 = `요약!C${rUnit}`;
+    const HQ0 = `요약!B${rHighQty}`, HQ1 = `요약!C${rHighQty}`;
+    const n = (x: string) => `N(${x})`;
+    const okQ = `AND(${n(Q0)}>0,${n(Q1)}>0)`;
+
+    // 네 가지 효과 (원)
+    const fVol = `IF(${okQ},(${n(Q1)}-${n(Q0)})*${n(M0)}/${n(Q0)},"")`;
+    const fHiQ = `IF(${okQ},${n(Q1)}*(${n(G1)}/${n(Q1)}-${n(G0)}/${n(Q0)})*${n(P0)},"")`;
+    const fHiP = `IF(${okQ},${n(Q1)}*(${n(G1)}/${n(Q1)})*(${n(P1)}-${n(P0)}),"")`;
+    const fOth = `IF(${okQ},${n(Q1)}*((${n(M1)}-${n(H1)})/${n(Q1)}-(${n(M0)}-${n(H0)})/${n(Q0)}),"")`;
+    const fTot = `${n(M1)}-${n(M0)}`;
+
+    wsRead.columns = [{ width: 30 }, { width: 17 }, { width: 13 }, { width: 96 }];
+    const t = wsRead.addRow(['📖 자동 해석 — 이 시트는 전부 자동입니다']);
+    t.getCell(1).font = { bold: true, size: 16, color: { argb: 'FF1F4E79' } };
+    wsRead.addRow([`${monthA} → ${monthB}   ·   요약 시트의 노란칸(생산금액·공급가)을 바꾸면 아래 문장도 같이 바뀝니다`])
+      .getCell(1).font = NOTE;
+    wsRead.addRow([]);
+
+    const sec = (title: string, argb: string) => {
+      const r = wsRead.addRow([title, '금액 (원)', '원가율 영향 (%p)', '읽는 법']);
+      r.eachCell((c) => {
+        c.font = HEAD; c.fill = headFill(argb);
+        c.alignment = { horizontal: 'center', wrapText: true }; c.border = BORDER;
+      });
+      r.height = 22;
+    };
+    /** 금액 한 줄 + 그 금액이 원가율을 몇 %p 움직였는지 + 설명 문장 */
+    const line = (label: string, amt: string, note: string, bold = false) => {
+      const r = wsRead.addRow([label, { formula: amt },
+        { formula: `IF(OR(${amt}="",${n(A1)}=0),"",(${amt})/${n(A1)})` }, { formula: note }]);
+      r.getCell(1).font = { bold, size: 10 };
+      r.getCell(2).numFmt = '#,##0'; r.getCell(3).numFmt = '+0.00%;-0.00%;0.00%';
+      [1, 2, 3, 4].forEach((c) => { r.getCell(c).border = BORDER; });
+      r.getCell(4).alignment = { wrapText: true, vertical: 'top' };
+      r.getCell(4).font = { size: 10, color: { argb: 'FF404040' } };
+      if (bold) { r.getCell(2).font = { bold: true }; r.getCell(3).font = { bold: true }; }
+      return r.number;
+    };
+    /** 문장 한 줄 (금액칸 없음) */
+    const say = (label: string, sentence: string) => {
+      const r = wsRead.addRow([label, null, null, { formula: sentence }]);
+      r.getCell(1).font = { bold: true, size: 10 };
+      wsRead.mergeCells(r.number, 2, r.number, 3);
+      r.getCell(4).alignment = { wrapText: true, vertical: 'top' };
+      r.getCell(4).font = { size: 10, color: { argb: 'FF404040' } };
+      [1, 2, 4].forEach((c) => { r.getCell(c).border = BORDER; });
+      r.height = 30;
+      return r.number;
+    };
+    const won = (x: string) => `TEXT(${x},"#,##0")`;
+    const pct = (x: string) => `TEXT(${x},"0.00%")`;
+    // 비율의 증감은 퍼센트가 아니라 퍼센트포인트다. % 로만 쓰면 '4.92% 올랐다'(상대증가)로 읽힌다.
+    const pp = (x: string) => `TEXT(${x},"+0.00%;-0.00%;0.00%")&"p"`;
+    const sign = (x: string) => `IF(${x}>0,"늘었","줄었")`;
+    /** 크기 판정 — 원가율 %p 기준 */
+    const grade = (x: string) => `IF(ABS(${x})<0.003,"거의 그대로",IF(ABS(${x})<0.008,"작은 변화",IF(ABS(${x})<0.015,"눈여겨볼 변화","큰 변화")))`;
+
+    /* ── 한 줄 결론 ── */
+    const noAmt = `OR(${n(A0)}=0,${n(A1)}=0)`;
+    const dRate = `(${n(R1)}-${n(R0)})`;
+    const concl = `IF(${noAmt},`
+      + `"요약 시트 ① 생산금액에 두 달 값을 넣으면 여기에 결론이 나옵니다.",`
+      + `"${monthB} 원재료비율은 "&${pct(n(R1))}&" 입니다. ${monthA}(" &${pct(n(R0))}&") 보다 "`
+      + `&${pp(dRate)}&" "&${sign(dRate)}&"습니다 — "&${grade(dRate)}&"입니다.")`;
+    const cr = wsRead.addRow([{ formula: concl }]);
+    wsRead.mergeCells(cr.number, 1, cr.number, 4);
+    cr.getCell(1).font = { bold: true, size: 13, color: { argb: 'FFC00000' } };
+    cr.getCell(1).alignment = { wrapText: true, vertical: 'middle' };
+    cr.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF2CC' } };
+    cr.height = 30;
+    wsRead.addRow([]);
+
+    /* ── 무엇이 얼마나 밀었나 ── */
+    sec('무엇이 원재료비를 밀었나', 'FF1F4E79');
+    line('① 많이 만들어서 (물량)', fVol,
+      `"생산량이 "&${won(n(Q0))}&" → "&${won(n(Q1))}&" EA 로 "`
+      + `&TEXT(IF(${n(Q0)}=0,0,${n(Q1)}/${n(Q0)}-1),"+0.0%;-0.0%")&" 움직였습니다. "`
+      + `&"많이 만들면 재료비도 느는 게 정상이라 이 몫은 문제가 아닙니다 — 매출도 같이 늘었는지만 보세요."`);
+    line('② 고단가를 더 써서 (수량)', fHiQ,
+      `IF(${n(Q0)}=0,"",` 
+      + `"고단가 원재료를 제품 1개당 "&TEXT(${n(G0)}/${n(Q0)},"#,##0.00")&"g → "&TEXT(${n(G1)}/${n(Q1)},"#,##0.00")&"g 로 "`
+      + `&TEXT(ABS(${n(G1)}/${n(Q1)}-${n(G0)}/${n(Q0)}),"#,##0.00")&"g "&IF(${n(G1)}/${n(Q1)}>${n(G0)}/${n(Q0)},"더","덜")&" 썼습니다"`
+      + `&" ("&TEXT(IF(${n(G0)}=0,0,(${n(G1)}/${n(Q1)})/(${n(G0)}/${n(Q0)})-1),"+0.0%;-0.0%")&"). "`
+      + `&"레시피가 그대로인데 이게 움직였다면 제품 구성이 바뀐 것입니다.")`);
+    line('③ 고단가를 비싸게 사서 (단가)', fHiP,
+      `IF(${n(P0)}=0,"",` 
+      + `"고단가 평균단가가 "&TEXT(${n(P0)},"#,##0.00")&" → "&TEXT(${n(P1)},"#,##0.00")&" 원/g 로 "`
+      + `&TEXT(${n(P1)}/${n(P0)}-1,"+0.0%;-0.0%")&" 움직였습니다. "`
+      + `&"구매 단가가 올랐거나, 고단가 안에서 더 비싼 원재료 쪽으로 옮겨간 것입니다.")`);
+    line('④ 그 외 원재료', fOth,
+      `"고단가를 뺀 나머지 원재료의 개당 재료비 변화입니다. "`
+      + `&"여기가 크면 고단가가 아니라 일반 원재료 쪽에서 무언가 바뀐 것입니다."`);
+    const rSum = line('합계 (총 원재료비 증감)', `${n(M0)}*0+(${fVol})+(${fHiQ})+(${fHiP})+(${fOth})`,
+      `"총 원재료비 "&${won(n(M0))}&" → "&${won(n(M1))}&" 원. 위 네 몫을 더한 값입니다."`, true);
+    const rChk = wsRead.addRow(['검산 (합계 − 실제 증감)',
+      { formula: `(B${rSum})-(${fTot})` }, null,
+      { formula: `IF(ABS((B${rSum})-(${fTot}))<1,"✔ 딱 맞습니다 — 위 네 몫이 증감 전부를 설명합니다.","⚠ 어긋납니다. 생산량이나 단가가 비어 있는 달이 있는지 보세요.")` }]);
+    rChk.getCell(2).numFmt = '#,##0'; rChk.getCell(1).font = { size: 9, color: { argb: 'FF808080' } };
+    rChk.getCell(4).font = { size: 9, color: { argb: 'FF808080' } };
+    wsRead.addRow([]);
+
+    /* ── 비율은 왜 그렇게 됐나 ──
+       물량효과는 생산금액 증가와 상쇄되므로 비율 관점에서는 한 덩어리로 묶어야 한다.
+       따로 두면 '물량이 가장 크게 밀었다' 는 오해를 준다. */
+    const fRateAmt = `IF(${n(A1)}=0,"",-${n(R0)}*(${n(A1)}-${n(A0)}))`;
+    const fVolPrice = `IF(${n(A1)}=0,"",(${fVol})+(${fRateAmt}))`;
+    sec('원재료비율(%p) 은 왜 그렇게 됐나', 'FFC00000');
+    line('많이·비싸게 팔아서 (물량·판가)', fVolPrice,
+      `IF(${n(A0)}=0,"요약 ① 생산금액을 넣으면 계산됩니다.",`
+      + `"생산량 "&TEXT(IF(${n(Q0)}=0,0,${n(Q1)}/${n(Q0)}-1),"+0.0%;-0.0%")&" · 생산금액 "&TEXT(${n(A1)}/${n(A0)}-1,"+0.0%;-0.0%")&". "`
+      + `&"많이 만들면 재료비도 늘지만 매출도 같이 늡니다. 둘이 같은 속도로 움직이면 비율은 그대로라 이 몫은 0 에 가깝습니다. "`
+      + `&IF(ABS((${fVolPrice})/${n(A1)})<0.003,"지금은 거의 상쇄됐습니다.","여기가 크면 원가가 아니라 제품 구성·판가가 움직인 것입니다."))`);
+    line('고단가를 더 써서 (수량)', fHiQ,
+      `"위 ② 와 같은 금액입니다. 원가율로 환산하면 이만큼입니다."`);
+    line('고단가를 비싸게 사서 (단가)', fHiP,
+      `"위 ③ 과 같은 금액입니다. 원가율로 환산하면 이만큼입니다."`);
+    line('그 외 원재료', fOth,
+      `"위 ④ 와 같은 금액입니다. 원가율로 환산하면 이만큼입니다."`);
+    const rRc = wsRead.addRow(['검산 (네 몫 합 = 비율 증감)', null,
+      { formula: `IF(${n(A1)}=0,"",((${fVolPrice})+(${fHiQ})+(${fHiP})+(${fOth}))/${n(A1)})` },
+      { formula: `IF(${n(A1)}=0,"요약 ① 생산금액을 넣으면 계산됩니다.",`
+        + `"실제 비율 증감 "&${pp(dRate)}&" 와 같아야 합니다."`
+        + `&IF(ABS(((${fVolPrice})+(${fHiQ})+(${fHiP})+(${fOth}))/${n(A1)}-(${dRate}))<0.00005," ✔"," ⚠"))` }]);
+    rRc.getCell(3).numFmt = '+0.00%;-0.00%;0.00%';
+    rRc.getCell(1).font = { size: 9, color: { argb: 'FF808080' } };
+    rRc.getCell(4).font = { size: 9, color: { argb: 'FF808080' } };
+    wsRead.addRow([]);
+
+    /* ── 곁들여 볼 것 ── */
+    sec('곁들여 볼 것', 'FF7030A0');
+    say('고단가 제품을 더 만들었나',
+      `IF(${n(Q0)}*${n(Q1)}=0,"",`
+      + `"고단가 원재료가 들어간 제품의 생산 비중이 "&${pct(`${n(HQ0)}/${n(Q0)}`)}&" → "&${pct(`${n(HQ1)}/${n(Q1)}`)}&" 입니다. "`
+      + `&IF(ABS(${n(HQ1)}/${n(Q1)}-${n(HQ0)}/${n(Q0)})<0.02,"거의 그대로라, 위 ② 수량효과는 제품 구성 탓이 아니라 레시피나 로스 쪽입니다.",`
+      + `"제품 구성이 바뀌었습니다. 위 ② 수량효과의 상당 부분이 이것으로 설명됩니다."))`);
+    say('실제로도 그만큼 나갔나',
+      `IF(${n(`요약!C${rYield}`)}=0,"ERP 실제 출고가 없어 이론값만으로 본 것입니다.",`
+      + `"ERP 실제 출고는 이론의 "&${pct(`요약!C${rYield}`)}&" 입니다 (커버리지 "&${pct(`요약!C${rCov}`)}&"). "`
+      + `&IF(${n(`요약!C${rYield}`)}>1.03,"레시피보다 더 나갔습니다 — 로스나 재고 이동을 보세요.",`
+      + `IF(${n(`요약!C${rYield}`)}<0.97,"레시피보다 덜 나갔습니다 — 재고를 당겨 쓴 달일 수 있습니다.","레시피와 실제가 거의 맞습니다.")))`);
+    say('개당으로 보면',
+      `IF(${n(Q0)}*${n(Q1)}=0,"",`
+      + `"제품 1개당 재료비가 "&TEXT(${n(U0)},"#,##0.0")&" → "&TEXT(${n(U1)},"#,##0.0")&" 원 ("&TEXT(IF(${n(U0)}=0,0,${n(U1)}/${n(U0)}-1),"+0.0%;-0.0%")&"). "`
+      + `&"물량과 무관한 순수 원가 변화라 달마다 비교하기 가장 좋은 숫자입니다.")`);
+    wsRead.addRow([]);
+
+    /* ── 그래서 큰 문제인가 ── */
+    sec('그래서 큰 문제인가', 'FF203864');
+    // 비율을 가장 크게 민 몫. 금액이 아니라 '비율 기여'로 줄을 세워야 물량 착시가 없다.
+    const cand: [string, string][] = [
+      ['물량·판가', fVolPrice], ['고단가 수량', fHiQ], ['고단가 단가', fHiP], ['그 외 원재료', fOth],
+    ];
+    const biggest = `IF(${noAmt},"",`
+      + `IF(AND(ABS(${cand[0][1]})>=ABS(${cand[1][1]}),ABS(${cand[0][1]})>=ABS(${cand[2][1]}),ABS(${cand[0][1]})>=ABS(${cand[3][1]})),"${cand[0][0]}",`
+      + `IF(AND(ABS(${cand[1][1]})>=ABS(${cand[2][1]}),ABS(${cand[1][1]})>=ABS(${cand[3][1]})),"${cand[1][0]}",`
+      + `IF(ABS(${cand[2][1]})>=ABS(${cand[3][1]}),"${cand[2][0]}","${cand[3][0]}"))))`;
+    const biggestPP = `IF(${noAmt},"",`
+      + `IF(${biggest}="${cand[0][0]}",(${cand[0][1]})/${n(A1)},`
+      + `IF(${biggest}="${cand[1][0]}",(${cand[1][1]})/${n(A1)},`
+      + `IF(${biggest}="${cand[2][0]}",(${cand[2][1]})/${n(A1)},(${cand[3][1]})/${n(A1)}))))`;
+    const vr = wsRead.addRow([{ formula:
+      `IF(${noAmt},"요약 ① 생산금액을 두 달 다 넣어야 판정이 나옵니다.",`
+      + `IF(ABS(${dRate})<0.003,`
+      + `"원재료비율이 "&${pp(dRate)}&" 움직였습니다. 이 정도는 달마다 늘 있는 흔들림이라 따로 손댈 것이 없습니다. 굳이 꼽자면 "&${biggest}&" 쪽이 컸습니다.",`
+      + `IF(ABS(${dRate})<0.008,`
+      + `"원재료비율이 "&${pp(dRate)}&" 움직였습니다. 작지만 방향은 분명합니다. 가장 크게 민 것은 「"&${biggest}&"」 쪽입니다. 한 달 더 같은 방향이면 그때 손대세요.",`
+      + `IF(ABS(${dRate})<0.015,`
+      + `"원재료비율이 "&${pp(dRate)}&" 움직였습니다. 눈여겨볼 크기입니다. 가장 크게 민 것은 「"&${biggest}&"」 쪽이니 그 줄부터 확인하세요.",`
+      + `"원재료비율이 "&${pp(dRate)}&" 움직였습니다. 큰 변화입니다. 「"&${biggest}&"」 쪽이 가장 크게 밀었습니다 (그 몫만 "&${pp(biggestPP)}&"). "`
+      + `&IF(${biggest}="물량·판가","원가가 아니라 무엇을 얼마나 팔았는지가 바뀐 것입니다. 제품 구성부터 보세요.",`
+      + `IF(${biggest}="고단가 수량","고단가 원재료가 제품당 더 들어갔습니다. 레시피 변경인지 제품 구성 변화인지 「곁들여 볼 것」 줄에서 갈립니다.",`
+      + `IF(${biggest}="고단가 단가","구매 단가가 올랐습니다. 원단위는 그대로일 수 있으니 구매 쪽을 보세요.",`
+      + `"고단가가 아닌 일반 원재료에서 움직였습니다. 단가표와 레시피 변경 이력을 보세요."))))))) ` }]);
+    wsRead.mergeCells(vr.number, 1, vr.number, 4);
+    vr.getCell(1).font = { bold: true, size: 11 };
+    vr.getCell(1).alignment = { wrapText: true, vertical: 'middle' };
+    vr.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFEAF1F8' } };
+    vr.height = 42;
+
+    wsRead.addRow([]);
+    ['■ 크기 기준 (원재료비율 변화)',
+      '   0.3%p 미만 = 늘 있는 흔들림   ·   0.8%p 미만 = 작은 변화   ·   1.5%p 미만 = 눈여겨볼 변화   ·   그 이상 = 큰 변화',
+      '■ 네 몫은 서로 겹치지 않고, 더하면 총 증감이 정확히 나옵니다 (검산 줄에서 확인하세요).',
+      '■ 여기 숫자는 전부 레시피 기준 이론값입니다. 실제 출고와의 차이는 「곁들여 볼 것」 줄을 보세요.',
+    ].forEach((g) => {
+      const r = wsRead.addRow([g]);
+      r.getCell(1).font = g.startsWith('■')
+        ? { bold: true, size: 10, color: { argb: 'FF1F4E79' } } : { size: 9, color: { argb: 'FF404040' } };
+    });
+    wsRead.views = [{ state: 'frozen', ySplit: 3 }];
+  }
 
   ws.views = [{ state: 'frozen', ySplit: 4 }];
 
