@@ -5,6 +5,10 @@ import MaterialCategoryPanel from '../components/MaterialCategoryPanel';
 import DevRecipeImport from '../components/DevRecipeImport';
 import type { Material, ProductSetting } from '../types';
 import { runBackup, downloadSql } from '../lib/dbBackup';
+import {
+  checkRepo, loadCfg, saveCfg, uploadBackup, manifestPath, emptyCfg,
+  type GhConfig, type RepoCheck, type UploadResult,
+} from '../lib/githubBackup';
 import type { BackupProgress, BackupResult } from '../lib/dbBackup';
 import { canonicalShort, convertErpCode } from '../lib/codeUtil';
 import { CODE_KEY_PREFIX, normalizeCode, normalizeMaterialName } from '../lib/wasteCompute';
@@ -3507,6 +3511,47 @@ function DbBackupPanel() {
   const [error, setError] = useState('');
   const abortRef = useRef<{ aborted: boolean }>({ aborted: false });
 
+  // GitHub 업로드 설정 — 토큰이 들어가므로 이 기기 localStorage 에만 둔다 (번들·Firestore 에 넣지 않는다)
+  const [gh, setGh] = useState<GhConfig>(() => loadCfg());
+  const [ghOpen, setGhOpen] = useState(false);
+  const [ghCheck, setGhCheck] = useState<RepoCheck | null>(null);
+  const [ghChecking, setGhChecking] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [uploaded, setUploaded] = useState<UploadResult | null>(null);
+  const [ghError, setGhError] = useState('');
+  const ghReady = !!(gh.owner && gh.repo && gh.token && gh.path);
+
+  const setGhField = (k: keyof GhConfig, v: string) => {
+    setGh((p) => { const n = { ...p, [k]: v }; saveCfg(n); return n; });
+    setGhCheck(null);
+  };
+
+  const doCheck = async () => {
+    setGhChecking(true); setGhCheck(null);
+    try { setGhCheck(await checkRepo(gh)); } finally { setGhChecking(false); }
+  };
+
+  /** 백업 결과를 깃허브에 올린다. 저장소가 공개면 lib 단계에서 거부된다. */
+  const doUpload = async (r: BackupResult) => {
+    setUploading(true); setGhError(''); setUploaded(null);
+    try {
+      const now = new Date();
+      const res = await uploadBackup(gh, r.sql, {
+        docCount: r.docCount,
+        tables: r.stats.length,
+        incomplete: r.incomplete || '',
+        sqlBytes: r.sizeBytes,
+        stamp: now.toISOString().slice(0, 10),
+        generatedAt: now.toISOString(),
+      });
+      setUploaded(res);
+    } catch (e) {
+      setGhError(e instanceof Error ? e.message : String(e));
+    } finally {
+      setUploading(false);
+    }
+  };
+
   const start = async () => {
     if (!confirm(
       'DB 전체를 읽어 백업 파일(.sql)을 만듭니다.\n\n'
@@ -3525,6 +3570,8 @@ function DbBackupPanel() {
       setResult(r);
       const stamp = new Date().toISOString().slice(0, 10);
       downloadSql(r.sql, `ssbon_backup_${stamp}${r.incomplete ? '_불완전' : ''}.sql`);
+      // 설정이 채워져 있으면 이어서 깃허브에 올린다 (실패해도 다운로드는 이미 끝났다)
+      if (gh.owner && gh.repo && gh.token && gh.path) await doUpload(r);
     } catch (e) {
       setError(e instanceof Error ? e.message : String(e));
     } finally {
@@ -3544,6 +3591,110 @@ function DbBackupPanel() {
         ⚠ 읽기 한도(무료 <b>하루 5만 건</b>)를 현장 앱과 함께 씁니다. 근무 중에 데이터가 많이 읽히면
         한도를 넘겨 <b>현장 태블릿 조회가 일시적으로 막힐 수</b> 있습니다 (다음날 자동 복구 · 한국시간 오후 4시경).
         <b>퇴근 후 실행을 권장</b>하고, 진행 중 이상하면 <b>중단</b> 버튼을 누르세요.
+      </div>
+
+      {/* ── 깃허브 업로드 설정 ── */}
+      <div className="border rounded overflow-hidden">
+        <button onClick={() => setGhOpen((v) => !v)}
+          className="w-full px-3 py-2.5 bg-white flex items-center gap-2 text-left hover:bg-gray-50">
+          <span className="font-bold text-gray-800 text-sm">⬆️ 깃허브에 자동 업로드</span>
+          {ghReady ? (
+            <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[11px] font-bold">
+              {gh.owner}/{gh.repo}
+            </span>
+          ) : (
+            <span className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-500 text-[11px] font-bold">꺼짐</span>
+          )}
+          <span className="ml-auto text-gray-400 text-xs">{ghOpen ? '▲ 접기' : '▼ 설정'}</span>
+        </button>
+
+        {ghOpen && (
+          <div className="border-t p-3 space-y-3 bg-slate-50">
+            <div className="bg-red-50 border border-red-300 rounded p-3 text-xs text-red-700 leading-relaxed">
+              🚨 <b>반드시 private(비공개) 저장소를 쓰세요.</b> 이 백업에는 생산량·단가·거래처·직원 이름이
+              전부 들어 있습니다. 공개 저장소에 올리면 그대로 전 세계에 공개됩니다.
+              <br />공개 저장소를 지정하면 <b>업로드를 거부</b>합니다 — 앱 저장소
+              (<code>productivity-app</code>)는 공개라 쓸 수 없습니다. 백업 전용 private 저장소를 새로 만드세요.
+            </div>
+            <div className="bg-amber-50 border border-amber-300 rounded p-3 text-xs text-amber-800 leading-relaxed">
+              ⚠ 토큰은 <b>이 기기 브라우저에만</b> 저장됩니다 (다른 기기·다른 사람 화면에는 안 넘어갑니다).
+              공용 PC 에는 넣지 마세요. 토큰은 <b>Fine-grained PAT</b> 로 만들고
+              <b> 그 백업 저장소 하나에만 Contents: Read and write</b> 권한을 주세요. 그 이상은 필요 없습니다.
+            </div>
+
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              <label className="text-xs text-gray-600">
+                소유자 (GitHub 아이디)
+                <input value={gh.owner} onChange={(e) => setGhField('owner', e.target.value.trim())}
+                  placeholder="jj1515797-max"
+                  className="mt-0.5 w-full border rounded px-2 py-1.5 text-sm" />
+              </label>
+              <label className="text-xs text-gray-600">
+                저장소 이름 <b className="text-red-600">(private)</b>
+                <input value={gh.repo} onChange={(e) => setGhField('repo', e.target.value.trim())}
+                  placeholder="ssbon-db-backup"
+                  className="mt-0.5 w-full border rounded px-2 py-1.5 text-sm" />
+              </label>
+              <label className="text-xs text-gray-600">
+                브랜치
+                <input value={gh.branch} onChange={(e) => setGhField('branch', e.target.value.trim())}
+                  placeholder="main"
+                  className="mt-0.5 w-full border rounded px-2 py-1.5 text-sm" />
+              </label>
+              <label className="text-xs text-gray-600">
+                파일 경로 <span className="text-gray-400">(같은 경로에 덮어씁니다)</span>
+                <input value={gh.path} onChange={(e) => setGhField('path', e.target.value.trim())}
+                  placeholder="db/latest.sql.gz"
+                  className="mt-0.5 w-full border rounded px-2 py-1.5 text-sm font-mono" />
+              </label>
+              <label className="text-xs text-gray-600 sm:col-span-2">
+                토큰 (Fine-grained PAT)
+                <input type="password" value={gh.token} onChange={(e) => setGhField('token', e.target.value.trim())}
+                  placeholder="github_pat_..." autoComplete="off"
+                  className="mt-0.5 w-full border rounded px-2 py-1.5 text-sm font-mono" />
+              </label>
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              <button onClick={doCheck} disabled={ghChecking || !gh.owner || !gh.repo || !gh.token}
+                className="px-3 py-1.5 text-xs rounded border bg-white font-semibold hover:bg-gray-50 disabled:text-gray-300">
+                {ghChecking ? '확인 중…' : '저장소 확인'}
+              </button>
+              {ghReady && (
+                <button onClick={() => { const n = { ...emptyCfg() }; setGh(n); saveCfg(n); setGhCheck(null); }}
+                  className="px-3 py-1.5 text-xs rounded border bg-white text-gray-500 hover:bg-gray-50">
+                  설정 지우기
+                </button>
+              )}
+              <span className="text-xs text-gray-500">
+                설정을 채워 두면 <b>백업 버튼 한 번</b>으로 파일 저장 + 깃허브 업로드까지 됩니다.
+              </span>
+            </div>
+
+            {ghCheck && (
+              <div className={`rounded p-3 text-xs leading-relaxed border ${
+                ghCheck.ok ? 'bg-emerald-50 border-emerald-300 text-emerald-800'
+                  : 'bg-red-50 border-red-300 text-red-700'}`}>
+                {ghCheck.ok ? '✅ ' : '🚨 '}{ghCheck.message}
+                {ghCheck.defaultBranch && ghCheck.defaultBranch !== gh.branch && (
+                  <div className="mt-1">
+                    이 저장소의 기본 브랜치는 <b>{ghCheck.defaultBranch}</b> 입니다 — 브랜치 칸을 맞추는 게 좋습니다.
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="bg-white border rounded p-3 text-xs text-gray-600 leading-relaxed">
+              <b className="text-gray-800">새 세션에서 가져가는 법</b><br />
+              올라간 파일은 <code>{gh.owner || '<소유자>'}/{gh.repo || '<저장소>'}</code> 의
+              <code className="mx-1">{gh.path || 'db/latest.sql.gz'}</code> 에 있고,
+              같은 자리의 <code>{manifestPath(gh.path || 'db/latest.sql.gz')}</code> 에 날짜·문서수·복원 방법이 적힙니다.
+              새 세션에서는 그 저장소를 붙이고(<code>add_repo</code>) 클론한 뒤
+              <code className="mx-1">gunzip -c {gh.path || 'db/latest.sql.gz'} | psql &lt;DB&gt;</code> 로 복원합니다.
+              <b> gz 는 1MB 를 넘으므로 파일 읽기 API 로는 못 읽습니다 — 반드시 클론하세요.</b>
+            </div>
+          </div>
+        )}
       </div>
 
       <div className="flex items-center gap-2 flex-wrap">
@@ -3598,6 +3749,40 @@ function DbBackupPanel() {
               <div className={`font-bold text-lg ${result.validation.parenBalanced && result.validation.wrapped ? 'text-emerald-600' : 'text-red-600'}`}>
                 {result.validation.parenBalanced && result.validation.wrapped ? 'OK' : 'NG'}</div></div>
           </div>
+
+          {uploading && (
+            <div className="bg-sky-50 border border-sky-300 rounded p-3 text-sm text-sky-800">
+              ⬆️ 깃허브에 올리는 중… (압축해서 보냅니다)
+            </div>
+          )}
+          {ghError && (
+            <div className="bg-red-50 border border-red-300 rounded p-3 text-sm text-red-700">
+              깃허브 업로드 실패: {ghError}
+              <div className="text-xs text-red-600 mt-1">
+                파일은 이미 이 기기에 다운로드됐습니다. 설정을 고쳐 아래 「깃허브에 다시 올리기」를 누르세요.
+              </div>
+            </div>
+          )}
+          {uploaded && (
+            <div className="bg-emerald-50 border border-emerald-300 rounded p-3 text-sm text-emerald-800">
+              ✅ 깃허브에 올렸습니다 — <b>{(uploaded.gzBytes / 1024 / 1024).toFixed(2)}MB</b>
+              {uploaded.compressed
+                ? ` (압축 ${result.sizeBytes > 0 ? Math.round((1 - uploaded.gzBytes / result.sizeBytes) * 100) : 0}% 절감)`
+                : ' (압축 미지원 브라우저라 원본 그대로)'}
+              <div className="text-xs mt-1">
+                <a href={uploaded.url} target="_blank" rel="noreferrer" className="underline font-semibold">
+                  저장소에서 보기
+                </a>
+                <span className="text-emerald-700"> · 커밋 {uploaded.commitSha.slice(0, 7)}</span>
+              </div>
+            </div>
+          )}
+          {ghReady && !uploading && (
+            <button onClick={() => doUpload(result)}
+              className="px-3 py-2 border rounded text-sm font-medium hover:bg-gray-50">
+              ⬆️ 깃허브에 {uploaded || ghError ? '다시 ' : ''}올리기
+            </button>
+          )}
           <div className="border rounded max-h-64 overflow-y-auto">
             <table className="w-full text-xs">
               <thead className="bg-gray-50 text-gray-500 sticky top-0">
