@@ -34,6 +34,7 @@ export default function Dashboard() {
   useEffect(() => {
     saveViewDate(viewDate);
   }, [viewDate]);
+  const [hasOasis, setHasOasis] = useState(false);
   const [isWeekend, setIsWeekend] = useState(() => {
     const day = new Date().getDay();
     return day === 0 || day === 6;
@@ -174,8 +175,17 @@ export default function Dashboard() {
       return isNaN(n) ? 0 : n;
     };
 
+    // 열 순서: 코드 / 품목명 / 주문수량 / 쿠팡 / [마켓컬리] / [오아시스] / [샘플] / 총수량
+    // 총수량은 항상 맨 끝이라, 가운데 선택 열이 늘어나면 뒤 열이 통째로 밀린다.
+    // 그래서 고정 인덱스를 쓰지 않고 켜진 열을 세어 가며 자리를 잡는다.
     const useSample = !isWeekend && hasSample;
-    const minCols = isWeekend ? 5 : (useSample ? 7 : 6);
+    const useOasis = !isWeekend && hasOasis;
+    const iKurly = isWeekend ? -1 : 4;
+    let nextCol = isWeekend ? 4 : 5;
+    const iOasis = useOasis ? nextCol++ : -1;
+    const iSample = useSample ? nextCol++ : -1;
+    const iTotal = nextCol;
+    const minCols = iTotal + 1;
     const rows = pasteText
       .split('\n')
       .map((r) => r.split('\t'))
@@ -187,7 +197,8 @@ export default function Dashboard() {
     setShowPaste(false);
 
     if (!rows.length) {
-      const modeLabel = isWeekend ? '주말' : (useSample ? '평일+샘플' : '평일');
+      const modeLabel = isWeekend ? '주말'
+        : `평일${useOasis ? '+오아시스' : ''}${useSample ? '+샘플' : ''}`;
       setTimeout(() => alert(`붙여넣을 데이터가 없습니다 (${modeLabel} 모드: ${minCols}열 필요)\n\n붙여넣은 첫 줄: ${text.split('\n')[0]?.slice(0, 80) || '(비어있음)'}`), 50);
       return;
     }
@@ -196,17 +207,15 @@ export default function Dashboard() {
       const batch = writeBatch(db);
       for (const cols of rows) {
         const code = cols[0].trim();
-        const totalQty = isWeekend
-          ? num(cols[4])
-          : useSample ? num(cols[6]) : num(cols[5]);
         const item: Item = {
           id: code, code,
           name: cols[1]?.trim() || '',
           orderQty: num(cols[2]),
           coupang: num(cols[3]),
-          marketKurly: isWeekend ? 0 : num(cols[4]),
-          sample: useSample ? num(cols[5]) : 0,
-          totalQty,
+          marketKurly: iKurly >= 0 ? num(cols[iKurly]) : 0,
+          oasis: iOasis >= 0 ? num(cols[iOasis]) : 0,
+          sample: iSample >= 0 ? num(cols[iSample]) : 0,
+          totalQty: num(cols[iTotal]),
           actualProduction: 0,
           date: viewDate,
         };
@@ -226,7 +235,21 @@ export default function Dashboard() {
   };
 
   const hasKurly = items.some((i) => i.marketKurly > 0);
+  const hasOasisCol = items.some((i) => (i.oasis || 0) > 0);
   const hasSampleCol = items.some((i) => (i.sample || 0) > 0);
+
+  /* 붙여넣기 안내문과 예시 — 체크한 열에 맞춰 같이 움직인다.
+     안내와 실제 파싱이 어긋나면 사람이 잘못된 자리에 붙여넣게 되므로 한 곳에서 만든다. */
+  const colGuide = ['코드', '품목명', '주문수량', '쿠팡',
+    ...(isWeekend ? [] : ['마켓컬리']),
+    ...(!isWeekend && hasOasis ? ['오아시스'] : []),
+    ...(!isWeekend && hasSample ? ['샘플'] : []),
+    '총수량'];
+  const colSample = ['A01', '순수쌀미음', '17', '-',
+    ...(isWeekend ? [] : ['-']),
+    ...(!isWeekend && hasOasis ? ['3'] : []),
+    ...(!isWeekend && hasSample ? ['2'] : []),
+    String(17 + (!isWeekend && hasOasis ? 3 : 0) + (!isWeekend && hasSample ? 2 : 0))];
 
   return (
     <div className="space-y-5">
@@ -298,12 +321,29 @@ export default function Dashboard() {
                 평일 (쿠팡+컬리)
               </button>
               <button
-                onClick={() => { setIsWeekend(true); setHasSample(false); }}
+                onClick={() => { setIsWeekend(true); setHasSample(false); setHasOasis(false); }}
                 className={`px-4 py-1.5 text-sm rounded transition ${isWeekend ? 'bg-blue-900 text-white font-medium' : 'text-gray-500 hover:text-gray-800'}`}
               >
                 주말 (쿠팡만)
               </button>
             </div>
+            {!isWeekend && (
+              <label
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-md border cursor-pointer select-none transition ${
+                  hasOasis ? 'bg-emerald-50 border-emerald-300' : 'border-gray-200 hover:bg-gray-50'
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={hasOasis}
+                  onChange={(e) => setHasOasis(e.target.checked)}
+                  className="w-4 h-4"
+                />
+                <span className={`text-sm font-medium ${hasOasis ? 'text-emerald-700' : 'text-gray-600'}`}>
+                  오아시스 포함
+                </span>
+              </label>
+            )}
             {!isWeekend && (
               <label
                 className={`flex items-center gap-2 px-3 py-1.5 rounded-md border cursor-pointer select-none transition ${
@@ -317,27 +357,19 @@ export default function Dashboard() {
                   className="w-4 h-4"
                 />
                 <span className={`text-sm font-medium ${hasSample ? 'text-amber-700' : 'text-gray-600'}`}>
-                  샘플 포함 (7열)
+                  샘플 포함
                 </span>
               </label>
             )}
           </div>
           <p className="text-xs text-gray-500">
-            열 순서: {isWeekend
-              ? '코드 / 품목명 / 주문수량 / 쿠팡 / 총수량 (5열)'
-              : (hasSample
-                ? '코드 / 품목명 / 주문수량 / 쿠팡 / 마켓컬리 / 샘플 / 총수량 (7열)'
-                : '코드 / 품목명 / 주문수량 / 쿠팡 / 마켓컬리 / 총수량 (6열)')}
+            열 순서: {colGuide.join(' / ')} <b>({colGuide.length}열)</b>
           </p>
           <textarea
             value={pasteText}
             onChange={(e) => setPasteText(e.target.value)}
             className="w-full h-40 border border-gray-200 rounded-md p-3 font-mono text-xs resize-none focus:outline-none focus:ring-2 focus:ring-blue-900"
-            placeholder={isWeekend
-              ? 'A01\t순수쌀미음\t17\t-\t17'
-              : (hasSample
-                ? 'A01\t순수쌀미음\t17\t-\t-\t2\t19'
-                : 'A01\t순수쌀미음\t17\t-\t-\t17')}
+            placeholder={colSample.join('\t')}
           />
           <div className="flex gap-2">
             <button onClick={onPaste} className="bg-blue-900 text-white px-5 py-2 rounded text-sm font-medium hover:bg-blue-800 transition">
@@ -366,6 +398,7 @@ export default function Dashboard() {
                   <th className="px-4 py-3 text-right font-medium">주문수량</th>
                   <th className="px-4 py-3 text-right font-medium text-orange-600">쿠팡</th>
                   {hasKurly && <th className="px-4 py-3 text-right font-medium text-blue-600">마켓컬리</th>}
+                  {hasOasisCol && <th className="px-4 py-3 text-right font-medium text-emerald-600">오아시스</th>}
                   {hasSampleCol && <th className="px-4 py-3 text-right font-medium text-amber-600">샘플</th>}
                   <th className="px-4 py-3 text-right font-medium">총수량</th>
                   <th className="px-4 py-3 text-right font-medium">실제 생산량</th>
@@ -394,6 +427,7 @@ export default function Dashboard() {
                       <td className="px-4 py-3 text-right text-gray-600">{it.orderQty || '-'}</td>
                       <td className="px-4 py-3 text-right text-orange-600 font-medium">{it.coupang || '-'}</td>
                       {hasKurly && <td className="px-4 py-3 text-right text-blue-600 font-medium">{it.marketKurly || '-'}</td>}
+                      {hasOasisCol && <td className="px-4 py-3 text-right text-emerald-600 font-medium">{it.oasis || '-'}</td>}
                       {hasSampleCol && <td className="px-4 py-3 text-right text-amber-600 font-medium">{it.sample || '-'}</td>}
                       <td className="px-4 py-3 text-right font-semibold text-gray-800">{it.totalQty}</td>
                       <td className="px-4 py-3 text-right text-gray-700 font-medium">{displayActual || '-'}</td>

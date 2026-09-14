@@ -5,6 +5,8 @@ export interface Item {
   orderQty: number;
   coupang: number;
   marketKurly: number;
+  /** 오아시스마켓 주문분. 나중에 생긴 채널이라 선택 필드다 (없던 날은 undefined) */
+  oasis?: number;
   sample?: number;
   totalQty: number;
   actualProduction: number;
