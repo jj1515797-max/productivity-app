@@ -1,0 +1,613 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="robots" content="noindex, nofollow, noarchive, nosnippet">
+<meta name="googlebot" content="noindex, nofollow">
+<meta name="description" content="순수본 1공장 냉장이유식 생산 공정 — 전처리부터 출고까지, 각 공정이 시스템에 남기는 것과 그날 생산량이 확정되는 규칙.">
+<style>
+  :root{color-scheme:light dark;
+        padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+  body{margin:0;font:14px/1.6 system-ui,sans-serif;background:#f7f8f6}
+  img{max-width:100%}
+  [hidden]{display:none!important}
+</style>
+<title>1공장 생산 공정도</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap">
+<style>
+  :root{
+    --pp:#7c4dd6; --bg2:#2563eb; --ck:#059669; --fl:#ea580c; --pk:#6d28d9; --amb:#0e7490;
+    --ink:#16202b; --ink2:#44525f; --mute:#6b7785; --line:#dfe3df; --line2:#eceee9;
+    --ground:#f7f8f6; --card:#ffffff; --soft:#f1f3ef;
+    --warn:#b45309; --warnbg:#fdf6e7; --bad:#b91c1c; --ok:#047857;
+    --disp:'IBM Plex Sans KR',-apple-system,BlinkMacSystemFont,'Apple SD Gothic Neo',sans-serif;
+    --body:-apple-system,BlinkMacSystemFont,'Pretendard','IBM Plex Sans KR','Apple SD Gothic Neo',sans-serif;
+    --mono:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --pp:#a78bfa; --bg2:#60a5fa; --ck:#34d399; --fl:#fb923c; --pk:#c4b5fd; --amb:#22d3ee;
+      --ink:#e8ecea; --ink2:#b6c0c4; --mute:#8b979f; --line:#2c3440; --line2:#242b35;
+      --ground:#12161b; --card:#1a1f26; --soft:#20262e;
+      --warn:#fbbf24; --warnbg:#2a2415; --bad:#f87171; --ok:#34d399;
+    }
+  }
+  :root[data-theme="dark"]{
+    --pp:#a78bfa; --bg2:#60a5fa; --ck:#34d399; --fl:#fb923c; --pk:#c4b5fd; --amb:#22d3ee;
+    --ink:#e8ecea; --ink2:#b6c0c4; --mute:#8b979f; --line:#2c3440; --line2:#242b35;
+    --ground:#12161b; --card:#1a1f26; --soft:#20262e;
+    --warn:#fbbf24; --warnbg:#2a2415; --bad:#f87171; --ok:#34d399;
+  }
+
+  *{box-sizing:border-box}
+  body{background:var(--ground);color:var(--ink);font-family:var(--body);line-height:1.65;
+       -webkit-font-smoothing:antialiased}
+  .wrap{max-width:1080px;margin:0 auto;padding-inline:20px;padding-block:0 72px}
+  h1,h2,h3{font-family:var(--disp);text-wrap:balance;margin:0}
+  p{margin:0}
+  code,.num{font-family:var(--mono);font-variant-numeric:tabular-nums}
+
+  /* ── 머리 ── */
+  header{border-bottom:1px solid var(--line);background:var(--card);margin-bottom:34px}
+  .head{max-width:1080px;margin:0 auto;padding:26px 20px 22px;
+        display:flex;gap:18px;align-items:flex-end;flex-wrap:wrap}
+  h1{font-size:26px;font-weight:700;letter-spacing:-.02em;line-height:1.2}
+  .sub{color:var(--mute);font-size:13px;margin-top:4px}
+  .stamp{margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--mute);
+         text-align:right;line-height:1.7}
+
+  .lede{font-size:15px;color:var(--ink2);max-width:62ch;margin-bottom:8px}
+  .lede b{color:var(--ink);font-weight:600}
+
+  .note{background:var(--warnbg);border:1px solid color-mix(in srgb,var(--warn) 32%,transparent);
+        border-radius:8px;padding:12px 14px;font-size:13px;color:var(--warn);
+        max-width:74ch;margin-top:14px}
+  .note b{font-weight:600}
+
+  /* ── 절 ── */
+  section{margin-top:52px}
+  .eyebrow{font-family:var(--mono);font-size:11px;letter-spacing:.14em;color:var(--mute);
+           text-transform:uppercase;margin-bottom:7px}
+  h2{font-size:19px;font-weight:700;letter-spacing:-.01em}
+  .say{font-size:14px;color:var(--ink2);margin-top:8px;max-width:66ch}
+
+  /* ── 그림 ── */
+  figure{margin:20px 0 0;background:var(--card);border:1px solid var(--line);
+         border-radius:10px;padding:20px 16px 14px;overflow-x:auto}
+  figure svg{display:block;max-width:100%;height:auto;margin:0 auto;color:var(--ink)}
+  figcaption{font-size:12.5px;color:var(--mute);margin-top:14px;text-align:center;
+             padding-inline:8px;line-height:1.6}
+
+  /* ── 공정 레일 ── */
+  .rail{margin-top:22px;display:flex;flex-direction:column;gap:2px}
+  .step{display:grid;grid-template-columns:52px 1fr;gap:16px;
+        border-left:3px solid var(--c);background:var(--card);
+        border-top:1px solid var(--line2);border-right:1px solid var(--line2);
+        border-bottom:1px solid var(--line2);padding:16px 18px 16px 15px}
+  .step:first-child{border-radius:8px 8px 0 0}
+  .step:last-child{border-radius:0 0 8px 8px}
+  .mark{font-size:24px;line-height:1;text-align:center;padding-top:2px}
+  .mark small{display:block;font-family:var(--mono);font-size:10px;color:var(--c);
+              font-weight:600;margin-top:6px;letter-spacing:.06em}
+  .st-h{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
+  .st-h h3{font-size:16px;font-weight:600;color:var(--c)}
+  .who{font-size:11px;color:var(--mute);border:1px solid var(--line);
+       border-radius:99px;padding:1px 8px;font-weight:500}
+  .st-b{font-size:13.5px;color:var(--ink2);margin-top:6px;max-width:64ch}
+  .st-d{margin-top:10px;display:flex;flex-wrap:wrap;gap:6px 20px;
+        font-size:12px;color:var(--mute)}
+  .st-d b{color:var(--ink2);font-weight:600}
+  .st-d span{white-space:nowrap}
+
+  /* ── 표 ── */
+  .tw{overflow-x:auto;margin-top:18px;border:1px solid var(--line);border-radius:9px;
+      background:var(--card)}
+  table{width:100%;border-collapse:collapse;font-size:13px;min-width:460px}
+  th,td{text-align:left;padding:9px 14px;border-bottom:1px solid var(--line2)}
+  thead th{background:var(--soft);font-weight:600;font-size:11.5px;color:var(--mute);
+           letter-spacing:.05em;border-bottom:1px solid var(--line)}
+  tbody tr:last-child td{border-bottom:0}
+  td.k{font-family:var(--mono);font-weight:600;color:var(--ink);white-space:nowrap}
+  td.n{font-family:var(--mono);font-variant-numeric:tabular-nums;text-align:right}
+
+  /* ── 규칙 카드 ── */
+  .rule{margin-top:18px;border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  .rule-h{background:var(--soft);padding:11px 16px;font-size:12.5px;font-weight:600;
+          color:var(--ink2);border-bottom:1px solid var(--line);font-family:var(--disp)}
+  .rule-b{padding:15px 16px;background:var(--card);font-size:13.5px;color:var(--ink2)}
+  .rule-b .eq{font-family:var(--mono);font-size:13px;color:var(--ink);
+              background:var(--soft);border-radius:6px;padding:9px 12px;margin:9px 0;
+              display:block;overflow-x:auto;white-space:nowrap}
+  .rule-b p+p{margin-top:9px}
+
+  .cols{display:grid;grid-template-columns:repeat(auto-fit,minmax(248px,1fr));gap:14px;margin-top:18px}
+  .mini{background:var(--card);border:1px solid var(--line);border-radius:9px;padding:14px 16px}
+  .mini h4{font-family:var(--disp);font-size:13.5px;font-weight:600;margin:0 0 6px;color:var(--ink)}
+  .mini p{font-size:12.5px;color:var(--ink2)}
+  .mini .tag{font-family:var(--mono);font-size:10.5px;color:var(--mute);
+             letter-spacing:.08em;text-transform:uppercase;display:block;margin-bottom:7px}
+
+  .legend{display:flex;flex-wrap:wrap;gap:8px 18px;margin-top:14px;font-size:12px;color:var(--mute)}
+  .legend i{display:inline-block;width:11px;height:11px;border-radius:3px;
+            margin-right:6px;vertical-align:-1px;background:var(--c)}
+  footer{margin-top:56px;padding-top:20px;border-top:1px solid var(--line);
+         font-size:12px;color:var(--mute);line-height:1.8}
+
+  @media (max-width:620px){
+    .head{padding-top:22px}
+    h1{font-size:22px}
+    .stamp{margin-left:0;text-align:left;width:100%}
+    .step{grid-template-columns:40px 1fr;gap:12px;padding:14px 14px 14px 12px}
+    .mark{font-size:20px}
+  }
+  @media (prefers-reduced-motion:no-preference){
+    .step{transition:background .15s ease}
+  }
+  .step:hover{background:color-mix(in srgb,var(--c) 4%,var(--card))}
+</style>
+</head>
+<body>
+
+
+<header>
+  <div class="head">
+    <div>
+      <h1>1공장 생산 공정도</h1>
+      <div class="sub">냉장이유식 · 원재료에서 출고까지 · 각 공정이 시스템에 남기는 것</div>
+    </div>
+    <div class="stamp">순수본 1공장<br>생산팀 · 안현우</div>
+  </div>
+</header>
+
+<div class="wrap">
+
+  <p class="lede">
+    1공장은 <b>냉장이유식</b>을 만든다. 공정은 <b>전처리 → 배합 → 조리 → 내포장 → 외포장</b> 다섯 단계이고,
+    조리만 <b>취반기·화구 두 갈래</b>로 갈린다. 제품이 <b>바트</b>냐 <b>냄비</b>냐에 따라 어느 쪽으로 가는지가 정해져 있다.
+    실온(레토르트) 제품은 이 줄을 타지 않고 <b>따로 도는 라인</b>이다.
+  </p>
+  <p class="lede" style="margin-top:10px">
+    이 문서는 공정마다 <b>현장에서 무슨 일이 일어나고, 시스템에 무엇이 남는지</b>를 같이 적었다.
+    마지막 절 <b>「그날 얼마 만들었나」</b>가 제일 중요하다 — 계획·실적·잔여량 세 숫자가 하나로 합쳐지는 규칙이고,
+    여기를 잘못 보면 그 뒤 분석이 전부 어긋난다.
+  </p>
+
+  <div class="note">
+    <b>초안입니다.</b> 공정 순서·담당·기록 위치는 MES 코드와 현장 운영 기준으로 썼습니다.
+    현장 흐름이 다르면 고쳐 주세요 — 특히 전처리·배합의 담당 구분과 외포장 이후 출고 절차는 확인이 필요합니다.
+  </div>
+
+  <!-- ══ 전체 흐름 ══ -->
+  <section>
+    <div class="eyebrow">한눈에</div>
+    <h2>전체 흐름</h2>
+    <p class="say">
+      왼쪽에서 오른쪽으로 하루가 흐른다. 가운데 조리만 두 갈래로 갈렸다가 내포장에서 다시 합쳐진다.
+      아래 실온 라인은 이 줄과 만나지 않는다.
+    </p>
+
+    <figure>
+      <svg viewBox="0 0 960 330" role="img"
+           aria-label="원재료에서 시작해 전처리·배합을 거쳐 취반기(바트)와 화구(냄비) 두 갈래로 조리한 뒤 내포장에서 합쳐져 외포장·출고로 나가는 흐름. 실온 라인은 별도로 돈다.">
+        <defs>
+          <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="currentColor"/>
+          </marker>
+          <marker id="arc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="#0e7490"/>
+          </marker>
+        </defs>
+
+        <!-- 원재료 -->
+        <rect x="8" y="118" width="86" height="52" rx="7" fill="none" stroke="currentColor" stroke-width="1.4" opacity=".5"/>
+        <text x="51" y="140" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">원재료</text>
+        <text x="51" y="157" text-anchor="middle" font-size="10.5" fill="currentColor" opacity=".62">입고·검수</text>
+
+        <line x1="96" y1="144" x2="126" y2="144" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar)"/>
+
+        <!-- 전처리 -->
+        <rect x="130" y="112" width="108" height="64" rx="7" fill="#7c4dd6" opacity=".1"/>
+        <rect x="130" y="112" width="108" height="64" rx="7" fill="none" stroke="#7c4dd6" stroke-width="1.6"/>
+        <text x="184" y="135" text-anchor="middle" font-size="13" font-weight="700" fill="#7c4dd6">🔪 전처리</text>
+        <text x="184" y="153" text-anchor="middle" font-size="10.5" fill="currentColor" opacity=".7">세척·박피·절단</text>
+        <text x="184" y="167" text-anchor="middle" font-size="10" fill="currentColor" opacity=".5">손질 완료분</text>
+
+        <line x1="240" y1="144" x2="270" y2="144" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar)"/>
+
+        <!-- 배합 -->
+        <rect x="274" y="112" width="108" height="64" rx="7" fill="#2563eb" opacity=".1"/>
+        <rect x="274" y="112" width="108" height="64" rx="7" fill="none" stroke="#2563eb" stroke-width="1.6"/>
+        <text x="328" y="135" text-anchor="middle" font-size="13" font-weight="700" fill="#2563eb">🥣 배합</text>
+        <text x="328" y="153" text-anchor="middle" font-size="10.5" fill="currentColor" opacity=".7">배합비대로 계량</text>
+        <text x="328" y="167" text-anchor="middle" font-size="10" fill="currentColor" opacity=".5">제품별 투입량 확정</text>
+
+        <!-- 갈래 -->
+        <path d="M384 144 L410 144 L410 76 L436 76" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar)"/>
+        <path d="M384 144 L410 144 L410 212 L436 212" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar)"/>
+        <text x="410" y="62" text-anchor="middle" font-size="10" fill="currentColor" opacity=".62">바트 제품</text>
+        <text x="410" y="238" text-anchor="middle" font-size="10" fill="currentColor" opacity=".62">냄비 제품</text>
+
+        <!-- 취반기 -->
+        <rect x="440" y="44" width="116" height="64" rx="7" fill="#059669" opacity=".1"/>
+        <rect x="440" y="44" width="116" height="64" rx="7" fill="none" stroke="#059669" stroke-width="1.6"/>
+        <text x="498" y="67" text-anchor="middle" font-size="13" font-weight="700" fill="#059669">🍚 취반기</text>
+        <text x="498" y="85" text-anchor="middle" font-size="10.5" fill="currentColor" opacity=".7">대량 취반</text>
+        <text x="498" y="99" text-anchor="middle" font-size="10" fill="currentColor" opacity=".5">바트 단위</text>
+
+        <!-- 화구 -->
+        <rect x="440" y="180" width="116" height="64" rx="7" fill="#ea580c" opacity=".1"/>
+        <rect x="440" y="180" width="116" height="64" rx="7" fill="none" stroke="#ea580c" stroke-width="1.6"/>
+        <text x="498" y="203" text-anchor="middle" font-size="13" font-weight="700" fill="#ea580c">🔥 화구</text>
+        <text x="498" y="221" text-anchor="middle" font-size="10.5" fill="currentColor" opacity=".7">직화 조리</text>
+        <text x="498" y="235" text-anchor="middle" font-size="10" fill="currentColor" opacity=".5">냄비 단위</text>
+
+        <!-- 합류 -->
+        <path d="M558 76 L584 76 L584 144 L612 144" fill="none" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar)"/>
+        <path d="M558 212 L584 212 L584 144" fill="none" stroke="currentColor" stroke-width="1.4"/>
+        <text x="590" y="132" font-size="10" fill="currentColor" opacity=".62">조리 완료</text>
+
+        <!-- 내포장 -->
+        <rect x="616" y="104" width="130" height="80" rx="7" fill="#6d28d9" opacity=".1"/>
+        <rect x="616" y="104" width="130" height="80" rx="7" fill="none" stroke="#6d28d9" stroke-width="1.6"/>
+        <text x="681" y="127" text-anchor="middle" font-size="13" font-weight="700" fill="#6d28d9">📦 내포장</text>
+        <text x="681" y="145" text-anchor="middle" font-size="10.5" fill="currentColor" opacity=".7">퍼담기 · 충전 · 실링</text>
+        <text x="681" y="163" text-anchor="middle" font-size="10.5" font-weight="600" fill="#6d28d9">1호기 · 2호기 · 3호기</text>
+        <text x="681" y="176" text-anchor="middle" font-size="9.5" fill="currentColor" opacity=".5">여기 실적이 생산량이 된다</text>
+
+        <line x1="748" y1="144" x2="778" y2="144" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar)"/>
+
+        <!-- 외포장 -->
+        <rect x="782" y="112" width="102" height="64" rx="7" fill="none" stroke="currentColor" stroke-width="1.5" opacity=".62"/>
+        <text x="833" y="135" text-anchor="middle" font-size="12.5" font-weight="600" fill="currentColor">외포장</text>
+        <text x="833" y="153" text-anchor="middle" font-size="10.5" fill="currentColor" opacity=".7">박스 포장</text>
+        <text x="833" y="167" text-anchor="middle" font-size="10" fill="currentColor" opacity=".5">채널별 분류</text>
+
+        <line x1="886" y1="144" x2="916" y2="144" stroke="currentColor" stroke-width="1.4" marker-end="url(#ar)"/>
+        <text x="930" y="141" text-anchor="middle" font-size="10.5" fill="currentColor" opacity=".7">출고</text>
+
+        <!-- 실온 라인 -->
+        <line x1="8" y1="278" x2="952" y2="278" stroke="currentColor" stroke-width="1" opacity=".16"/>
+        <rect x="130" y="290" width="330" height="34" rx="7" fill="#0e7490" opacity=".09"/>
+        <rect x="130" y="290" width="330" height="34" rx="7" fill="none" stroke="#0e7490" stroke-width="1.5" stroke-dasharray="4 3"/>
+        <text x="146" y="312" font-size="12" font-weight="700" fill="#0e7490">실온 라인</text>
+        <text x="222" y="312" font-size="10.5" fill="currentColor" opacity=".72">순수본 · TOGO · 본죽키즈 · 영양밥</text>
+        <line x1="462" y1="307" x2="490" y2="307" stroke="#0e7490" stroke-width="1.4" marker-end="url(#arc)"/>
+        <text x="502" y="311" font-size="10.5" fill="#0e7490">생산량만 따로 집계 — 위 줄과 만나지 않음</text>
+      </svg>
+      <figcaption>
+        조리만 두 갈래로 갈린다. 제품이 <b>바트</b>면 취반기, <b>냄비</b>면 화구로 가고 내포장에서 다시 합쳐진다.
+        한 제품이 양쪽을 다 타지는 않는다.
+      </figcaption>
+    </figure>
+
+    <div class="legend">
+      <span style="--c:#7c4dd6"><i></i>전처리</span>
+      <span style="--c:#2563eb"><i></i>배합</span>
+      <span style="--c:#059669"><i></i>취반기 · 바트</span>
+      <span style="--c:#ea580c"><i></i>화구 · 냄비</span>
+      <span style="--c:#6d28d9"><i></i>내포장</span>
+      <span style="--c:#0e7490"><i></i>실온 라인</span>
+    </div>
+  </section>
+
+  <!-- ══ 공정별 ══ -->
+  <section>
+    <div class="eyebrow">공정별</div>
+    <h2>각 단계에서 무슨 일이 일어나나</h2>
+    <p class="say">
+      다섯 공정 모두 <b>인원과 시작·종료 시각</b>을 기록한다. 그 기록으로 공정별 생산성이 나온다.
+    </p>
+
+    <div class="rail">
+      <div class="step" style="--c:#7c4dd6">
+        <div class="mark">🔪<small>1</small></div>
+        <div>
+          <div class="st-h"><h3>전처리</h3><span class="who">현장 · 파트 배치</span></div>
+          <p class="st-b">
+            원재료를 씻고 껍질 벗기고 썬다. 여기서 나온 손질 완료분이 배합으로 넘어간다.
+            원물 상태에 따라 버려지는 양이 달라지고, 그게 뒤에서 <b>원재료 수율</b>로 잡힌다.
+          </p>
+          <div class="st-d">
+            <span><b>기록</b> 인원 · 시작·종료 시각</span>
+            <span><b>생산성 분모</b> 전체 수량(냄비+바트)</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="step" style="--c:#2563eb">
+        <div class="mark">🥣<small>2</small></div>
+        <div>
+          <div class="st-h"><h3>배합</h3><span class="who">현장 · 파트 배치</span></div>
+          <p class="st-b">
+            제품별 <b>배합비</b>대로 손질된 원재료를 계량해 섞는다. 이 배합비가 곧 그 제품의 레시피이고,
+            <b>제품 1개당 몇 g</b> 들어가는지가 여기서 정해진다. 원재료비와 소요량 계산이 전부 이 숫자에서 출발한다.
+          </p>
+          <div class="st-d">
+            <span><b>기록</b> 인원 · 시작·종료 시각</span>
+            <span><b>기준</b> 제품별 배합비(개당 g)</span>
+            <span><b>생산성 분모</b> 전체 수량</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="step" style="--c:#059669">
+        <div class="mark">🍚<small>3a</small></div>
+        <div>
+          <div class="st-h"><h3>취반기</h3><span class="who">현장</span><span class="who">바트 제품만</span></div>
+          <p class="st-b">
+            취반기로 한 번에 많은 양을 짓는다. <b>바트</b>로 분류된 제품이 이 줄을 탄다.
+            어느 제품이 바트인지는 제품 DB에 등록돼 있고, 등록이 안 된 제품은 어느 쪽에도 안 잡혀 생산성 계산에서 빠진다.
+          </p>
+          <div class="st-d">
+            <span><b>기록</b> 인원 · 시작·종료 시각</span>
+            <span><b>생산성 분모</b> 바트 수량만</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="step" style="--c:#ea580c">
+        <div class="mark">🔥<small>3b</small></div>
+        <div>
+          <div class="st-h"><h3>화구</h3><span class="who">현장</span><span class="who">냄비 제품만</span></div>
+          <p class="st-b">
+            불 위에서 냄비로 직접 끓인다. <b>냄비</b>로 분류된 제품이 이 줄을 탄다.
+            취반기와 <b>동시에</b> 돌아가는 병렬 공정이라, 둘의 시작·종료 시각이 겹치는 게 정상이다.
+          </p>
+          <div class="st-d">
+            <span><b>기록</b> 인원 · 시작·종료 시각</span>
+            <span><b>생산성 분모</b> 냄비 수량만</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="step" style="--c:#6d28d9">
+        <div class="mark">📦<small>4</small></div>
+        <div>
+          <div class="st-h"><h3>내포장</h3><span class="who">현장 · 호기별</span></div>
+          <p class="st-b">
+            조리된 죽을 용기에 퍼담고(스쿱) 뚜껑 필름을 씌워 실링한다.
+            <b>1호기 · 2호기 · 3호기</b> 세 라인이 돌고, <b>여기서 찍히는 실적이 그날 생산량</b>이 된다.
+            작업자는 자리 태블릿에서 품목을 고르고 퍼담은 개수를 직접 카운팅한다.
+          </p>
+          <div class="st-d">
+            <span><b>기록</b> 호기별 실적 · 작업자별 스쿱 수</span>
+            <span><b>필름</b> 1·2호기 2열 · 3호기 4열</span>
+            <span><b>생산성 분모</b> 전체 수량</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="step" style="--c:#6b7785">
+        <div class="mark">📮<small>5</small></div>
+        <div>
+          <div class="st-h"><h3>외포장</h3><span class="who">현장</span></div>
+          <p class="st-b">
+            완성된 제품을 채널별로 나눠 박스에 담는다.
+            MES의 <b>외포장-1·2·3 화면은 같은 번호의 호기 실적을 읽기 전용으로 보여주는 화면</b>이라,
+            여기서 숫자를 새로 넣지는 않는다 — 앞 공정에서 찍힌 것을 확인하는 자리다.
+          </p>
+          <div class="st-d">
+            <span><b>기록</b> 없음 — 호기 실적을 그대로 봄</span>
+            <span><b>채널</b> 자사몰 · 쿠팡 · 마켓컬리 · 오아시스 · 샘플</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="rule">
+      <div class="rule-h">공정별 생산성이 나오는 식</div>
+      <div class="rule-b">
+        <p>다섯 공정 모두 같은 식을 쓴다. 다만 <b>분모에 들어가는 수량이 공정마다 다르다.</b></p>
+        <code class="eq">생산성 = 생산개수 ÷ (인원 × 시간)</code>
+        <p>
+          취반기는 <b>바트 수량만</b>, 화구는 <b>냄비 수량만</b> 센다. 나머지 세 공정(전처리·배합·내포장)은
+          <b>전체(냄비+바트)</b>를 센다. 취반기·화구는 서로 다른 물건을 만드는 병렬 라인이라
+          전체 수량으로 나누면 둘 다 실제보다 낮게 나온다.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ 제품 분류 ══ -->
+  <section>
+    <div class="eyebrow">제품 분류</div>
+    <h2>코드 첫 글자가 성장 단계다</h2>
+    <p class="say">
+      제품코드 맨 앞 글자로 이유식 단계가 갈린다. 같은 단계 안에서도 제품마다 배합비가 다르다.
+    </p>
+
+    <div class="tw">
+      <table>
+        <thead><tr><th style="width:74px">코드</th><th>단계</th><th>비고</th></tr></thead>
+        <tbody>
+          <tr><td class="k">A</td><td>준비기</td><td></td></tr>
+          <tr><td class="k">B</td><td>초기</td><td></td></tr>
+          <tr><td class="k">C</td><td>중기</td><td></td></tr>
+          <tr><td class="k">D</td><td>후기</td><td></td></tr>
+          <tr><td class="k">E</td><td>완료기</td><td></td></tr>
+          <tr><td class="k">F</td><td>유아식</td><td>번호 500 이상은 따로 묶어 본다</td></tr>
+          <tr><td class="k">G</td><td>영양밥</td><td>101~132번은 <b>소스</b>로 갈린다</td></tr>
+          <tr><td class="k">H</td><td>토핑</td><td></td></tr>
+          <tr><td class="k">I</td><td>본죽키즈</td><td></td></tr>
+        </tbody>
+      </table>
+    </div>
+
+    <div class="cols">
+      <div class="mini">
+        <span class="tag">용기</span>
+        <h4>185ml인지 210ml인지는 코드 끝자리가 정한다</h4>
+        <p>ERP 코드가 <code>-51</code>로 끝나면 작은 용기(185ml), 그 외는 큰 용기(210ml)다.
+           같은 제품이라도 용량이 다르면 코드 끝자리가 다르다.</p>
+      </div>
+      <div class="mini">
+        <span class="tag">필름</span>
+        <h4>필름 규격은 용기가 아니라 호기로 갈린다</h4>
+        <p>1·2호기는 2열 필름, 3호기는 4열 필름을 쓴다.
+           용기 크기와 필름 열 수는 <b>다른 축</b>이라 섞어 보면 안 된다.</p>
+      </div>
+      <div class="mini">
+        <span class="tag">조리 구분</span>
+        <h4>냄비·바트는 제품 DB에 등록해야 한다</h4>
+        <p>등록되지 않은 제품은 취반기·화구 어느 쪽 수량에도 안 들어가서,
+           그날 두 공정의 생산성이 실제보다 낮게 나온다.</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ 실온 ══ -->
+  <section>
+    <div class="eyebrow">별도 라인</div>
+    <h2>실온(레토르트) 라인</h2>
+    <p class="say">
+      냉장 줄과 만나지 않는다. 호기를 쓰지 않고, 계획·잔여량 보정도 타지 않는다.
+      <b>생산한 제품과 수량만</b> 날짜별로 따로 기록한다.
+    </p>
+    <div class="cols">
+      <div class="mini"><span class="tag">카테고리</span><h4>순수본</h4><p>실온 제품군의 기본 묶음.</p></div>
+      <div class="mini"><span class="tag">카테고리</span><h4>TOGO</h4><p>이름이 <code>TOGO_</code>로 시작하는 제품.</p></div>
+      <div class="mini"><span class="tag">카테고리</span><h4>본죽키즈</h4><p>이름이 <code>본죽키즈_</code>로 시작하는 제품.</p></div>
+      <div class="mini"><span class="tag">카테고리</span><h4>영양밥</h4><p>이름이 「영양밥」으로 끝나는 제품.</p></div>
+    </div>
+    <p class="say" style="margin-top:14px">
+      분류는 <b>이름을 위에서부터 순서대로 검사</b>해서 정한다 — TOGO → 본죽키즈 → 영양밥 → 나머지 순수본.
+      그래서 「순수본_한우치즈영양밥」은 <b>영양밥</b>으로 잡힌다. 등록된 실온 제품은 37종이다.
+    </p>
+  </section>
+
+  <!-- ══ 핵심 규칙 ══ -->
+  <section>
+    <div class="eyebrow">가장 중요</div>
+    <h2>그날 얼마 만들었나 — 숫자가 확정되는 규칙</h2>
+    <p class="say">
+      하루에 숫자가 세 군데서 들어온다. 이 셋을 그냥 더하면 안 된다.
+      <b>잔여량이 들어온 날과 안 들어온 날의 계산이 다르다.</b>
+    </p>
+
+    <figure>
+      <svg viewBox="0 0 900 300" role="img"
+           aria-label="계획·호기 실적·물류 잔여량 세 입력이 들어오고, 그날 물류 잔여량이 있으면 계획 더하기 잔여량으로, 없으면 호기 실적 합으로 그날 생산량이 확정된다.">
+        <defs>
+          <marker id="ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+            <path d="M0 0 L10 5 L0 10 z" fill="currentColor"/>
+          </marker>
+        </defs>
+
+        <!-- 입력 3 -->
+        <rect x="10" y="18" width="182" height="58" rx="7" fill="none" stroke="currentColor" stroke-width="1.4" opacity=".55"/>
+        <text x="26" y="41" font-size="12.5" font-weight="700" fill="currentColor">① 계획</text>
+        <text x="26" y="58" font-size="10.5" fill="currentColor" opacity=".7">아침에 받은 품목·수량</text>
+        <text x="26" y="70" font-size="10" fill="currentColor" opacity=".5">채널별로 나뉘어 들어옴</text>
+
+        <rect x="10" y="118" width="182" height="58" rx="7" fill="#6d28d9" opacity=".1"/>
+        <rect x="10" y="118" width="182" height="58" rx="7" fill="none" stroke="#6d28d9" stroke-width="1.6"/>
+        <text x="26" y="141" font-size="12.5" font-weight="700" fill="#6d28d9">② 호기 실적</text>
+        <text x="26" y="158" font-size="10.5" fill="currentColor" opacity=".7">1·2·3호기가 찍은 수량</text>
+        <text x="26" y="170" font-size="10" fill="currentColor" opacity=".5">생산 중 실시간</text>
+
+        <rect x="10" y="218" width="182" height="58" rx="7" fill="#b45309" opacity=".12"/>
+        <rect x="10" y="218" width="182" height="58" rx="7" fill="none" stroke="#b45309" stroke-width="1.6"/>
+        <text x="26" y="241" font-size="12.5" font-weight="700" fill="#b45309">③ 물류 잔여량</text>
+        <text x="26" y="258" font-size="10.5" fill="currentColor" opacity=".7">실제로 남은 수량 수정</text>
+        <text x="26" y="270" font-size="10" fill="currentColor" opacity=".5">물류가 마감 때 넣음</text>
+
+        <!-- 분기 -->
+        <line x1="196" y1="247" x2="288" y2="247" stroke="#b45309" stroke-width="1.5" marker-end="url(#ar2)" opacity=".8"/>
+        <polygon points="292,247 340,219 388,247 340,275" fill="none" stroke="currentColor" stroke-width="1.5"/>
+        <text x="340" y="243" text-anchor="middle" font-size="10.5" font-weight="600" fill="currentColor">잔여량이</text>
+        <text x="340" y="256" text-anchor="middle" font-size="10.5" font-weight="600" fill="currentColor">들어왔나</text>
+
+        <!-- 있음 -->
+        <path d="M340 217 L340 100 L430 100" fill="none" stroke="currentColor" stroke-width="1.5" marker-end="url(#ar2)"/>
+        <text x="350" y="94" font-size="11" font-weight="700" fill="#047857">있음</text>
+        <rect x="434" y="66" width="268" height="68" rx="7" fill="#047857" opacity=".09"/>
+        <rect x="434" y="66" width="268" height="68" rx="7" fill="none" stroke="#047857" stroke-width="1.6"/>
+        <text x="450" y="90" font-size="12" font-weight="700" fill="#047857">계획 + 잔여량</text>
+        <text x="450" y="108" font-size="10.5" fill="currentColor" opacity=".78">품목코드별로 각각 더한다</text>
+        <text x="450" y="124" font-size="10" fill="currentColor" opacity=".55">호기 실적은 쓰지 않는다</text>
+
+        <!-- 없음 -->
+        <path d="M340 277 L340 200 L430 200" fill="none" stroke="currentColor" stroke-width="1.5" marker-end="url(#ar2)"/>
+        <text x="350" y="284" font-size="11" font-weight="700" fill="currentColor" opacity=".72">없음</text>
+        <rect x="434" y="166" width="268" height="68" rx="7" fill="#6d28d9" opacity=".09"/>
+        <rect x="434" y="166" width="268" height="68" rx="7" fill="none" stroke="#6d28d9" stroke-width="1.6"/>
+        <text x="450" y="190" font-size="12" font-weight="700" fill="#6d28d9">호기 실적 합</text>
+        <text x="450" y="208" font-size="10.5" fill="currentColor" opacity=".78">1·2·3호기가 찍은 것 그대로</text>
+        <text x="450" y="224" font-size="10" fill="currentColor" opacity=".55">추가생산분도 포함</text>
+
+        <!-- 결과 -->
+        <path d="M706 100 L744 100 L744 150" fill="none" stroke="currentColor" stroke-width="1.5"/>
+        <path d="M706 200 L744 200 L744 150 L782 150" fill="none" stroke="currentColor" stroke-width="1.5" marker-end="url(#ar2)"/>
+        <rect x="786" y="118" width="104" height="64" rx="7" fill="none" stroke="currentColor" stroke-width="1.8"/>
+        <text x="838" y="144" text-anchor="middle" font-size="12.5" font-weight="700" fill="currentColor">그날</text>
+        <text x="838" y="162" text-anchor="middle" font-size="12.5" font-weight="700" fill="currentColor">생산량</text>
+        <text x="838" y="176" text-anchor="middle" font-size="9.5" fill="currentColor" opacity=".5">확정</text>
+      </svg>
+      <figcaption>
+        잔여량이 하나라도 들어온 날은 <b>계획 + 잔여량</b>이 그날 생산량이다 — 호기 실적은 쓰지 않는다.
+        안 들어온 날만 호기 실적을 그대로 쓴다.
+      </figcaption>
+    </figure>
+
+    <div class="rule">
+      <div class="rule-h">왜 이렇게 하나</div>
+      <div class="rule-b">
+        <p>
+          호기에서 찍는 숫자는 <b>만드는 도중의 숫자</b>다. 바쁘면 덜 찍기도 하고, 라인이 섞이면 어느 호기에 찍을지
+          애매해지기도 한다. 반면 <b>물류가 마감 때 세는 잔여량</b>은 실제로 창고에 들어간 것을 보고 적는 숫자다.
+        </p>
+        <p>
+          그래서 물류가 잔여량을 넣은 날은 그쪽이 더 믿을 만하다고 보고 <b>계획 + 잔여량</b>으로 덮어쓴다.
+          계획보다 더 만들었으면 잔여량이 양수로, 덜 만들었으면 음수로 들어와 그만큼 메워진다.
+        </p>
+        <p>
+          <b>이 규칙을 잘못 구현하면</b> — 예를 들어 항상 호기 실적만 쓰거나, 계획과 실적을 더해 버리면 —
+          화면은 멀쩡해 보이는데 월별 생산량·원재료 소요량·수율·용기 사용량이 전부 조용히 틀어진다.
+          숫자가 이상할 때 제일 먼저 의심할 자리다.
+        </p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ══ 곁가지 ══ -->
+  <section>
+    <div class="eyebrow">곁가지</div>
+    <h2>본줄기에서 갈라지는 것들</h2>
+    <p class="say">매일 일어나지는 않지만, 일어나면 숫자에 영향을 준다.</p>
+
+    <div class="cols">
+      <div class="mini">
+        <span class="tag">재작업</span>
+        <h4>리믹스</h4>
+        <p>만든 제품을 다시 풀어 새 제품으로 돌린다.
+           같은 원재료로 두 번 일한 셈이라 <b>생산성과 원가에 함께 반영</b>된다.</p>
+      </div>
+      <div class="mini">
+        <span class="tag">손실</span>
+        <h4>폐기</h4>
+        <p>전처리에서 나오는 손질 손실과, 조리·포장에서 나오는 불량을 따로 적는다.
+           원재료 수율이 왜 떨어졌는지는 여기서 갈린다.</p>
+      </div>
+      <div class="mini">
+        <span class="tag">보정</span>
+        <h4>물류 잔여 수정</h4>
+        <p>계획과 실적 사이가 벌어졌을 때 물류가 실제 수량으로 메운다.
+           위 규칙에서 <b>계산 자체를 바꾸는</b> 유일한 입력이다.</p>
+      </div>
+      <div class="mini">
+        <span class="tag">자재</span>
+        <h4>용기·필름 재고</h4>
+        <p>월말 재고조사로 실제 소모량을 구해, 생산량으로 계산한 이론 사용량과 맞춰 본다.
+           어긋나면 재고조사나 입고 쪽을 본다.</p>
+      </div>
+    </div>
+  </section>
+
+  <footer>
+    순수본 1공장 · 생산팀 — 이 문서는 MES에 구현된 계산 규칙과 현장 공정 순서를 기준으로 작성했습니다.<br>
+    고칠 부분이 보이면 알려 주세요. 특히 전처리·배합의 담당 구분, 외포장 이후 출고 절차는 확인이 필요합니다.
+  </footer>
+</div>
+</body>
+</html>
