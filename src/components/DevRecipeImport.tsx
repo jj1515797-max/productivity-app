@@ -15,8 +15,7 @@ import { canonicalShort, normalizeCode } from '../lib/codeUtil';
 import { normalizeMaterialName } from '../lib/wasteCompute';
 import {
   BomIndex, BomIngredient, MasterIngredient, ProductReport, ResolvedRow,
-  bomFor, bomSourceFor, cleanName, parseDevSheet, resolveSheet,
-} from '../lib/devRecipeMatch';
+  bomFor, bomSourceFor, cleanName, parseDevSheet, resolveSheet, PINNED,} from '../lib/devRecipeMatch';
 
 const KIND_LABEL: Record<string, { t: string; cls: string }> = {
   exact:    { t: '완전일치',  cls: 'bg-emerald-100 text-emerald-800' },
@@ -29,6 +28,17 @@ const KIND_LABEL: Record<string, { t: string; cls: string }> = {
 };
 
 interface Override { code: string; name: string }
+
+/** 드롭다운 맨 위에 늘 띄우는 고정 후보.
+ *  정제수처럼 레시피에는 꼭 들어가지만 현장 BOM 에는 없는 원재료는
+ *  사용횟수 0 이라 목록 끝으로 밀리고, 표시 상한에 걸려 아예 안 보인다.
+ *  사람이 찾지 못하면 영원히 미확정으로 남으므로 위로 끌어올린다. */
+/** 드롭다운에 한 번에 그릴 최대 항목 수. 넘치면 몇 개 잘렸는지 알려준다 */
+const LIST_CAP = 600;
+
+const PINNED_LIST = Array.from(
+  new Map(Object.values(PINNED).map((v) => [v.code, v])).values(),
+);
 
 export default function DevRecipeImport() {
   const [text, setText] = useState('');
@@ -652,6 +662,16 @@ export default function DevRecipeImport() {
                                       ✓ {e.name || r.rawName} · {e.code}
                                     </option>
                                   )}
+                                  {/* 고정 후보 — BOM 에 없어 목록 뒤로 밀리는 것들. 검색 없이도 바로 고를 수 있어야 한다 */}
+                                  {!q && PINNED_LIST.filter((m) => !inSame(m.code) && m.code !== e.code).length > 0 && (
+                                    <optgroup label="── 자주 쓰는 것 ──">
+                                      {PINNED_LIST.filter((m) => !inSame(m.code) && m.code !== e.code).map((m) => (
+                                        <option key={'pin' + m.code} value={`${m.code}||${m.name}`}>
+                                          {m.name} · {m.code}
+                                        </option>
+                                      ))}
+                                    </optgroup>
+                                  )}
                                   {/* 시트에 적힌 이름과 '똑같은' 원재료가 있으면 무조건 맨 위.
                                       점수·격차 판정과 무관하게 눈에 보여야 바로 고를 수 있다. */}
                                   {!q && sameName.length > 0 && (
@@ -678,14 +698,24 @@ export default function DevRecipeImport() {
                                   {/* 검색어가 있으면 추천/전체를 나누지 않는다.
                                       나눠 두면 이미 추천에 있는 항목이 전체에서 빠져 '없음' 처럼 보인다 */}
                                   {q ? (
-                                    <optgroup label={`── 검색 "${q}" ──`}>
-                                      {master.filter((m) => m.name.includes(q) || m.code.includes(q))
-                                        .slice(0, 300).map((m) => (
-                                          <option key={m.code} value={`${m.code}||${m.name}`}>
-                                            {m.name} · {m.code}{m.src === 'erp' ? ' · ERP코드' : ''}
-                                          </option>
-                                        ))}
-                                    </optgroup>
+                                    (() => {
+                                      const hit = master.filter((m) => m.name.includes(q) || m.code.includes(q));
+                                      return (
+                                        <optgroup label={`── 검색 "${q}" (${hit.length}) ──`}>
+                                          {hit.slice(0, LIST_CAP).map((m) => (
+                                            <option key={m.code} value={`${m.code}||${m.name}`}>
+                                              {m.name} · {m.code}{m.src === 'erp' ? ' · ERP코드' : ''}
+                                            </option>
+                                          ))}
+                                          {hit.length === 0 && (
+                                            <option disabled value="">찾는 원재료가 없습니다 — ERP 코드 마스터에 등록되어 있나요?</option>
+                                          )}
+                                          {hit.length > LIST_CAP && (
+                                            <option disabled value="">… {hit.length - LIST_CAP}개 더 — 검색어를 더 좁히세요</option>
+                                          )}
+                                        </optgroup>
+                                      );
+                                    })()
                                   ) : (
                                     <>
                                       <optgroup label="── 추천 후보 ──">
@@ -696,16 +726,28 @@ export default function DevRecipeImport() {
                                           </option>
                                         ))}
                                       </optgroup>
-                                      <optgroup label="── 전체 원재료 ──">
-                                        {master.filter((m) => !inSame(m.code)
+                                      {(() => {
+                                        /* 사용횟수 내림차순이라 BOM 에 안 쓰인 원재료가 뒤로 밀린다.
+                                           상한에 걸려 잘리면 '등록 안 된 것' 처럼 보이므로 몇 개 남았는지 밝힌다. */
+                                        const rest = master.filter((m) => !inSame(m.code)
                                           && !cands.some((c) => c.code === m.code)
-                                          && !leftoverBom.some((x) => x.code === m.code))
-                                          .slice(0, 300).map((m) => (
-                                            <option key={m.code} value={`${m.code}||${m.name}`}>
-                                              {m.name} · {m.code}{m.src === 'erp' ? ' · ERP코드' : ''}
-                                            </option>
-                                          ))}
-                                      </optgroup>
+                                          && !leftoverBom.some((x) => x.code === m.code));
+                                        const cut = rest.length - LIST_CAP;
+                                        return (
+                                          <optgroup label={`── 전체 원재료 (${rest.length}) ──`}>
+                                            {rest.slice(0, LIST_CAP).map((m) => (
+                                              <option key={m.code} value={`${m.code}||${m.name}`}>
+                                                {m.name} · {m.code}{m.src === 'erp' ? ' · ERP코드' : ''}
+                                              </option>
+                                            ))}
+                                            {cut > 0 && (
+                                              <option disabled value="">
+                                                … {cut}개 더 있습니다 — 아래 「목록 검색」에 이름이나 코드를 넣으세요
+                                              </option>
+                                            )}
+                                          </optgroup>
+                                        );
+                                      })()}
                                     </>
                                   )}
                                 </select>
