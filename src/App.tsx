@@ -20,6 +20,7 @@ import Remix from './pages/Remix';
 import Scoop from './pages/Scoop';
 import ScoopAnalysis from './pages/ScoopAnalysis';
 import ContainerAnalysis from './pages/ContainerAnalysis';
+import ProductSearch from './pages/ProductSearch';
 import YieldAnalysis from './pages/YieldAnalysis';
 import Inbound from './pages/Inbound';
 import InboundHistory from './pages/InboundHistory';
@@ -124,6 +125,7 @@ function MainContainer() {
           <Route path="/analytics/material" element={<MaterialAnalysis />} />
           <Route path="/analytics/scoop" element={<ScoopAnalysis />} />
           <Route path="/analytics/container" element={<ContainerAnalysis />} />
+          <Route path="/analytics/product" element={<ProductSearch />} />
           <Route path="/analytics/yield" element={<YieldAnalysis />} />
           <Route path="/analytics/settings" element={<ProductSettings />} />
         </Route>
@@ -174,6 +176,7 @@ const SUB_TABS: Record<Section, { label: string; to: string; exact?: boolean }[]
     { label: '내포장분석', to: '/analytics/scoop' },
     { label: '용기분석', to: '/analytics/container' },
     { label: '원재료수율분석', to: '/analytics/yield' },
+    { label: '제품검색', to: '/analytics/product' },
     { label: '설정', to: '/analytics/settings' },
   ],
   purchase: [

@@ -57,6 +57,9 @@ export interface MonthlyProduction {
   coldByMachine: Record<string, number>;
   /** 그날 그 코드로 돌린 호기를 알 수 없어 배분하지 못한 냉장 수량 */
   coldMachineUnassigned: number;
+  /** 날짜 → 코드 → 그날 확정 수량. 제품별 생산 이력을 뽑는 데 쓴다.
+   *  월합(coldByCode)과 같은 규칙에서 나오므로 둘이 어긋날 수 없다. */
+  coldByDateCode: Record<string, Record<string, number>>;
 }
 
 export function computeMonthlyProduction(
@@ -100,9 +103,13 @@ export function computeMonthlyProduction(
 
   const coldByMachine: Record<string, number> = { '1호기': 0, '2호기': 0, '3호기': 0 };
   let coldMachineUnassigned = 0;
-  /** 그날 그 코드의 확정 수량을 코드합계와 호기별 합계에 동시에 반영한다 */
+  const coldByDateCode: Record<string, Record<string, number>> = {};
+  /** 그날 그 코드의 확정 수량을 코드합계·호기별·날짜별에 동시에 반영한다.
+   *  세 집계가 한 자리에서 갈라져 나가므로 서로 어긋날 수 없다. */
   const addDay = (day: string, code: string, qty: number) => {
     codeQty.set(code, (codeQty.get(code) || 0) + qty);
+    if (!coldByDateCode[day]) coldByDateCode[day] = {};
+    coldByDateCode[day][code] = (coldByDateCode[day][code] || 0) + qty;
     const mm = machineByDayCode[day]?.[code];
     const tot = mm ? Object.values(mm).reduce((a, b) => a + b, 0) : 0;
     if (!mm || tot <= 0) { coldMachineUnassigned += qty; return; }
@@ -189,6 +196,7 @@ export function computeMonthlyProduction(
     coldByCode,
     coldByMachine,
     coldMachineUnassigned,
+    coldByDateCode,
   };
 }
 
@@ -214,6 +222,6 @@ export function filterProduction(
   // 호기별 집계는 제품으로 걸러낼 수 없다 (필터 결과에는 의미가 없어 비워 둔다)
   return {
     coldTotal, ambientTotal, total: coldTotal + ambientTotal, stages, ambient, maxStage, coldByCode,
-    coldByMachine: {}, coldMachineUnassigned: 0,
+    coldByMachine: {}, coldMachineUnassigned: 0, coldByDateCode: {},
   };
 }

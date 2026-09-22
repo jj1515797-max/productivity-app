@@ -22,6 +22,14 @@ export interface ContainerMonth {
   m1: number; m2: number; m3: number;
   /** 호기를 알 수 없어 배분하지 못한 냉장 수량 */
   mUnassigned: number;
+  /** 날짜 → 코드 → 확정 수량 (제품별 생산 이력용) */
+  byDateCode: Record<string, Record<string, number>>;
+  /** 그 달 실온 생산 기록 (제품명·수량·날짜) */
+  ambientRows: { productName: string; qty: number; date: string }[];
+  /** 단축코드 → 제품명 (제품 DB 기준) */
+  nameByShort: Record<string, string>;
+  /** 단축코드 → ERP 전체코드 */
+  erpByShort: Record<string, string>;
 }
 
 export const isPastMonth = (m: string) => m < todayKey().slice(0, 7);
@@ -123,5 +131,9 @@ export async function loadContainerMonth(month: string): Promise<ContainerMonth>
     m2: Math.round(prod.coldByMachine['2호기'] || 0),
     m3: Math.round(prod.coldByMachine['3호기'] || 0),
     mUnassigned: Math.round(prod.coldMachineUnassigned),
+    byDateCode: prod.coldByDateCode,
+    ambientRows: ambient.map((a) => ({ productName: a.productName || '', qty: a.qty || 0, date: a.date })),
+    nameByShort: Object.fromEntries(nameByShort),
+    erpByShort: Object.fromEntries(erpByShort),
   };
 }
