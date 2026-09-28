@@ -70,6 +70,9 @@ export default function BarcodeCheck() {
   const timerRef = useRef<number | null>(null);
   const seqRef = useRef(0);
   const mapRef = useRef<Map<string, ProductBarcode> | null>(null);
+  const scanInputRef = useRef<HTMLInputElement | null>(null);
+  const manualRef = useRef(false);
+  manualRef.current = manual;
   const soundRef = useRef(sound);
   soundRef.current = sound;
 
@@ -113,6 +116,33 @@ export default function BarcodeCheck() {
     if (soundRef.current) beep(res.ok);
     setCur(res);
     setHistory((h) => [res, ...h].slice(0, 50));
+  }, []);
+
+  // 들어오자마자 스캔창에 포커스 — 안 그러면 방금 누른 탭 링크에 포커스가 남아
+  // 기기에 따라 리더기 입력이 페이지로 안 들어온다 (입력창을 한 번 눌러야 되던 문제).
+  // 다른 곳을 눌러 포커스가 빠져도 곧바로 되돌린다. 직접 입력 중일 때만 예외.
+  useEffect(() => {
+    const grab = () => {
+      if (manualRef.current) return;
+      const a = document.activeElement as HTMLElement | null;
+      if (a && a !== scanInputRef.current && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA' || a.tagName === 'SELECT')) return;
+      if (a !== scanInputRef.current) scanInputRef.current?.focus({ preventScroll: true });
+    };
+    const later = () => window.setTimeout(grab, 0);
+    const t1 = window.setTimeout(grab, 50);
+    const t2 = window.setTimeout(grab, 400);
+    const iv = window.setInterval(grab, 1500);
+    window.addEventListener('focus', later);
+    document.addEventListener('visibilitychange', later);
+    document.addEventListener('pointerup', later, true);
+    document.addEventListener('focusout', later, true);
+    return () => {
+      window.clearTimeout(t1); window.clearTimeout(t2); window.clearInterval(iv);
+      window.removeEventListener('focus', later);
+      document.removeEventListener('visibilitychange', later);
+      document.removeEventListener('pointerup', later, true);
+      document.removeEventListener('focusout', later, true);
+    };
   }, []);
 
   const flush = useCallback(() => {
@@ -181,7 +211,7 @@ export default function BarcodeCheck() {
 
       {/* 스캔 표시줄 — 읽기 전용 (가상 키보드 안 뜨게) */}
       <div className="flex items-center gap-2">
-        <input data-scan-display="1" readOnly inputMode="none" tabIndex={-1}
+        <input ref={scanInputRef} data-scan-display="1" readOnly inputMode="none" autoFocus
           value={typing || (cur ? cur.raw : '')}
           placeholder="바코드를 찍으세요 — 화면을 누를 필요 없습니다"
           className={`flex-1 border-2 rounded-lg px-4 py-3 font-mono text-2xl tracking-wider bg-white
