@@ -277,7 +277,7 @@ interface Row {
 export default function YieldAnalysis() {
   const tm = thisMonth();
   const [month, setMonth] = useState(shiftMonth(tm, -1));
-  const [cmpMode, setCmpMode] = useState<'yoy' | 'mom'>('yoy');
+  const [cmpMode, setCmpMode] = useState<'yoy' | 'mom'>('mom');
   const cmpMonth = cmpMode === 'yoy' ? shiftMonth(month, -12) : shiftMonth(month, -1);
 
   const [mode, setMode] = useState<'cmp' | 'trend'>('cmp');
