@@ -104,6 +104,17 @@ export function computeColdProductionByCode(
   return out;
 }
 
+/** 표준소요 근거 한 줄 — 원재료 key 가 어느 제품에서 얼마나 나왔나 (검증용) */
+export interface UsageContrib {
+  key: string;            // 원재료 key (UsageRow.key 와 같음)
+  product: string;        // 냉장: canonicalShort 코드 / 실온: 제품명
+  label: string;          // 표시명
+  kind: 'cold' | 'ambient';
+  qty: number;            // 생산 EA
+  gPerUnit: number;       // 개당 g (실온은 배합당g ÷ 1회배합포장수)
+  grams: number;          // qty × gPerUnit
+}
+
 /** 월별 사용량 계산: 냉장 + 실온
  *  priceMonth 지정 시 그 달 단가로 평가 (Flexed Budget 분석용). 미지정이면 month 자체.
  */
@@ -119,6 +130,8 @@ export function computeMonthlyUsage(
   priceMonth?: string,
   /** 일자 → 품목코드 → 잔여량. 주면 품목별 실제 생산량으로 계산 (비례배분 X) */
   logisticsByDayCode?: Record<string, Record<string, number>>,
+  /** 주면 원재료×제품 단위 근거를 하나씩 넘긴다 (합계는 rows 의 grams 와 정확히 같다) */
+  onContrib?: (c: UsageContrib) => void,
 ): UsageResult {
   const pMonth = priceMonth ?? month;
   const usageGrams = new Map<string, { name: string; code?: string; grams: number }>();
@@ -146,7 +159,15 @@ export function computeMonthlyUsage(
     const recipe = normRecipeMap.get(code); // code 는 이미 canonicalShort
     if (!recipe) { missingColdCodes.push(code); missingQty += count; return; }
     recipe.ingredients.forEach((ing) => {
-      addUsage(ing.name, ing.code, (ing.gPerPiece || 0) * count);
+      const g = (ing.gPerPiece || 0) * count;
+      addUsage(ing.name, ing.code, g);
+      if (onContrib && g > 0) {
+        onContrib({
+          key: ing.code ? (CODE_KEY_PREFIX + normalizeCode(ing.code)) : normalizeMaterialName(ing.name),
+          product: code, label: recipe.name || code, kind: 'cold',
+          qty: count, gPerUnit: ing.gPerPiece || 0, grams: g,
+        });
+      }
     });
   });
 
@@ -169,7 +190,15 @@ export function computeMonthlyUsage(
     const bp = recipe.batchPieces || 1;
     const qty = a.qty || 0;
     recipe.ingredients.forEach((ing) => {
-      addUsage(ing.name, ing.code, ((ing.gPerBatch || 0) / bp) * qty);
+      const g = ((ing.gPerBatch || 0) / bp) * qty;
+      addUsage(ing.name, ing.code, g);
+      if (onContrib && g > 0) {
+        onContrib({
+          key: ing.code ? (CODE_KEY_PREFIX + normalizeCode(ing.code)) : normalizeMaterialName(ing.name),
+          product: pname, label: pname, kind: 'ambient',
+          qty, gPerUnit: (ing.gPerBatch || 0) / bp, grams: g,
+        });
+      }
     });
   });
 

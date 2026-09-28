@@ -8,7 +8,7 @@
  *  반제품(순수본베이스·디포리육수)은 '반제품 펼침'으로 원물까지 분해되어 목록에서 사라지고,
  *  정제수처럼 매입이 없는 자재는 제외 키워드로 걸러낸다.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { collection, collectionGroup, doc, getDoc, getDocs, onSnapshot, query, setDoc, where } from 'firebase/firestore';
 import ExcelJS from 'exceljs';
 import { db } from '../firebase';
@@ -19,6 +19,8 @@ import { canonicalShort } from '../lib/codeUtil';
 import type { CategoryDoc } from '../lib/materialCategory';
 import { UNCLASSIFIED, buildCategoryIndex, categoryOf, sortCategories } from '../lib/materialCategory';
 import { computeMonthlyUsage } from '../lib/materialUsage';
+import type { UsageContrib } from '../lib/materialUsage';
+import { addAuditSheet, addEvidenceSheet, addGuideSheet } from '../lib/yieldWorkbookExtras';
 import { computeMonthlyProduction } from '../lib/monthlyProduction';
 import { expandAmbientRecipeMap, expandRecipeMap } from '../lib/bomExpansion';
 
@@ -294,6 +296,13 @@ export default function YieldAnalysis() {
     { hasInput: false, qty: 0, baseQty: 0, partial: false });
   const cmpHasData = cmpDiag.hasInput && cmpDiag.qty > 0;
   const [remapCount, setRemapCount] = useState(0);
+  // 엑셀 「표준소요 근거」·「검증」 시트용 — 화면에는 안 쓰므로 state 대신 ref
+  const auditRef = useRef<{
+    month: string;
+    contribs: UsageContrib[];
+    missingCold: string[]; missingAmbient: string[]; missingPrices: string[];
+    remapped: string[];
+  } | null>(null);
   const [excludeText, setExcludeText] = useState(EXCLUDE_DEFAULT.join(', '));
   const [threshold, setThreshold] = useState(2);
   const [search, setSearch] = useState('');
@@ -402,8 +411,14 @@ export default function YieldAnalysis() {
         fetchMonth(month), fetchMonth(cmpMonth), fetchInputs(month), fetchInputs(cmpMonth),
       ]);
 
+      // 원재료×제품 근거 — 같은 제품이 여러 날/여러 건이어도 한 줄로 묶는다
+      const contribMap = new Map<string, UsageContrib>();
       const std = computeMonthlyUsage(month, raw.entries, raw.items, raw.ambient, raw.logistics,
-        eff, effAmb, priceMap, undefined, raw.logisticsByCode);
+        eff, effAmb, priceMap, undefined, raw.logisticsByCode, (c) => {
+          const ck = `${c.key}|${c.kind}|${c.product}`;
+          const e = contribMap.get(ck);
+          if (e) { e.qty += c.qty; e.grams += c.grams; } else contribMap.set(ck, { ...c });
+        });
       const stdC = computeMonthlyUsage(cmpMonth, rawC.entries, rawC.items, rawC.ambient, rawC.logistics,
         eff, effAmb, priceMap, undefined, rawC.logisticsByCode);
 
@@ -438,6 +453,14 @@ export default function YieldAnalysis() {
       const mapped = remapInputs(unionRows, inp.inputs, inp.names);
       const mappedC = remapInputs(unionRows, inpC.inputs, inpC.names);
       setRemapCount(new Set(mapped.remapped).size);
+      auditRef.current = {
+        month,
+        contribs: [...contribMap.values()],
+        missingCold: std.missingColdCodes || [],
+        missingAmbient: std.missingAmbientNames || [],
+        missingPrices: std.missingPrices || [],
+        remapped: [...new Set(mapped.remapped)],
+      };
       const inpNow = mapped.byStdKey;
       const inpPrev = mappedC.byStdKey;
 
@@ -883,6 +906,7 @@ export default function YieldAnalysis() {
       { header: '④ LOSS (kg)', key: 'l', width: 14 },
       { header: '⑤ LOSS율', key: 'lr', width: 12 },
       { header: 'LOSS 금액(원)', key: 'la', width: 15 },
+      { header: '단가(원/kg)', key: 'pk', width: 12 },
       // 엑셀만 보는 사람을 위해 상태를 '데이터' 로 남긴다.
       // 색으로만 구분하면 정렬·필터하는 순간 의미가 사라진다.
       { header: '비고', key: 'st', width: 30 },
@@ -907,6 +931,7 @@ export default function YieldAnalysis() {
         y: r.yield, p: r.prevYield, d: r.deltaPP,
         l: r.lossG === null ? null : kg(r.lossG), lr: r.lossRate,
         la: r.lossAmt === null ? null : Math.round(r.lossAmt),
+        pk: r.pricePerG * 1000,
         st,
         note: notes[r.key] || '',
       });
@@ -914,6 +939,7 @@ export default function YieldAnalysis() {
       ['y', 'p', 'lr'].forEach((k) => { row.getCell(k).numFmt = '0.0%'; });
       row.getCell('d').numFmt = '+0.0;-0.0';
       row.getCell('la').numFmt = '#,##0';
+      row.getCell('pk').numFmt = '#,##0';
       if (oddR) {
         row.getCell('d').font = { color: { argb: 'FF999999' } };   // 데이터 이상 → 회색
         row.getCell('y').font = { color: { argb: 'FF999999' } };
@@ -944,6 +970,38 @@ export default function YieldAnalysis() {
     sumRow.getCell('st').font = { bold: true, color: { argb: 'FFC00000' } };
 
     ws.views = [{ state: 'frozen', ySplit: 1 }];
+
+    // 보는 방법 · 검증 · 표준소요 근거
+    const au = auditRef.current;   // rows 와 같은 run() 에서 만든 근거
+    const letter = (k: string) => ws.getColumn(k).letter;
+    const ctx = {
+      month, cmpMonth, cmpLabel: cmpMode === 'yoy' ? '전년동월' : '전월',
+      dataSheet: ws.name,
+      col: { s: letter('s'), a: letter('a'), y: letter('y'), l: letter('l'), la: letter('la'), pk: letter('pk') },
+      rows: view.map((r) => ({
+        key: r.key, name: r.name, code: r.code, stdG: r.stdG, actG: r.actG, hasInput: r.hasInput,
+        yield: r.yield, prevYield: r.prevYield, lossG: r.lossG, lossAmt: r.lossAmt, pricePerG: r.pricePerG,
+      })),
+      sumRowNo: sumRow.number,
+      contribs: au?.contribs || [],
+      missingCold: au?.missingCold || [],
+      missingAmbient: au?.missingAmbient || [],
+      missingPrices: au?.missingPrices || [],
+      remapped: au?.remapped || [],
+      coveragePct: coverage ? coverage.pct : null,
+      missingQty: coverage?.missingQty || 0,
+      totalQty: coverage?.totalQty || 0,
+      cmpDiag,
+      threshold, rangeLo: RANGE_LO, rangeHi: RANGE_HI,
+      excludeText,
+      recipeSource: useYieldDb ? '분석용 레시피 (수율 DB)' : 'BOM 레시피',
+      filterNote: search.trim() ? `검색어 「${search.trim()}」 에 맞는 ${view.length}종만` : '',
+    };
+    addGuideSheet(wb, ctx);
+    addAuditSheet(wb, ctx);
+    addEvidenceSheet(wb, ctx);
+    wb.calcProperties = { fullCalcOnLoad: true };
+
     const buf = await wb.xlsx.writeBuffer();
     const url = URL.createObjectURL(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
     const a = document.createElement('a');
