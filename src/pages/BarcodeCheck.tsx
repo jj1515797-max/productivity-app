@@ -7,14 +7,28 @@
  *  - 가상 키보드가 튀어나오지 않게 화면의 입력창은 읽기 전용(표시용)이다
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { collection, onSnapshot } from 'firebase/firestore';
+import { addDoc, collection, limit, onSnapshot, orderBy, query } from 'firebase/firestore';
 import { db } from '../firebase';
 import { BARCODE_COL, barcodeVariants, gtinCheck, normalizeBarcode } from '../lib/barcode';
 import type { ProductBarcode } from '../lib/barcode';
+import { effectiveTodayKey, shiftDateKey } from '../lib/dateUtil';
 
 type Result =
-  | { ok: true; raw: string; hit: ProductBarcode; at: number; seq: number }
-  | { ok: false; raw: string; reason: string; at: number; seq: number };
+  | { ok: true; raw: string; hit: ProductBarcode; at: number; seq: number; id?: string }
+  | { ok: false; raw: string; reason: string; at: number; seq: number; id?: string };
+
+/** 스캔 기록 — Firestore `barcodeScans/{YYYY-MM-DD}/logs/{자동ID}`
+ *  날짜는 입력 화면과 같은 기준(새벽 2시 전은 전날 — 야간조) */
+interface ScanDoc {
+  at: number; raw: string; ok: boolean;
+  code?: string; name?: string; barcode?: string; reason?: string;
+}
+const scanCol = (date: string) => collection(db, 'barcodeScans', date, 'logs');
+function toResult(id: string, d: ScanDoc): Result {
+  return d.ok
+    ? { ok: true, raw: d.raw, hit: { barcode: d.barcode || d.raw, code: d.code || '', name: d.name || '' }, at: d.at, seq: d.at, id }
+    : { ok: false, raw: d.raw, reason: d.reason || '', at: d.at, seq: d.at, id };
+}
 
 const IDLE_MS = 150;       // 리더기는 글자 사이가 수 ms — 이만큼 멈추면 끝난 것으로 본다
 const MIN_LEN = 4;         // 이보다 짧으면 잡음(키 한두 개 눌림)으로 보고 무시
@@ -61,6 +75,9 @@ export default function BarcodeCheck() {
   const [typing, setTyping] = useState('');
   const [cur, setCur] = useState<Result | null>(null);
   const [history, setHistory] = useState<Result[]>([]);
+  const [viewDate, setViewDate] = useState(effectiveTodayKey());
+  const [histLoaded, setHistLoaded] = useState(false);
+  const [saveErr, setSaveErr] = useState<string | null>(null);
   const [manual, setManual] = useState(false);
   const [manualText, setManualText] = useState('');
   const [sound, setSound] = useState(() => {
@@ -82,6 +99,17 @@ export default function BarcodeCheck() {
     mapRef.current = m;
     setMap(m);
   }), []);
+
+  // 그 날짜의 스캔 기록 — 다른 화면에 갔다 와도, 다른 기기에서 찍어도 그대로 보인다
+  useEffect(() => {
+    setHistLoaded(false);
+    return onSnapshot(query(scanCol(viewDate), orderBy('at', 'desc'), limit(3000)), (snap) => {
+      const list: Result[] = [];
+      snap.forEach((d) => list.push(toResult(d.id, d.data() as ScanDoc)));
+      setHistory(list);
+      setHistLoaded(true);
+    }, (e) => { console.error('[BarcodeCheck]', e); setHistLoaded(true); });
+  }, [viewDate]);
 
   // 화면 꺼짐 방지 (지원 기기만)
   useEffect(() => {
@@ -115,7 +143,15 @@ export default function BarcodeCheck() {
     }
     if (soundRef.current) beep(res.ok);
     setCur(res);
-    setHistory((h) => [res, ...h].slice(0, 50));
+    // 찍는 순간의 날짜로 저장하고, 지난 날짜를 보고 있었으면 오늘로 돌아온다
+    const day = effectiveTodayKey();
+    setViewDate(day);
+    const docData: ScanDoc = res.ok
+      ? { at, raw, ok: true, code: res.hit.code, name: res.hit.name, barcode: res.hit.barcode }
+      : { at, raw, ok: false, reason: res.reason };
+    addDoc(scanCol(day), docData)
+      .then(() => setSaveErr(null))
+      .catch((e) => setSaveErr(e?.message || String(e)));
   }, []);
 
   // 들어오자마자 스캔창에 포커스 — 안 그러면 방금 누른 탭 링크에 포커스가 남아
@@ -181,12 +217,52 @@ export default function BarcodeCheck() {
   const okCount = history.filter((h) => h.ok).length;
   const badCount = history.length - okCount;
   // 같은 바코드를 연달아 찍은 횟수 — 같은 화면이 그대로여도 새로 찍힌 걸 알 수 있게
+  const today = effectiveTodayKey();
+  const isToday = viewDate === today;
+  // 다른 화면에 갔다 와도 마지막으로 찍은 것이 그대로 보이게 — 오늘 기록의 맨 위
+  const shown: Result | null = cur ?? (isToday ? history[0] ?? null : null);
   const streak = (() => {
-    if (!cur) return 0;
+    if (!shown) return 0;
     let n = 0;
-    for (const h of history) { if (h.raw === cur.raw) n++; else break; }
+    for (const h of history) { if (h.raw === shown.raw) n++; else break; }
     return n;
   })();
+  // 품목별 집계 (정상만) — 많이 찍힌 순
+  const byProduct = (() => {
+    const m = new Map<string, { code: string; name: string; n: number }>();
+    history.forEach((h) => {
+      if (!h.ok) return;
+      const e = m.get(h.hit.code);
+      if (e) e.n++; else m.set(h.hit.code, { code: h.hit.code, name: h.hit.name, n: 1 });
+    });
+    return [...m.values()].sort((a, b) => b.n - a.n || a.code.localeCompare(b.code));
+  })();
+  const downloadXlsx = async () => {
+    const ExcelJS = (await import('exceljs')).default;
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet(`${viewDate} 스캔기록`);
+    ws.columns = [
+      { header: '시간', key: 't', width: 10 }, { header: '결과', key: 'r', width: 8 },
+      { header: '읽힌 바코드', key: 'b', width: 18 }, { header: '제품코드', key: 'c', width: 12 },
+      { header: '제품명', key: 'n', width: 30 }, { header: '불량 사유', key: 'why', width: 40 },
+    ];
+    [...history].reverse().forEach((h) => ws.addRow({
+      t: time(h.at), r: h.ok ? '정상' : '불량', b: h.raw,
+      c: h.ok ? h.hit.code : '', n: h.ok ? h.hit.name : '', why: h.ok ? '' : h.reason,
+    }));
+    ws.getRow(1).font = { bold: true };
+    ws.views = [{ state: 'frozen', ySplit: 1 }];
+    const ws2 = wb.addWorksheet('품목별 집계');
+    ws2.columns = [{ header: '제품코드', key: 'c', width: 12 }, { header: '제품명', key: 'n', width: 30 }, { header: '정상 스캔 수', key: 'k', width: 12 }];
+    byProduct.forEach((p) => ws2.addRow({ c: p.code, n: p.name, k: p.n }));
+    ws2.addRow({ n: '불량', k: badCount });
+    ws2.getRow(1).font = { bold: true };
+    const buf = await wb.xlsx.writeBuffer();
+    const url = URL.createObjectURL(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+    const a = document.createElement('a');
+    a.href = url; a.download = `바코드확인_${viewDate}.xlsx`; a.click();
+    URL.revokeObjectURL(url);
+  };
   const time = (t: number) => {
     const d = new Date(t);
     const p2 = (n: number) => String(n).padStart(2, '0');
@@ -200,19 +276,25 @@ export default function BarcodeCheck() {
         <span className={`text-xs px-2 py-0.5 rounded-full ${map ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-100 text-gray-500'}`}>
           {map ? `DB ${map.size.toLocaleString()}개` : 'DB 불러오는 중…'}
         </span>
-        <span className="text-xs text-gray-500">정상 <b className="text-emerald-700">{okCount}</b> · 불량 <b className="text-rose-600">{badCount}</b></span>
+        <div className="flex items-center gap-1 text-sm">
+          <button onClick={() => { setCur(null); setViewDate(shiftDateKey(viewDate, -1)); }} className="px-2 py-0.5 border rounded bg-white hover:bg-gray-50">◀</button>
+          <span className={`px-2 font-mono font-bold ${isToday ? 'text-blue-700' : 'text-amber-700'}`}>{viewDate}{isToday && ' (오늘)'}</span>
+          <button onClick={() => { setCur(null); setViewDate(shiftDateKey(viewDate, 1)); }} disabled={isToday} className="px-2 py-0.5 border rounded bg-white hover:bg-gray-50 disabled:opacity-30">▶</button>
+          {!isToday && <button onClick={() => setViewDate(today)} className="ml-1 px-2 py-0.5 text-xs border rounded bg-blue-600 text-white">오늘로</button>}
+        </div>
+        <span className="text-xs text-gray-500">{histLoaded ? '' : '기록 불러오는 중… '}정상 <b className="text-emerald-700">{okCount}</b> · 불량 <b className="text-rose-600">{badCount}</b></span>
         <div className="ml-auto flex items-center gap-2">
           <button onClick={() => { const n = !sound; setSound(n); try { localStorage.setItem('barcodeSound', n ? 'on' : 'off'); } catch { /* 무시 */ } }}
             className="px-2.5 py-1 text-xs border rounded bg-white hover:bg-gray-50">{sound ? '🔊 소리 켬' : '🔇 소리 끔'}</button>
-          <button onClick={() => { setHistory([]); setCur(null); }}
-            className="px-2.5 py-1 text-xs border rounded bg-white hover:bg-gray-50">기록 지우기</button>
+          <button onClick={downloadXlsx} disabled={history.length === 0}
+            className="px-2.5 py-1 text-xs border rounded bg-white hover:bg-gray-50 disabled:opacity-40">📥 엑셀</button>
         </div>
       </div>
 
       {/* 스캔 표시줄 — 읽기 전용 (가상 키보드 안 뜨게) */}
       <div className="flex items-center gap-2">
         <input ref={scanInputRef} data-scan-display="1" readOnly inputMode="none" autoFocus
-          value={typing || (cur ? cur.raw : '')}
+          value={typing || (shown ? shown.raw : '')}
           placeholder="바코드를 찍으세요 — 화면을 누를 필요 없습니다"
           className={`flex-1 border-2 rounded-lg px-4 py-3 font-mono text-2xl tracking-wider bg-white
             ${typing ? 'border-blue-500' : 'border-gray-300'} text-gray-800 placeholder:text-gray-400 placeholder:text-base placeholder:font-sans placeholder:tracking-normal`} />
@@ -229,36 +311,57 @@ export default function BarcodeCheck() {
       )}
 
       {/* 결과 */}
-      {!cur ? (
+      {!shown ? (
         <div className="border-2 border-dashed rounded-2xl py-20 text-center text-gray-400">
           <div className="text-5xl mb-3">▮▯▮▮▯▮</div>
           <div className="text-lg">바코드를 찍으면 여기에 제품이 뜹니다</div>
         </div>
-      ) : cur.ok ? (
-        <div key={cur.seq} className="rounded-2xl bg-emerald-600 text-white px-6 py-10 text-center shadow-lg animate-[scanflash_0.35s_ease-out]">
+      ) : shown.ok ? (
+        <div key={shown.seq} className="rounded-2xl bg-emerald-600 text-white px-6 py-10 text-center shadow-lg animate-[scanflash_0.35s_ease-out]">
           <div className="text-sm opacity-80 mb-2">✔ 정상 {streak > 1 && <span className="ml-1 bg-white/20 rounded px-1.5">같은 바코드 {streak}번째</span>}</div>
-          <div className="text-4xl sm:text-6xl font-extrabold leading-tight break-keep">{cur.hit.name || '(제품명 없음)'}</div>
-          <div className="mt-4 text-3xl sm:text-4xl font-mono font-bold">{cur.hit.code}</div>
-          <div className="mt-3 text-sm font-mono opacity-80">{cur.raw}{cur.raw !== cur.hit.barcode && ` (등록: ${cur.hit.barcode})`} · {time(cur.at)}</div>
+          <div className="text-4xl sm:text-6xl font-extrabold leading-tight break-keep">{shown.hit.name || '(제품명 없음)'}</div>
+          <div className="mt-4 text-3xl sm:text-4xl font-mono font-bold">{shown.hit.code}</div>
+          <div className="mt-3 text-sm font-mono opacity-80">{shown.raw}{shown.raw !== shown.hit.barcode && ` (등록: ${shown.hit.barcode})`} · {time(shown.at)}</div>
         </div>
       ) : (
-        <div key={cur.seq} className="rounded-2xl bg-rose-600 text-white px-6 py-10 text-center shadow-lg animate-[scanflash_0.35s_ease-out]">
+        <div key={shown.seq} className="rounded-2xl bg-rose-600 text-white px-6 py-10 text-center shadow-lg animate-[scanflash_0.35s_ease-out]">
           <div className="text-sm opacity-80 mb-2">✖ {streak > 1 && <span className="bg-white/20 rounded px-1.5">같은 바코드 {streak}번째</span>}</div>
           <div className="text-5xl sm:text-7xl font-extrabold">바코드 불량</div>
-          <div className="mt-4 text-lg sm:text-xl font-semibold">{cur.reason}</div>
-          <div className="mt-3 text-sm font-mono opacity-80">읽힌 값: {cur.raw} · {time(cur.at)}</div>
+          <div className="mt-4 text-lg sm:text-xl font-semibold">{shown.reason}</div>
+          <div className="mt-3 text-sm font-mono opacity-80">읽힌 값: {shown.raw} · {time(shown.at)}</div>
+        </div>
+      )}
+
+      {saveErr && (
+        <div className="border border-rose-300 bg-rose-50 text-rose-700 rounded px-3 py-2 text-xs">⚠ 기록 저장 실패 — {saveErr}. 인터넷 연결을 확인하세요 (화면 표시는 정상).</div>
+      )}
+
+      {/* 품목별 집계 */}
+      {byProduct.length > 0 && (
+        <div className="bg-white border rounded-lg overflow-hidden">
+          <div className="px-4 py-2 border-b bg-slate-50 text-sm font-bold text-gray-700">품목별 집계 <span className="text-xs font-normal text-gray-500">{viewDate} · 정상 스캔 수</span></div>
+          <div className="flex flex-wrap gap-2 p-3">
+            {byProduct.map((p) => (
+              <span key={p.code} className="inline-flex items-center gap-1.5 border rounded-full px-3 py-1 text-sm">
+                <b className="font-mono text-indigo-700">{p.code}</b>
+                <span className="text-gray-700">{p.name}</span>
+                <b className="text-emerald-700 tabular-nums">{p.n}</b>
+              </span>
+            ))}
+            {badCount > 0 && <span className="inline-flex items-center gap-1.5 border border-rose-200 bg-rose-50 rounded-full px-3 py-1 text-sm text-rose-700">불량 <b>{badCount}</b></span>}
+          </div>
         </div>
       )}
 
       {/* 최근 기록 */}
       {history.length > 0 && (
         <div className="bg-white border rounded-lg overflow-hidden">
-          <div className="px-4 py-2 border-b bg-slate-50 text-sm font-bold text-gray-700">최근 찍은 기록 <span className="text-xs font-normal text-gray-500">(최근 50건 · 이 화면에서만)</span></div>
+          <div className="px-4 py-2 border-b bg-slate-50 text-sm font-bold text-gray-700">{viewDate} 기록 <span className="text-xs font-normal text-gray-500">{history.length.toLocaleString()}건 · 자동 저장 (다른 기기에서도 같이 보임)</span></div>
           <div className="max-h-80 overflow-y-auto">
             <table className="w-full text-sm">
               <tbody className="divide-y">
                 {history.map((h) => (
-                  <tr key={h.seq} className={h.ok ? '' : 'bg-rose-50'}>
+                  <tr key={h.id || h.seq} className={h.ok ? '' : 'bg-rose-50'}>
                     <td className="px-3 py-1.5 text-xs text-gray-500 w-20 tabular-nums">{time(h.at)}</td>
                     <td className="px-3 py-1.5 w-16">{h.ok ? <span className="text-emerald-700 font-bold">정상</span> : <span className="text-rose-600 font-bold">불량</span>}</td>
                     <td className="px-3 py-1.5 font-mono text-xs text-gray-600 w-40">{h.raw}</td>
