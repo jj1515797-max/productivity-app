@@ -837,17 +837,24 @@ export default function YieldAnalysis() {
      다만 실투입 미입력 행은 표준소요만 분자에 들어가고 분모에는 0 이라 수율을 부풀린다 —
      숨기지 않고 몇 종인지 같이 띄운다. */
   const viewSum = useMemo(() => {
-    let std = 0, act = 0, lossG = 0, lossAmt = 0, noInput = 0, odd = 0;
+    let std = 0, act = 0, lossG = 0, lossAmt = 0, noInput = 0, odd = 0, pStd = 0, pAct = 0;
     view.forEach((r) => {
       std += r.stdG;
       act += r.actG;
+      pStd += r.prevStdG || 0;
+      pAct += r.prevActG || 0;
       if (r.lossG !== null) lossG += r.lossG;
       if (r.lossAmt !== null) lossAmt += r.lossAmt;
       if (r.stdG > 0 && !r.hasInput) noInput++;
       if (r.yield !== null && !inRange(r.yield)) odd++;
     });
     const y = act > 0 ? std / act : null;
-    return { std, act, lossG, lossAmt, yield: y, lossRate: y === null ? null : 1 - y, noInput, odd };
+    // 비교월도 같은 방식 — 그 달 표준소요 합계 ÷ 그 달 실제투입 합계
+    const py = pAct > 0 ? pStd / pAct : null;
+    return {
+      std, act, lossG, lossAmt, yield: y, lossRate: y === null ? null : 1 - y, noInput, odd,
+      prevYield: py, deltaPP: y !== null && py !== null ? (y - py) * 100 : null,
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view]);
 
@@ -910,7 +917,7 @@ export default function YieldAnalysis() {
     const sumRow = ws.addRow({
       n: '합계', c: `${view.length}종`,
       s: kg(viewSum.std), a: kg(viewSum.act),
-      y: viewSum.yield,
+      y: viewSum.yield, p: viewSum.prevYield, d: viewSum.deltaPP,
       l: kg(viewSum.lossG), lr: viewSum.lossRate,
       la: Math.round(viewSum.lossAmt),
       st: [
@@ -921,7 +928,8 @@ export default function YieldAnalysis() {
     sumRow.font = { bold: true };
     sumRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8EEF7' } };
     ['s', 'a', 'l'].forEach((k) => { sumRow.getCell(k).numFmt = '#,##0.0'; });
-    ['y', 'lr'].forEach((k) => { sumRow.getCell(k).numFmt = '0.0%'; });
+    ['y', 'p', 'lr'].forEach((k) => { sumRow.getCell(k).numFmt = '0.0%'; });
+    sumRow.getCell('d').numFmt = '+0.0;-0.0';
     sumRow.getCell('la').numFmt = '#,##0';
     sumRow.getCell('st').font = { bold: true, color: { argb: 'FFC00000' } };
 
@@ -1662,6 +1670,40 @@ export default function YieldAnalysis() {
                     <th className="px-2 py-2 text-right w-24">LOSS 금액<br /><span className="font-normal text-gray-400">{month} 단가</span></th>
                     <th className="px-3 py-2 text-left w-56">원인 점검 포인트</th>
                   </tr>
+                  {/* 합계 — 헤더 바로 아래. thead 안에 두어 스크롤해도 헤더와 함께 붙어 있다 */}
+                  {view.length > 0 && (
+                    <tr className="bg-slate-100 border-t border-slate-300 font-bold text-gray-800">
+                      <td className="px-3 py-2">
+                        합계
+                        <span className="ml-1.5 font-normal text-[10px] text-gray-500">
+                          {view.length}종{search.trim() ? ' · 검색 결과만' : ''}
+                        </span>
+                      </td>
+                      <td className="px-2 py-2 text-right">{fmt(kg(viewSum.std))}</td>
+                      <td className="px-2 py-2 text-right">{fmt(kg(viewSum.act))}</td>
+                      <td className="px-2 py-2 text-right"
+                        title={'표준소요 합계 ÷ 실제투입 합계 (가중평균).\n퍼센트를 단순 평균하면 소량 원재료가 과대 반영됩니다.'
+                          + (viewSum.noInput > 0 ? `\n\n⚠ 실투입 미입력 ${viewSum.noInput}종이 섞여 있어 실제보다 높게 나옵니다.` : '')
+                          + (viewSum.odd > 0 ? `\n⚠ 정상범위 밖 ${viewSum.odd}종 포함.` : '')}>
+                        {pct(viewSum.yield)}
+                        {(viewSum.noInput > 0 || viewSum.odd > 0) && <span className="text-amber-600"> ⚠</span>}
+                      </td>
+                      <td className="px-2 py-2 text-right text-gray-600"
+                        title={`${cmpMonth} 표준소요 합계 ÷ 실제투입 합계 (가중평균)`}>
+                        {pct(viewSum.prevYield)}
+                      </td>
+                      <td className={`px-2 py-2 text-right ${viewSum.deltaPP === null ? 'text-gray-300'
+                        : viewSum.deltaPP < 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
+                        {viewSum.deltaPP === null ? '—' : `${viewSum.deltaPP > 0 ? '+' : ''}${fmt(viewSum.deltaPP, 1)}`}
+                      </td>
+                      <td className="px-2 py-2 text-right">{fmt(kg(viewSum.lossG))}</td>
+                      <td className="px-2 py-2 text-right">{pct(viewSum.lossRate)}</td>
+                      <td className="px-2 py-2 text-right text-amber-800">
+                        {Math.round(viewSum.lossAmt).toLocaleString()}
+                      </td>
+                      <td className="px-3 py-2" />
+                    </tr>
+                  )}
                 </thead>
                 <tbody className="divide-y tabular-nums">
                   {view.map((r) => {
@@ -1705,36 +1747,6 @@ export default function YieldAnalysis() {
                     );
                   })}
                 </tbody>
-                {/* 합계 — 스크롤해도 바닥에 붙어 있게 둔다. 표가 길어 아래로 내려가면 못 보기 때문 */}
-                {view.length > 0 && (
-                  <tfoot className="sticky bottom-0 z-10">
-                    <tr className="bg-slate-100 border-t-2 border-slate-300 font-bold text-gray-800">
-                      <td className="px-3 py-2">
-                        합계
-                        <span className="ml-1.5 font-normal text-[10px] text-gray-500">
-                          {view.length}종{search.trim() ? ' · 검색 결과만' : ''}
-                        </span>
-                      </td>
-                      <td className="px-2 py-2 text-right">{fmt(kg(viewSum.std))}</td>
-                      <td className="px-2 py-2 text-right">{fmt(kg(viewSum.act))}</td>
-                      <td className="px-2 py-2 text-right"
-                        title={'표준소요 합계 ÷ 실제투입 합계 (가중평균).\n퍼센트를 단순 평균하면 소량 원재료가 과대 반영됩니다.'
-                          + (viewSum.noInput > 0 ? `\n\n⚠ 실투입 미입력 ${viewSum.noInput}종이 섞여 있어 실제보다 높게 나옵니다.` : '')
-                          + (viewSum.odd > 0 ? `\n⚠ 정상범위 밖 ${viewSum.odd}종 포함.` : '')}>
-                        {pct(viewSum.yield)}
-                        {(viewSum.noInput > 0 || viewSum.odd > 0) && <span className="text-amber-600"> ⚠</span>}
-                      </td>
-                      <td className="px-2 py-2" />
-                      <td className="px-2 py-2" />
-                      <td className="px-2 py-2 text-right">{fmt(kg(viewSum.lossG))}</td>
-                      <td className="px-2 py-2 text-right">{pct(viewSum.lossRate)}</td>
-                      <td className="px-2 py-2 text-right text-amber-800">
-                        {Math.round(viewSum.lossAmt).toLocaleString()}
-                      </td>
-                      <td className="px-3 py-2" />
-                    </tr>
-                  </tfoot>
-                )}
               </table>
             </div>
             {(viewSum.noInput > 0 || viewSum.odd > 0) && (
