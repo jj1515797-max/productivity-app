@@ -506,6 +506,16 @@ export default function YieldAnalysis() {
         names: x.names,
       }));
 
+      // 단가는 캐시(30일)에 든 값을 쓰지 않고 지금 불러온 재고평가 단가로 다시 매긴다.
+      // (캐시가 단가 업로드 전·로딩 전에 만들어지면 0원이 그대로 남아 LOSS 금액이 안 뜬다)
+      const priceNow = (m: string, code: string, name: string, cached: number) => {
+        const ck = code ? monthPriceKey(m, CODE_KEY_PREFIX + normalizeCode(code)) : '';
+        if (ck && priceMap.has(ck)) return priceMap.get(ck) ?? 0;
+        const nk = monthPriceKey(m, normalizeMaterialName(name));
+        if (priceMap.has(nk)) return priceMap.get(nk) ?? 0;
+        return cached || 0;
+      };
+
       // 월별 상태
       const mstat: MonthStat[] = months.map((m, i) => {
         const stdMap = new Map(stds[i].rows.map((r) => [r.k, r]));
@@ -560,7 +570,7 @@ export default function YieldAnalysis() {
           if (i === months.length - 1 && sr && sr.g > 0 && act > 0) {
             lastHasData = true;
             lossKgLast = (act - sr.g) / 1000;
-            lossAmtLast = (act - sr.g) * (sr.p || 0);
+            lossAmtLast = (act - sr.g) * priceNow(m, sr.c, sr.n, sr.p);
           }
         });
         if (!anyVal) return;
@@ -625,7 +635,7 @@ export default function YieldAnalysis() {
           if (!e) { e = { byMonth: {} }; catAgg.set(cat, e); }
           if (!e.byMonth[m]) e.byMonth[m] = { s: 0, a: 0, amt: 0, n: 0 };
           const b = e.byMonth[m];
-          b.s += r.g; b.a += act; b.amt += act * (r.p || 0); b.n++;
+          b.s += r.g; b.a += act; b.amt += act * priceNow(m, r.c, r.n, r.p); b.n++;
         });
       });
       const lastM = months[months.length - 1];
@@ -1369,7 +1379,7 @@ export default function YieldAnalysis() {
                         title={!r.lastHasData ? '최근월 표준소요 또는 실투입이 없어 계산 불가'
                           : r.lossAmtLast > 0 ? `실투입이 표준소요보다 ${fmt(r.lossKgLast)}kg 많음`
                             : `실투입이 표준소요보다 ${fmt(-r.lossKgLast)}kg 적음 (수율 100% 초과) — 손실이 아니라 BOM 기준 차이일 수 있습니다`}>
-                        {!r.lastHasData ? '—' : Math.round(r.lossAmtLast).toLocaleString()}
+                        {!r.lastHasData ? '—' : (Math.round(r.lossAmtLast) || 0).toLocaleString()}
                       </td>
                     </tr>
                   ))}
@@ -1547,6 +1557,19 @@ export default function YieldAnalysis() {
                   .filter((r) => categoryOf(catIndex, r.code, r.name) === openCat)
                   .sort((a, b) => (b.lossAmt ?? -1) - (a.lossAmt ?? -1));
                 const c = catStats.find((x) => x.name === openCat);
+                // 관리표 합계와 같은 규칙 — 표준소요 합계 ÷ 실투입 합계 (가중평균)
+                let sStd = 0, sAct = 0, sLoss = 0, sAmt = 0, sPStd = 0, sPAct = 0, sNo = 0, sOdd = 0;
+                list.forEach((r) => {
+                  sStd += r.stdG; sAct += r.actG;
+                  sPStd += r.prevStdG || 0; sPAct += r.prevActG || 0;
+                  if (r.lossG !== null) sLoss += r.lossG;
+                  if (r.lossAmt !== null) sAmt += r.lossAmt;
+                  if (r.stdG > 0 && !r.hasInput) sNo++;
+                  if (r.yield !== null && !inRangeV(r.yield)) sOdd++;
+                });
+                const sY = sAct > 0 ? sStd / sAct : null;
+                const sPY = sPAct > 0 ? sPStd / sPAct : null;
+                const sD = sY !== null && sPY !== null ? (sY - sPY) * 100 : null;
                 return (
                   <div className="border-t bg-slate-50 px-3 py-3">
                     <div className="flex items-center justify-between mb-2">
@@ -1572,6 +1595,29 @@ export default function YieldAnalysis() {
                             <th className="px-2 py-1.5 text-right">증감(%p)</th>
                             <th className="px-2 py-1.5 text-right">LOSS(kg)</th>
                             <th className="px-2 py-1.5 text-right">LOSS(원)</th>
+                          </tr>
+                          <tr className="bg-slate-100 text-gray-900 font-bold tabular-nums border-t">
+                            <td className="px-2 py-1.5">
+                              합계 <span className="text-[10px] font-normal text-gray-500">({list.length}종)</span>
+                              {(sNo > 0 || sOdd > 0) && (
+                                <div className="text-[10px] font-normal text-amber-700">
+                                  {sNo > 0 && `미입력 ${sNo}종`}{sNo > 0 && sOdd > 0 && ' · '}{sOdd > 0 && `범위밖 ${sOdd}종`} 포함
+                                </div>
+                              )}
+                            </td>
+                            <td className="px-2 py-1.5 text-right">{fmt(kg(sStd))}</td>
+                            <td className="px-2 py-1.5 text-right">{fmt(kg(sAct))}</td>
+                            <td className="px-2 py-1.5 text-right text-blue-800"
+                              title={'표준소요 합계 ÷ 실투입 합계 (가중평균)'
+                                + (sPY !== null ? `\n${cmpMonth} 가중수율 ${fmt(sPY * 100)}%` : '')}>
+                              {sY === null ? '—' : fmt(sY * 100)}
+                            </td>
+                            <td className={`px-2 py-1.5 text-right ${sD === null ? 'text-gray-300'
+                              : sD < 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
+                              {sD === null ? '—' : `${sD > 0 ? '+' : ''}${fmt(sD, 1)}`}
+                            </td>
+                            <td className="px-2 py-1.5 text-right">{fmt(kg(sLoss))}</td>
+                            <td className="px-2 py-1.5 text-right text-amber-800">{Math.round(sAmt).toLocaleString()}</td>
                           </tr>
                         </thead>
                         <tbody className="divide-y tabular-nums">
