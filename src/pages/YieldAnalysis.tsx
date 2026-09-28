@@ -36,6 +36,12 @@ const RANGE_LO = 0.2;
 const RANGE_HI = 2.0;
 /** 수율이 정상 범위인가 (데이터 이상 격리용) — 화면·엑셀·추이 전부 이 기준 하나만 쓴다 */
 const inRangeV = (v: number | null | undefined): v is number => v !== null && v !== undefined && v >= RANGE_LO && v <= RANGE_HI;
+/** 추이표 칸 색을 칠하는 기준 (%p).
+ *  화면 위의 「이상 임계」는 '전월 대비 하락' 경보용이라 2%p 로 민감하게 잡아야 한다.
+ *  반면 추이표 칸은 '그 원재료 자기 평균 대비 편차' 라 성격이 다르다 — 원물은 철마다
+ *  자기 평균에서 5~10%p 는 예사로 움직여서, 같은 2%p 를 쓰면 표 전체가 색으로 덮여
+ *  정작 튄 달이 안 보인다. 그래서 따로 떼어 크게 잡는다. */
+const TREND_BAND = 10;
 
 function readCache(ck: string, month: string): MonthStd | null {
   try {
@@ -825,6 +831,26 @@ export default function YieldAnalysis() {
     return s;
   }, [rows, search, sortBy]);
 
+  /* 표 아래 합계 — 지금 화면에 보이는 행만 더한다 (검색 결과가 바뀌면 같이 바뀐다).
+     kg·금액은 그냥 더하면 되지만 수율은 퍼센트를 평균 내면 안 되고 Σ표준 ÷ Σ실투입 이어야 한다.
+     화면의 두 합계를 나눈 값과 정확히 같게 두어, 사람이 손으로 검산해도 맞아떨어지게 한다.
+     다만 실투입 미입력 행은 표준소요만 분자에 들어가고 분모에는 0 이라 수율을 부풀린다 —
+     숨기지 않고 몇 종인지 같이 띄운다. */
+  const viewSum = useMemo(() => {
+    let std = 0, act = 0, lossG = 0, lossAmt = 0, noInput = 0, odd = 0;
+    view.forEach((r) => {
+      std += r.stdG;
+      act += r.actG;
+      if (r.lossG !== null) lossG += r.lossG;
+      if (r.lossAmt !== null) lossAmt += r.lossAmt;
+      if (r.stdG > 0 && !r.hasInput) noInput++;
+      if (r.yield !== null && !inRange(r.yield)) odd++;
+    });
+    const y = act > 0 ? std / act : null;
+    return { std, act, lossG, lossAmt, yield: y, lossRate: y === null ? null : 1 - y, noInput, odd };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [view]);
+
   const downloadXlsx = async () => {
     if (!rows) return;
     const wb = new ExcelJS.Workbook();
@@ -879,6 +905,26 @@ export default function YieldAnalysis() {
       if (!oddR && r.deltaPP !== null && r.deltaPP <= -threshold) row.getCell('d').font = { bold: true, color: { argb: 'FFC00000' } };
       if (!oddR && (r.yield || 0) > 1) row.getCell('y').font = { bold: true, color: { argb: 'FF7030A0' } };
     });
+    // 합계 — 화면 표와 같은 값. 엑셀만 받아 본 사람도 총계를 바로 볼 수 있어야 한다.
+    ws.addRow({});
+    const sumRow = ws.addRow({
+      n: '합계', c: `${view.length}종`,
+      s: kg(viewSum.std), a: kg(viewSum.act),
+      y: viewSum.yield,
+      l: kg(viewSum.lossG), lr: viewSum.lossRate,
+      la: Math.round(viewSum.lossAmt),
+      st: [
+        viewSum.noInput > 0 ? `실투입 미입력 ${viewSum.noInput}종 포함 — 수율 과대` : '',
+        viewSum.odd > 0 ? `정상범위 밖 ${viewSum.odd}종 포함` : '',
+      ].filter(Boolean).join(' · '),
+    });
+    sumRow.font = { bold: true };
+    sumRow.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8EEF7' } };
+    ['s', 'a', 'l'].forEach((k) => { sumRow.getCell(k).numFmt = '#,##0.0'; });
+    ['y', 'lr'].forEach((k) => { sumRow.getCell(k).numFmt = '0.0%'; });
+    sumRow.getCell('la').numFmt = '#,##0';
+    sumRow.getCell('st').font = { bold: true, color: { argb: 'FFC00000' } };
+
     ws.views = [{ state: 'frozen', ySplit: 1 }];
     const buf = await wb.xlsx.writeBuffer();
     const url = URL.createObjectURL(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
@@ -1276,10 +1322,7 @@ export default function YieldAnalysis() {
                   <tr>
                     <th className="px-3 py-2 text-left sticky left-0 bg-white z-20 min-w-[180px]">원재료</th>
                     {trend.months.map((m) => <th key={m.month} className="px-2 py-2 text-center w-16">{m.month.slice(2)}</th>)}
-                    <th className="px-2 py-2 text-center w-16 bg-slate-50">평균</th>
-                    <th className="px-2 py-2 text-center w-20 bg-slate-50">이전평균</th>
-                    <th className="px-2 py-2 text-center w-24 bg-slate-50">최근−이전평균<br /><span className="font-normal text-gray-400">%p</span></th>
-                    <th className="px-2 py-2 text-center w-16 bg-slate-50">변동폭<br /><span className="font-normal text-gray-400">%p</span></th>
+                    <th className="px-2 py-2 text-center w-20 bg-slate-50">{trend.months.length}개월 평균</th>
                     <th className="px-2 py-2 text-right w-24 bg-slate-50">최근월 LOSS<br /><span className="font-normal text-gray-400">그 달 단가</span></th>
                   </tr>
                 </thead>
@@ -1295,8 +1338,8 @@ export default function YieldAnalysis() {
                         const odd = v !== null && !inRangeV(v);
                         const d = !odd && v !== null && r.avg !== null ? (v - r.avg) * 100 : null;
                         const bg = odd ? 'bg-gray-100 text-gray-400'
-                          : d === null ? '' : d <= -threshold ? 'bg-rose-100 text-rose-800 font-bold'
-                            : d >= threshold ? 'bg-violet-100 text-violet-800 font-bold' : '';
+                          : d === null ? '' : d <= -TREND_BAND ? 'bg-rose-100 text-rose-800 font-bold'
+                            : d >= TREND_BAND ? 'bg-violet-100 text-violet-800 font-bold' : '';
                         return (
                           <td key={m.month} className={`px-2 py-1.5 text-center ${bg}`}
                             title={odd ? `${RANGE_LO * 100}~${RANGE_HI * 100}% 범위를 벗어나 평균·증감 계산에서 제외했습니다`
@@ -1305,16 +1348,14 @@ export default function YieldAnalysis() {
                           </td>
                         );
                       })}
-                      <td className="px-2 py-1.5 text-center bg-slate-50 font-semibold">
+                      {/* 이상치로 뺀 달이 있으면 그 행만 실제 평균 개월수가 다르다.
+                          숫자만 두면 전부 같은 기간을 평균한 것처럼 보이므로 * 로만 표시한다. */}
+                      <td className="px-2 py-1.5 text-center bg-slate-50 font-semibold"
+                        title={r.months === trend.months.length ? undefined
+                          : `${r.months}개월 평균 — 이상치 ${trend.months.length - r.months}개월 제외`}>
                         {pct(r.avg)}
-                        <span className="text-[10px] text-gray-400 ml-1">{r.months}개월</span>
+                        {r.months !== trend.months.length && <span className="text-gray-400">*</span>}
                       </td>
-                      <td className="px-2 py-1.5 text-center bg-slate-50 text-gray-600">{pct(r.prevAvg)}</td>
-                      <td className={`px-2 py-1.5 text-center bg-slate-50 font-bold ${r.lastVsAvg === null ? 'text-gray-300' : r.lastVsAvg <= -threshold ? 'text-rose-600' : r.lastVsAvg >= threshold ? 'text-violet-700' : 'text-gray-500'}`}
-                        title={r.lastVsAvg === null ? '비교할 이전 달 데이터가 없습니다' : undefined}>
-                        {r.lastVsAvg === null ? '—' : `${r.lastVsAvg > 0 ? '+' : ''}${fmt(r.lastVsAvg, 1)}`}
-                      </td>
-                      <td className="px-2 py-1.5 text-center bg-slate-50 text-gray-600">{r.range === null ? '—' : fmt(r.range, 1)}</td>
                       <td className={`px-2 py-1.5 text-right bg-slate-50 font-semibold
                         ${!r.lastHasData ? 'text-gray-300' : r.lossAmtLast > 0 ? 'text-amber-700' : 'text-gray-400'}`}
                         title={!r.lastHasData ? '최근월 표준소요 또는 실투입이 없어 계산 불가'
@@ -1329,8 +1370,10 @@ export default function YieldAnalysis() {
             </div>
             <div className="px-4 py-2 border-t bg-slate-50 text-[11px] text-gray-500">
               절대값이 100%가 아니어도 됩니다 — BOM 기준과 매입 기준이 다르면 원재료마다 고유한 기준선이 생깁니다.
-              <b className="text-rose-600 ml-1">붉은 칸</b>(평균보다 {threshold}%p 이상 낮음) = 그 달에 표준보다 더 씀,
-              <b className="text-violet-700 ml-1">보라 칸</b> = 덜 씀. <b>변동폭이 큰 원재료부터</b> 보세요.
+              <b className="text-rose-600 ml-1">붉은 칸</b>(그 원재료 평균보다 {TREND_BAND}%p 이상 낮음) = 그 달에 표준보다 더 씀,
+              <b className="text-violet-700 ml-1">보라 칸</b> = 덜 씀.
+              위 <b>「변동폭순」</b>으로 정렬하면 달마다 크게 흔들린 원재료부터 올라옵니다.
+              평균 옆 <b>*</b> = 이상치로 뺀 달이 있어 그 행만 평균 기간이 짧습니다.
               <br />
               <b>최근월 LOSS</b> — 실투입 − 표준소요를 그 달 단가로 평가한 금액입니다.
               <b className="text-amber-700 ml-1">주황(양수)</b> = 표준보다 더 씀,
@@ -1662,8 +1705,46 @@ export default function YieldAnalysis() {
                     );
                   })}
                 </tbody>
+                {/* 합계 — 스크롤해도 바닥에 붙어 있게 둔다. 표가 길어 아래로 내려가면 못 보기 때문 */}
+                {view.length > 0 && (
+                  <tfoot className="sticky bottom-0 z-10">
+                    <tr className="bg-slate-100 border-t-2 border-slate-300 font-bold text-gray-800">
+                      <td className="px-3 py-2">
+                        합계
+                        <span className="ml-1.5 font-normal text-[10px] text-gray-500">
+                          {view.length}종{search.trim() ? ' · 검색 결과만' : ''}
+                        </span>
+                      </td>
+                      <td className="px-2 py-2 text-right">{fmt(kg(viewSum.std))}</td>
+                      <td className="px-2 py-2 text-right">{fmt(kg(viewSum.act))}</td>
+                      <td className="px-2 py-2 text-right"
+                        title={'표준소요 합계 ÷ 실제투입 합계 (가중평균).\n퍼센트를 단순 평균하면 소량 원재료가 과대 반영됩니다.'
+                          + (viewSum.noInput > 0 ? `\n\n⚠ 실투입 미입력 ${viewSum.noInput}종이 섞여 있어 실제보다 높게 나옵니다.` : '')
+                          + (viewSum.odd > 0 ? `\n⚠ 정상범위 밖 ${viewSum.odd}종 포함.` : '')}>
+                        {pct(viewSum.yield)}
+                        {(viewSum.noInput > 0 || viewSum.odd > 0) && <span className="text-amber-600"> ⚠</span>}
+                      </td>
+                      <td className="px-2 py-2" />
+                      <td className="px-2 py-2" />
+                      <td className="px-2 py-2 text-right">{fmt(kg(viewSum.lossG))}</td>
+                      <td className="px-2 py-2 text-right">{pct(viewSum.lossRate)}</td>
+                      <td className="px-2 py-2 text-right text-amber-800">
+                        {Math.round(viewSum.lossAmt).toLocaleString()}
+                      </td>
+                      <td className="px-3 py-2" />
+                    </tr>
+                  </tfoot>
+                )}
               </table>
             </div>
+            {(viewSum.noInput > 0 || viewSum.odd > 0) && (
+              <div className="px-4 py-2 border-t bg-amber-50 text-[11px] text-amber-800">
+                ⚠ 합계 수율 주의 —
+                {viewSum.noInput > 0 && <> <b>실투입 미입력 {viewSum.noInput}종</b>이 표준소요만 더해져 수율이 실제보다 높게 나옵니다.</>}
+                {viewSum.odd > 0 && <> <b>정상범위 밖 {viewSum.odd}종</b>이 섞여 있습니다.</>}
+                {' '}kg·금액 합계는 보이는 행을 그대로 더한 값이라 영향 없습니다.
+              </div>
+            )}
             <div className="px-4 py-2 border-t bg-slate-50 text-[11px] text-gray-500">
               진단 순서 — <b>① 데이터·마스터</b>(배합비·단위·코드 매핑) → <b>② 공정</b>(전처리·잔량·재작업) → <b>③ 원물</b>(산지·계절·수분·불량률).
               <b className="text-violet-700">*</b> 수율 100% 초과 — BOM 기준(불린 쌀 등)과 매입 기준(건조 쌀)이 다르면 정상입니다.
