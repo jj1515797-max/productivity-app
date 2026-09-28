@@ -7,7 +7,7 @@
  *  - 가상 키보드가 튀어나오지 않게 화면의 입력창은 읽기 전용(표시용)이다
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { addDoc, collection, limit, onSnapshot, orderBy, query } from 'firebase/firestore';
+import { addDoc, collection, deleteDoc, doc, limit, onSnapshot, orderBy, query, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import { BARCODE_COL, barcodeVariants, gtinCheck, normalizeBarcode } from '../lib/barcode';
 import type { ProductBarcode } from '../lib/barcode';
@@ -237,6 +237,29 @@ export default function BarcodeCheck() {
     });
     return [...m.values()].sort((a, b) => b.n - a.n || a.code.localeCompare(b.code));
   })();
+  const removeOne = async (h: Result) => {
+    if (!h.id) return;
+    const what = h.ok ? `${h.hit.code} ${h.hit.name}` : `불량 (${h.raw})`;
+    if (!confirm(`${time(h.at)} ${what}\n이 기록을 삭제할까요?`)) return;
+    try {
+      await deleteDoc(doc(db, 'barcodeScans', viewDate, 'logs', h.id));
+      if (cur && cur.at === h.at && cur.raw === h.raw) setCur(null);
+    } catch (e: any) { alert(`삭제 실패: ${e?.message || e}`); }
+  };
+  const removeAll = async () => {
+    if (history.length === 0) return;
+    if (prompt(`⚠️ ${viewDate} 기록 ${history.length}건을 모두 삭제합니다. 되돌릴 수 없습니다.\n진행하려면 "삭제" 를 입력하세요.`) !== '삭제') return;
+    try {
+      const ids = history.map((h) => h.id).filter((x): x is string => !!x);
+      for (let i = 0; i < ids.length; i += 400) {
+        const b = writeBatch(db);
+        ids.slice(i, i + 400).forEach((id) => b.delete(doc(db, 'barcodeScans', viewDate, 'logs', id)));
+        await b.commit();
+      }
+      setCur(null);
+    } catch (e: any) { alert(`삭제 실패: ${e?.message || e}`); }
+  };
+
   const downloadXlsx = async () => {
     const ExcelJS = (await import('exceljs')).default;
     const wb = new ExcelJS.Workbook();
@@ -356,7 +379,10 @@ export default function BarcodeCheck() {
       {/* 최근 기록 */}
       {history.length > 0 && (
         <div className="bg-white border rounded-lg overflow-hidden">
-          <div className="px-4 py-2 border-b bg-slate-50 text-sm font-bold text-gray-700">{viewDate} 기록 <span className="text-xs font-normal text-gray-500">{history.length.toLocaleString()}건 · 자동 저장 (다른 기기에서도 같이 보임)</span></div>
+          <div className="px-4 py-2 border-b bg-slate-50 text-sm font-bold text-gray-700 flex items-center gap-2">
+            <span>{viewDate} 기록 <span className="text-xs font-normal text-gray-500">{history.length.toLocaleString()}건 · 자동 저장 (다른 기기에서도 같이 보임)</span></span>
+            <button onClick={removeAll} className="ml-auto text-xs font-normal text-red-500 hover:underline">🗑 이 날짜 전체 삭제</button>
+          </div>
           <div className="max-h-80 overflow-y-auto">
             <table className="w-full text-sm">
               <tbody className="divide-y">
@@ -366,6 +392,10 @@ export default function BarcodeCheck() {
                     <td className="px-3 py-1.5 w-16">{h.ok ? <span className="text-emerald-700 font-bold">정상</span> : <span className="text-rose-600 font-bold">불량</span>}</td>
                     <td className="px-3 py-1.5 font-mono text-xs text-gray-600 w-40">{h.raw}</td>
                     <td className="px-3 py-1.5">{h.ok ? <><b className="font-mono text-indigo-700 mr-2">{h.hit.code}</b>{h.hit.name}</> : <span className="text-rose-600 text-xs">{h.reason}</span>}</td>
+                    <td className="px-2 py-1 w-16 text-right">
+                      {h.id && <button onClick={() => removeOne(h)} title="이 기록 삭제"
+                        className="px-2.5 py-1 text-xs text-red-500 border border-red-200 rounded hover:bg-red-50 active:bg-red-100">삭제</button>}
+                    </td>
                   </tr>
                 ))}
               </tbody>
