@@ -13,6 +13,7 @@ import type { BackupProgress, BackupResult } from '../lib/dbBackup';
 import { canonicalShort, convertErpCode } from '../lib/codeUtil';
 import { CODE_KEY_PREFIX, normalizeCode, normalizeMaterialName } from '../lib/wasteCompute';
 import type { NotifySettings } from '../lib/productionNotify';
+import ProductBarcodePanel from '../components/ProductBarcodePanel';
 
 type ProdType = '냄비' | '바트';
 
@@ -41,6 +42,8 @@ export default function ProductSettings() {
   const [showPurchaseErp, setShowPurchaseErp] = useState(false);
   const [showBackup, setShowBackup] = useState(false);
   const [showMatInput, setShowMatInput] = useState(false);
+  const [showBarcode, setShowBarcode] = useState(false);
+  const [barcodeCount, setBarcodeCount] = useState<number | null>(null);
   // 원재료분석용 DB (수율 분석 전용 — 배합비 % 기반, 현장 BOM 과 분리)
   const [showYieldRecipe, setShowYieldRecipe] = useState(false);
   const [showYieldSub, setShowYieldSub] = useState(false);
@@ -453,6 +456,17 @@ export default function ProductSettings() {
           {showCategory && <MaterialCategoryPanel />}
         </Section>
       </div>
+
+      {/* 제품 바코드 DB — 입력 › 바코드 확인 */}
+      <Section
+        icon="🏷️"
+        title="제품 바코드 DB"
+        badge={barcodeCount !== null ? `${barcodeCount}건` : ''}
+        open={showBarcode}
+        onToggle={() => setShowBarcode(!showBarcode)}
+      >
+        {showBarcode && <ProductBarcodePanel onCountChange={setBarcodeCount} />}
+      </Section>
 
       {/* 실제 투입중량 DB — 원재료수율 분석용 (월별) */}
       <Section
