@@ -296,7 +296,7 @@ export default function YieldAnalysis() {
   const [running, setRunning] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [rows, setRows] = useState<Row[] | null>(null);
-  const [coverage, setCoverage] = useState<{ pct: number; missingQty: number; totalQty: number; missingCold: number; missingAmbient: number } | null>(null);
+  const [coverage, setCoverage] = useState<{ pct: number; missingQty: number; totalQty: number; missingCold: number; missingAmbient: number; list: { product: string; label: string; qty: number }[] } | null>(null);
   const [catSort, setCatSort] = useState<'impact' | 'loss' | 'delta' | 'yield' | 'name'>('impact');
   const [openCat, setOpenCat] = useState<string | null>(null);
   const [cmpDiag, setCmpDiag] = useState<{ hasInput: boolean; qty: number; baseQty: number; partial: boolean }>(
@@ -308,6 +308,7 @@ export default function YieldAnalysis() {
     month: string;
     contribs: UsageContrib[];
     missingCold: string[]; missingAmbient: string[]; missingPrices: string[];
+    missingProducts: { product: string; label: string; kind: 'cold' | 'ambient'; qty: number }[];
     remapped: string[];
   } | null>(null);
   const [excludeText, setExcludeText] = useState(EXCLUDE_DEFAULT.join(', '));
@@ -453,7 +454,14 @@ export default function YieldAnalysis() {
       // 실투입만 보면 안 된다 — 앱 도입 전이라 '생산 데이터가 없는 달' 도 ERP 수불로
       // 실투입만 채워 넣을 수 있고, 그러면 표준소요가 0/과소라 수율이 통째로 낮게 나온다.
       // 그 값이 20~200% 안에 들어오면 정상값으로 섞여 '수율효과' 카드에 허위 개선이 찍힌다.
+      // 레시피 없는 냉장 제품은 코드만 있으니 그 달 계획(items)의 제품명을 붙인다
+      const prodName = new Map<string, string>();
+      raw.items.forEach((it) => { const k = canonicalShort(it.code || ''); if (k && it.name && !prodName.has(k)) prodName.set(k, it.name); });
+      const missingProducts = (std.missingProducts || [])
+        .map((x) => ({ ...x, label: x.kind === 'cold' ? (prodName.get(x.product) || x.product) : x.product }))
+        .sort((a, b) => b.qty - a.qty);
       setCoverage({
+        list: missingProducts,
         pct: std.coverage?.coveredPct ?? 100,
         missingQty: std.coverage?.missingQty || 0,
         totalQty: std.coverage?.totalQty || 0,
@@ -483,6 +491,7 @@ export default function YieldAnalysis() {
         missingCold: std.missingColdCodes || [],
         missingAmbient: std.missingAmbientNames || [],
         missingPrices: std.missingPrices || [],
+        missingProducts,
         remapped: [...new Set(mapped.remapped)],
       };
       const inpNow = mapped.byStdKey;
@@ -1054,6 +1063,7 @@ export default function YieldAnalysis() {
       missingCold: au?.missingCold || [],
       missingAmbient: au?.missingAmbient || [],
       missingPrices: au?.missingPrices || [],
+      missingProducts: au?.missingProducts || [],
       remapped: au?.remapped || [],
       coveragePct: coverage ? coverage.pct : null,
       missingQty: coverage?.missingQty || 0,
@@ -1201,7 +1211,8 @@ export default function YieldAnalysis() {
           실투입(ERP 수불)은 전 품목분이 다 들어오는데 표준소요는 레시피가 등록된 품목만 잡힌다.
           → 분자만 작아져 수율이 실제보다 '낮게' 나온다. 채우는 도중에 이걸 모르면
              멀쩡한 원재료가 전부 로스 나는 것처럼 보인다. */}
-      {mode === 'cmp' && coverage && coverage.pct < 99.5 && (
+      {/* 한 품목이라도 레시피가 없으면 띄운다 — 99.8% 처럼 작아도 어느 제품인지 알아야 채울 수 있다 */}
+      {mode === 'cmp' && coverage && coverage.missingQty > 0 && (
         <div className={`border rounded-lg px-3 py-2 text-xs ${coverage.pct < 90
           ? 'bg-rose-50 border-rose-300 text-rose-900' : 'bg-amber-50 border-amber-200 text-amber-900'}`}>
           {coverage.pct < 90 ? '🚨' : '⚠️'} <b>레시피 커버리지 {fmt(coverage.pct, 1)}%</b>
@@ -1211,6 +1222,16 @@ export default function YieldAnalysis() {
             ` (냉장 ${coverage.missingCold}품목 · 실온 ${coverage.missingAmbient}품목)`}.
           {' '}표준소요가 과소계상되어 <b>수율이 실제보다 낮게</b> 나옵니다.
           {coverage.pct < 90 && <b> 이 상태의 숫자는 보고자료에 쓰지 마세요.</b>}
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            <span className="text-[11px] opacity-80">레시피 없는 제품:</span>
+            {coverage.list.map((x) => (
+              <span key={x.product} className="inline-flex items-center gap-1 bg-white/70 border border-current/20 rounded px-1.5 py-0.5 text-[11px]">
+                <b className="font-mono">{x.product}</b>{x.label !== x.product && <span>{x.label}</span>}
+                <span className="opacity-70">{Math.round(x.qty).toLocaleString()}EA</span>
+              </span>
+            ))}
+            <span className="text-[11px] opacity-80">→ 설정 › 레시피에 등록하세요</span>
+          </div>
         </div>
       )}
 

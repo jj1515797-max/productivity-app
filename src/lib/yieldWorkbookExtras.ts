@@ -38,6 +38,8 @@ export interface AuditCtx {
   missingCold: string[];
   missingAmbient: string[];
   missingPrices: string[];
+  /** 레시피 없어 표준소요에서 빠진 제품 — 제품별 생산량 합계가 월별현황과 맞는지 보려면 필요 */
+  missingProducts: { product: string; label: string; kind: 'cold' | 'ambient'; qty: number }[];
   remapped: string[];
   coveragePct: number | null;
   missingQty: number;
@@ -329,8 +331,8 @@ export function addAuditSheet(wb: ExcelJS.Workbook, ctx: AuditCtx) {
       item: '레시피 커버리지',
       val: ctx.coveragePct === null ? '—' : `${ctx.coveragePct.toFixed(1)}% (${ctx.missingQty.toLocaleString()} / ${ctx.totalQty.toLocaleString()} EA 누락)`,
       level: ctx.coveragePct === null || ctx.coveragePct >= 99.5 ? 'ok' : ctx.coveragePct >= 90 ? 'warn' : 'bad',
-      help: (ctx.missingCold.length || ctx.missingAmbient.length)
-        ? `레시피 없는 제품: ${[...ctx.missingCold, ...ctx.missingAmbient].slice(0, 12).join(', ')}${ctx.missingCold.length + ctx.missingAmbient.length > 12 ? ' …' : ''} → 이 제품의 원재료는 표준소요에서 빠져 수율이 낮게 나옵니다. 레시피 등록 필요.`
+      help: ctx.missingProducts.length
+        ? `레시피 없는 제품 ${ctx.missingProducts.length}개: ${[...ctx.missingProducts].sort((a, b) => b.qty - a.qty).map((x) => `${x.product}${x.label !== x.product ? ` ${x.label}` : ''} ${Math.round(x.qty).toLocaleString()}EA`).join(', ')} → 이 제품들의 원재료는 표준소요에서 빠져 수율이 낮게 나옵니다. 설정 › 레시피에 등록하세요. (아래 F 표에도 빨간색으로 나옵니다)`
         : '생산한 모든 제품에 레시피가 있습니다.',
     },
     {
@@ -606,21 +608,53 @@ export function addAuditSheet(wb: ExcelJS.Workbook, ctx: AuditCtx) {
 
   /* ---------- F. 제품별 생산량 ---------- */
   sectionRow(ws, 'F. 제품별 생산량 — 월별현황과 대조용', 12);
-  headRow(ws, ['제품코드/제품', '구분', '제품명', '생산량(EA)']);
-  const prod = new Map<string, { kind: string; label: string; qty: number }>();
+  headRow(ws, ['제품코드/제품', '구분', '제품명', '생산량(EA)', '레시피']);
+  const prod = new Map<string, { kind: string; label: string; qty: number; recipe: boolean }>();
   // 같은 제품은 원재료마다 같은 생산량이 반복되므로 한 번만 센다
   ctx.contribs.forEach((x) => {
     const k = `${x.kind}|${x.product}`;
     const e = prod.get(k);
-    if (!e) prod.set(k, { kind: x.kind === 'cold' ? '냉장' : '실온', label: x.label, qty: x.qty });
+    if (!e) prod.set(k, { kind: x.kind === 'cold' ? '냉장' : '실온', label: x.label, qty: x.qty, recipe: true });
     else if (x.qty > e.qty) e.qty = x.qty;
   });
+  // 레시피가 없어 표준소요에 안 들어간 제품도 생산량에는 넣어야 월별현황 합계와 맞는다
+  ctx.missingProducts.forEach((x) => {
+    const k = `${x.kind}|${x.product}`;
+    if (!prod.has(k)) prod.set(k, { kind: x.kind === 'cold' ? '냉장' : '실온', label: x.label, qty: x.qty, recipe: false });
+  });
+  const pFirst = ws.rowCount + 1;
   [...prod.entries()]
-    .sort((a, b) => a[1].kind.localeCompare(b[1].kind) || b[1].qty - a[1].qty)
+    .sort((a, b) => Number(a[1].recipe) - Number(b[1].recipe) || a[1].kind.localeCompare(b[1].kind) || b[1].qty - a[1].qty)
     .forEach(([k, v]) => {
-      const r = ws.addRow([k.split('|')[1], v.kind, v.label, v.qty]);
+      const r = ws.addRow([k.split('|')[1], v.kind, v.label, v.qty, v.recipe ? '있음' : '✖ 없음 — 표준소요에서 빠짐']);
       r.getCell(4).numFmt = '#,##0.##';
+      if (!v.recipe) {
+        r.getCell(5).font = { bold: true, color: { argb: 'FFC00000' } };
+        r.getCell(5).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: BAD_FILL } };
+      }
     });
+  const pLast = ws.rowCount;
+  const prodSum = [...prod.values()].reduce((a, v) => a + v.qty, 0);
+  const noRecipeSum = [...prod.values()].filter((v) => !v.recipe).reduce((a, v) => a + v.qty, 0);
+  const tr = ws.addRow(['합계', '', '위 제품별 생산량 합', '', '']);
+  tr.getCell(4).value = pLast >= pFirst ? { formula: `SUM(D${pFirst}:D${pLast})`, result: prodSum } : 0;
+  tr.getCell(4).numFmt = '#,##0.##';
+  tr.font = { bold: true };
+  tr.eachCell({ includeEmpty: true }, (c) => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: LIGHT } }; });
+  const cr = ws.addRow(['월별현황 총생산', '', '앱 월별현황과 같은 규칙으로 계산한 값', ctx.totalQty, '']);
+  cr.getCell(4).numFmt = '#,##0.##';
+  const vr2 = ws.addRow(['판정', '', '', '', '']);
+  vr2.getCell(4).value = {
+    formula: `IF(ABS(D${tr.number}-D${cr.number})<1,"✔ 일치","✖ 차이 "&TEXT(D${tr.number}-D${cr.number},"#,##0"))`,
+    result: Math.abs(prodSum - ctx.totalQty) < 1 ? '✔ 일치' : `✖ 차이 ${Math.round(prodSum - ctx.totalQty).toLocaleString()}`,
+  };
+  vr2.getCell(4).font = { bold: true };
+  if (noRecipeSum > 0) {
+    const nr = ws.addRow(['', '', `이 중 레시피 없는 제품 ${noRecipeSum.toLocaleString()} EA 는 표준소요에서 빠져 있습니다 (위 B 표 「레시피 커버리지」). 레시피를 등록하면 수율이 그만큼 정확해집니다.`]);
+    ws.mergeCells(nr.number, 3, nr.number, 12);
+    wrap(nr);
+    nr.getCell(3).font = { color: { argb: 'FFC00000' } };
+  }
 
   ws.views = [{ state: 'frozen', ySplit: 1 }];
   autoHeight(ws, 2);

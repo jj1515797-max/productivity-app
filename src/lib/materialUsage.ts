@@ -27,6 +27,8 @@ export interface UsageResult {
   missingAmbientNames: string[];
   /** 단가 미입력 원재료 (key 기준) */
   missingPrices: string[];
+  /** 레시피가 없어 표준소요에서 빠진 제품과 그 생산량 (검증용) */
+  missingProducts: { product: string; kind: 'cold' | 'ambient'; qty: number }[];
   /** 레시피 커버리지 — 미등록 제품은 사용량 0으로 빠지므로 과소계상 폭을 알려준다 */
   coverage: {
     /** 그 달 총생산 EA (냉장+실온) */
@@ -152,12 +154,14 @@ export function computeMonthlyUsage(
   });
   const coldByCode = computeColdProductionByCode(entries, items, logisticsByDay, logisticsByDayCode);
   const missingColdCodes: string[] = [];
+  const missingProducts: { product: string; kind: 'cold' | 'ambient'; qty: number }[] = [];
+  const missAmb = new Map<string, number>();
   let totalQty = 0, missingQty = 0;
   coldByCode.forEach((count, code) => {
     if (count <= 0) return;
     totalQty += count;
     const recipe = normRecipeMap.get(code); // code 는 이미 canonicalShort
-    if (!recipe) { missingColdCodes.push(code); missingQty += count; return; }
+    if (!recipe) { missingColdCodes.push(code); missingQty += count; missingProducts.push({ product: code, kind: 'cold', qty: count }); return; }
     recipe.ingredients.forEach((ing) => {
       const g = (ing.gPerPiece || 0) * count;
       addUsage(ing.name, ing.code, g);
@@ -183,6 +187,7 @@ export function computeMonthlyUsage(
     if (!recipe) {
       if (!missingAmbientNames.includes(pname)) missingAmbientNames.push(pname);
       missingQty += a.qty || 0;
+      missAmb.set(pname, (missAmb.get(pname) || 0) + (a.qty || 0));
       return;
     }
     // 개당 환산: 배합당g ÷ 1회배합포장수 × 생산량 (반올림 없음 → 냉장과 동일한 정확도)
@@ -221,6 +226,7 @@ export function computeMonthlyUsage(
 
   return {
     rows, missingColdCodes, missingAmbientNames, missingPrices,
+    missingProducts: [...missingProducts, ...[...missAmb].map(([product, qty]) => ({ product, kind: 'ambient' as const, qty }))],
     coverage: {
       totalQty, missingQty,
       coveredPct: totalQty > 0 ? ((totalQty - missingQty) / totalQty) * 100 : 100,
