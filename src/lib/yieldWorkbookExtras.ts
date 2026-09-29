@@ -88,6 +88,55 @@ function wrap(r: ExcelJS.Row) {
   return r;
 }
 
+
+/** 글자 폭 추정 — 한글·전각은 숫자 0 의 약 2배 (엑셀 열 너비 단위 = 기본 글꼴 '0' 한 글자) */
+function textUnits(t: string): number {
+  let w = 0;
+  for (const ch of t) {
+    const c = ch.codePointAt(0) || 0;
+    w += (c >= 0x1100 && c <= 0x11ff) || (c >= 0x2e80 && c <= 0xa4cf) || (c >= 0xac00 && c <= 0xd7a3)
+      || (c >= 0xf900 && c <= 0xfaff) || (c >= 0xfe30 && c <= 0xfe4f) || (c >= 0xff00 && c <= 0xff60)
+      || (c >= 0x2460 && c <= 0x27bf) || (c >= 0x3000 && c <= 0x303f) ? 2 : 1.05;
+  }
+  return w;
+}
+
+/** 줄바꿈 셀이 잘리지 않게 행 높이를 직접 정한다.
+ *  엑셀은 병합 셀의 줄바꿈 높이를 자동으로 늘리지 않고, 파일을 열 때 다시 계산하지도 않는다. */
+function autoHeight(ws: ExcelJS.Worksheet, minRow = 1) {
+  const merges: Record<string, { left: number; right: number }> = {};
+  const mm = (ws as unknown as { _merges?: Record<string, { model?: { left: number; right: number } }> })._merges || {};
+  Object.entries(mm).forEach(([addr, m]) => { if (m?.model) merges[addr] = { left: m.model.left, right: m.model.right }; });
+  const colW = (i: number) => ws.getColumn(i).width || 9;
+  ws.eachRow({ includeEmpty: false }, (row, rn) => {
+    if (rn < minRow) return;
+    let lines = 1;
+    let size = 11;
+    row.eachCell({ includeEmpty: false }, (cell) => {
+      if (cell.isMerged && cell.master !== cell) return;
+      const v = cell.value;
+      const text = typeof v === 'string' ? v
+        : v && typeof v === 'object' && 'richText' in v ? (v as { richText: { text: string }[] }).richText.map((x) => x.text).join('')
+          : '';
+      if (!text) return;
+      // 줄바꿈 안 하는 셀(섹션 제목 등)은 옆 빈칸으로 넘쳐 보이는 게 의도 — 높이 계산에서 뺀다
+      if (!cell.alignment?.wrapText) return;
+      const fs = cell.font?.size || 11;
+      size = Math.max(size, fs);
+      const m = merges[cell.address];
+      let width = 0;
+      if (m) for (let c = m.left; c <= m.right; c++) width += colW(c);
+      else width = colW(Number(cell.col));
+      const scale = fs / 11 * (cell.font?.bold ? 1.08 : 1);
+      const usable = Math.max(4, width - 1.5);
+      const n = text.split('\n').reduce((acc, seg) => acc + Math.max(1, Math.ceil(textUnits(seg) * scale / usable)), 0);
+      lines = Math.max(lines, n);
+    });
+    const h = Math.ceil(lines * size * 1.4 + 4);
+    if (lines > 1 || !row.height || row.height < h) row.height = Math.max(row.height && lines === 1 ? row.height : 0, h);
+  });
+}
+
 /* ======================================================================
    보는 방법
    ====================================================================== */
@@ -174,6 +223,7 @@ export function addGuideSheet(wb: ExcelJS.Workbook, ctx: AuditCtx) {
     ['LOSS 금액이 0 이에요', '그 달 재고평가 단가가 등록되지 않은 원재료입니다. 단가(원/kg) 열이 0 인지 확인하세요.'],
   ].forEach(([a, b]) => { const r = wrap(ws.addRow([a, b])); r.getCell(1).font = { bold: true }; ws.mergeCells(r.number, 2, r.number, 3); });
 
+  autoHeight(ws, 2);
   return ws;
 }
 
@@ -573,5 +623,6 @@ export function addAuditSheet(wb: ExcelJS.Workbook, ctx: AuditCtx) {
     });
 
   ws.views = [{ state: 'frozen', ySplit: 1 }];
+  autoHeight(ws, 2);
   return ws;
 }
