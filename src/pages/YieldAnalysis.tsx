@@ -27,8 +27,11 @@ import { expandAmbientRecipeMap, expandRecipeMap } from '../lib/bomExpansion';
 const EXCLUDE_DEFAULT = ['정제수'];
 // 레시피 소스(분석용 DB)가 도입되면서 기준이 바뀌므로 버전을 올린다.
 // 키에 소스를 넣어 '분석용/현장 BOM' 값이 서로 덮어쓰지 않게 한다.
-const CACHE_PREFIX = 'yieldStd3:';
-const TTL_PAST = 30 * 24 * 60 * 60 * 1000;   // 지난 달은 안 바뀜
+const CACHE_PREFIX = 'yieldStd4:';
+const OLD_CACHE_PREFIXES = ['yieldStd3:', 'yieldStd2:', 'yieldStd:'];
+// 두 달 이상 지난 달만 오래 둔다. 지난달은 월초에 생산·잔여량 정정이 잦아서 짧게.
+// (레시피가 바뀌면 캐시 키의 레시피 지문이 달라져 자동으로 새로 계산)
+const TTL_PAST = 30 * 24 * 60 * 60 * 1000;
 const TTL_CURRENT = 5 * 60 * 1000;
 
 interface StdRow { k: string; n: string; c: string; g: number; p: number }
@@ -53,7 +56,7 @@ function readCache(ck: string, month: string): MonthStd | null {
     // 진행 중이던 달에 저장한 캐시는 그 달이 지나도 '부분 데이터' 다.
     // 쓴 시점 기준으로 판단하지 않으면 미완성 월이 다음 달에 30일짜리로 굳어버린다.
     if (o.partial && month < thisMonth()) return null;
-    const ttl = month >= thisMonth() ? TTL_CURRENT : TTL_PAST;
+    const ttl = month >= shiftMonth(thisMonth(), -1) ? TTL_CURRENT : TTL_PAST;
     if (Date.now() - o.ts > ttl) return null;
     return o.v;
   } catch { return null; }
@@ -66,7 +69,9 @@ function writeCache(ck: string, month: string, v: MonthStd) {
 }
 export function clearYieldCache() {
   try {
-    Object.keys(localStorage).forEach((k) => { if (k.startsWith(CACHE_PREFIX)) localStorage.removeItem(k); });
+    Object.keys(localStorage).forEach((k) => {
+      if (k.startsWith(CACHE_PREFIX) || OLD_CACHE_PREFIXES.some((p) => k.startsWith(p))) localStorage.removeItem(k);
+    });
   } catch { /* noop */ }
 }
 
@@ -197,6 +202,8 @@ interface TrendRow {
   lossAmtLast: number;
   lossKgLast: number;
   lastHasData: boolean;   // 0원이 '데이터 없음' 인지 '로스 0' 인지 구분
+  lastInRange: boolean;   // 최근월 수율이 정상 범위 — 합계에 넣는 기준 (월 비교 합계와 같음)
+  sa: Record<string, { s: number; a: number }>;   // 월별 표준소요·실투입 g (합계 행용)
 }
 interface CatTrendRow {
   name: string;
@@ -364,7 +371,24 @@ export default function YieldAnalysis() {
   const srcRecipe = useYieldDb ? yRecipeMap : recipeMap;
   const srcSub = useYieldDb && ySubMap.size > 0 ? ySubMap : subRecipeMap;
   const srcAmbient = useYieldDb && yAmbientMap.size > 0 ? yAmbientMap : ambientRecipeMap;
-  const srcTag = useYieldDb ? 'yield' : 'bom';
+  // 레시피 지문 — 레시피를 고치면 추이 캐시가 저절로 무효가 되게 캐시 키에 넣는다.
+  // (전에는 30일 캐시가 옛 레시피로 낸 표준소요를 계속 써서 월 비교와 수율·LOSS 가 달랐다)
+  const recipeFp = useMemo(() => {
+    let h = 2166136261;
+    const add = (t: string) => { for (let i = 0; i < t.length; i++) { h ^= t.charCodeAt(i); h = Math.imul(h, 16777619); } };
+    const walk = (m: Map<string, any>) => {
+      [...m.keys()].sort().forEach((k) => { add(k); add(JSON.stringify(m.get(k))); });
+      add('|');
+    };
+    walk(srcRecipe); walk(srcAmbient); walk(srcSub);
+    return (h >>> 0).toString(36);
+  }, [srcRecipe, srcAmbient, srcSub]);
+  const srcTag = `${useYieldDb ? 'yield' : 'bom'}-${recipeFp}`;
+  useEffect(() => {
+    try {
+      Object.keys(localStorage).forEach((k) => { if (OLD_CACHE_PREFIXES.some((p) => k.startsWith(p))) localStorage.removeItem(k); });
+    } catch { /* noop */ }
+  }, []);
   // recipeMap 은 'A01' 과 'a01' 을 둘 다 등록하므로 size 를 그대로 쓰면 품목 수가 2배로 보인다
   const yRecipeCount = useMemo(() => {
     const s2 = new Set<string>();
@@ -581,11 +605,13 @@ export default function YieldAnalysis() {
         let anyVal = false;
         let outMonths = 0;
         let lossAmtLast = 0; let lossKgLast = 0; let lastHasData = false;
+        const sa: Record<string, { s: number; a: number }> = {};
         months.forEach((m, i) => {
           const sr = stds[i].rows.find((r) => r.k === k);
           const act = inps[i].inputs[k] || 0;
           const v = sr && sr.g > 0 && act > 0 ? sr.g / act : null;
           byMonth[m] = v;              // 표시용은 원값 그대로 (점검하려면 보여야 한다)
+          if (v !== null) sa[m] = { s: sr!.g, a: act };
           if (v !== null) {
             anyVal = true;
             if (inRangeV(v)) vals.push(v); else outMonths++;
@@ -615,6 +641,8 @@ export default function YieldAnalysis() {
           months: vals.length,
           outMonths,
           lossAmtLast, lossKgLast, lastHasData,
+          lastInRange: inRangeV(byMonth[months[months.length - 1]]),
+          sa,
         });
       });
       // 전 기간 내내 계산 가능한 원재료만 골라 '공통 기준 수율' 을 낸다.
@@ -719,6 +747,33 @@ export default function YieldAnalysis() {
         return (b.range ?? -1) - (a.range ?? -1);
       });
   }, [trend, search, sortBy, openCat, catIndex]);
+
+  /* 추이표 합계 — 월 비교 합계와 같은 규칙: 그 달 수율이 정상 범위인 원재료만,
+     수율은 Σ표준 ÷ Σ실투입 (가중평균). 검색·분류 필터가 걸리면 보이는 행만. */
+  const trendSum = useMemo(() => {
+    if (!trend) return null;
+    const byMonth: Record<string, number | null> = {};
+    let ts = 0, ta = 0;
+    trend.months.forEach(({ month: m }) => {
+      let s2 = 0, a2 = 0;
+      trendView.forEach((r) => {
+        const v = r.byMonth[m];
+        const x = r.sa[m];
+        if (!x || !inRangeV(v)) return;
+        s2 += x.s; a2 += x.a;
+      });
+      byMonth[m] = a2 > 0 ? s2 / a2 : null;
+      ts += s2; ta += a2;
+    });
+    const inc = trendView.filter((r) => r.lastHasData && r.lastInRange);
+    return {
+      byMonth,
+      avg: ta > 0 ? ts / ta : null,
+      loss: inc.reduce((acc, r) => acc + r.lossAmtLast, 0),
+      n: inc.length,
+      excluded: trendView.filter((r) => r.lastHasData && !r.lastInRange).length,
+    };
+  }, [trend, trendView]);
 
   /* ===== 집계 ===== */
   const stat = useMemo(() => {
@@ -1413,6 +1468,28 @@ export default function YieldAnalysis() {
                     <th className="px-2 py-2 text-center w-20 bg-slate-50">{trend.months.length}개월 평균</th>
                     <th className="px-2 py-2 text-right w-24 bg-slate-50">최근월 LOSS<br /><span className="font-normal text-gray-400">그 달 단가</span></th>
                   </tr>
+                  {trendSum && trendView.length > 0 && (
+                    <tr className="bg-slate-100 border-t border-slate-300 font-bold text-gray-800">
+                      <td className="px-3 py-2 sticky left-0 bg-slate-100"
+                        title={'월 비교 합계와 같은 기준 — 그 달 수율이 정상 범위(20~200%)인 원재료만 더합니다.\n수율은 Σ표준소요 ÷ Σ실투입 (가중평균).'}>
+                        합계
+                        <span className="ml-1.5 font-normal text-[10px] text-gray-500">
+                          {trendView.length}종{search.trim() || openCat ? ' · 필터 적용' : ''}
+                        </span>
+                      </td>
+                      {trend.months.map((m) => (
+                        <td key={m.month} className="px-2 py-2 text-center">{pct(trendSum.byMonth[m.month])}</td>
+                      ))}
+                      <td className="px-2 py-2 text-center bg-slate-200"
+                        title={`${trend.months.length}개월 전체 Σ표준소요 ÷ Σ실투입 (가중평균)`}>{pct(trendSum.avg)}</td>
+                      <td className="px-2 py-2 text-right bg-slate-200 text-amber-800"
+                        title={`최근월 수율이 정상 범위인 ${trendSum.n}종의 LOSS 금액 합`
+                          + (trendSum.excluded > 0 ? `\n범위 밖 ${trendSum.excluded}종 제외` : '')
+                          + '\n검색·분류 필터가 없으면 월 비교 화면(같은 달) LOSS 금액 합계와 같아야 합니다.'}>
+                        {(Math.round(trendSum.loss) || 0).toLocaleString()}
+                      </td>
+                    </tr>
+                  )}
                 </thead>
                 <tbody className="divide-y tabular-nums">
                   {trendView.map((r) => (
