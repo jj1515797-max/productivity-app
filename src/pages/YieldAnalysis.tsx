@@ -1755,7 +1755,7 @@ export default function YieldAnalysis() {
                           {list.length}종
                           {c && c.count !== list.length && ` (집계 ${c.count}종)`}
                           {c && c.yield !== null && ` · 가중평균 ${fmt(c.yield * 100)}%`}
-                          {c && c.deltaPP !== null && ` · ${c.deltaPP > 0 ? '+' : ''}${fmt(c.deltaPP, 1)}%p`}
+                          {c && c.deltaPP !== null && ` · 수율효과 ${c.deltaPP > 0 ? '+' : ''}${fmt(c.deltaPP, 1)}%p`}
                         </span>
                       </div>
                       <button onClick={() => setOpenCat(null)} className="text-xs text-gray-500 hover:text-gray-800">닫기 ✕</button>
@@ -1767,7 +1767,8 @@ export default function YieldAnalysis() {
                             <th className="px-2 py-1.5 text-left">원재료</th>
                             <th className="px-2 py-1.5 text-right">표준소요(kg)</th>
                             <th className="px-2 py-1.5 text-right">실투입(kg)</th>
-                            <th className="px-2 py-1.5 text-right">수율(%)</th>
+                            <th className="px-2 py-1.5 text-right text-gray-500">{Number(cmpMonth.slice(5))}월 수율(%)</th>
+                            <th className="px-2 py-1.5 text-right">{Number(month.slice(5))}월 수율(%)</th>
                             <th className="px-2 py-1.5 text-right">증감(%p)</th>
                             <th className="px-2 py-1.5 text-right">LOSS(kg)</th>
                             <th className="px-2 py-1.5 text-right">LOSS(원)</th>
@@ -1783,12 +1784,21 @@ export default function YieldAnalysis() {
                             </td>
                             <td className="px-2 py-1.5 text-right">{fmt(kg(sStd))}</td>
                             <td className="px-2 py-1.5 text-right">{fmt(kg(sAct))}</td>
+                            <td className="px-2 py-1.5 text-right text-gray-600"
+                              title={`${cmpMonth} 표준소요 합계 ÷ 실투입 합계 (가중평균) — 두 달 모두 정상 범위인 원재료끼리`}>
+                              {sPY === null ? '—' : fmt(sPY * 100)}
+                            </td>
                             <td className="px-2 py-1.5 text-right text-blue-800"
                               title={'표준소요 합계 ÷ 실투입 합계 (가중평균)'
-                                + (sPY !== null ? `\n${cmpMonth} 가중수율 ${fmt(sPY * 100)}%` : '')}>
+                                + (sCY !== null && sY !== null && Math.abs(sCY - sY) >= 0.0005
+                                  ? `\n증감은 ${cmpMonth} 와 비교 가능한 원재료끼리 본 ${fmt(sCY * 100)}% 기준입니다 (비교월 데이터 없는 원재료 제외).` : '')}>
                               {sY === null ? '—' : fmt(sY * 100)}
+                              {sCY !== null && sY !== null && Math.abs(sCY - sY) >= 0.0005 && (
+                                <div className="text-[10px] font-normal text-gray-500">비교기준 {fmt(sCY * 100)}</div>
+                              )}
                             </td>
-                            <td className={`px-2 py-1.5 text-right ${sD === null ? 'text-gray-300'
+                            <td title={'이번 달 − 비교월 (두 달 모두 정상 범위인 원재료끼리).\n위 제목의 「수율효과」는 원재료 구성(배합) 변화 몫을 뺀 값이라 조금 다를 수 있습니다.'}
+                              className={`px-2 py-1.5 text-right ${sD === null ? 'text-gray-300'
                               : sD < 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
                               {sD === null ? '—' : `${sD > 0 ? '+' : ''}${fmt(sD, 1)}`}
                             </td>
@@ -1810,6 +1820,9 @@ export default function YieldAnalysis() {
                                 <td className="px-2 py-1 text-right text-gray-600">{fmt(kg(r.stdG))}</td>
                                 <td className="px-2 py-1 text-right text-gray-600">
                                   {r.hasInput ? fmt(kg(r.actG)) : <span className="text-amber-600">미입력</span>}
+                                </td>
+                                <td className="px-2 py-1 text-right text-gray-500">
+                                  {r.prevYield === null ? '—' : fmt(r.prevYield * 100)}
                                 </td>
                                 <td className="px-2 py-1 text-right font-bold text-blue-700">
                                   {r.yield === null ? '—' : fmt(r.yield * 100)}
