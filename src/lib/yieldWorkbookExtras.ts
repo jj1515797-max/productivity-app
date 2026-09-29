@@ -21,6 +21,8 @@ export interface AuditRow {
   lossG: number | null;
   lossAmt: number | null;
   pricePerG: number;
+  /** 합계·카드 집계에 들어가나 (수율 계산 가능 + 정상 범위) — 수율 시트 '집계' 열 */
+  included: boolean;
 }
 
 export interface AuditCtx {
@@ -29,7 +31,7 @@ export interface AuditCtx {
   cmpLabel: string;            // '전월' | '전년동월'
   dataSheet: string;           // 수율 시트 이름
   /** 수율 시트에서 각 열의 글자 (C, D …) */
-  col: { s: string; a: string; y: string; l: string; la: string; pk: string };
+  col: { s: string; a: string; y: string; l: string; la: string; pk: string; f: string };
   rows: AuditRow[];            // 수율 시트와 같은 순서 (2행부터)
   sumRowNo: number;            // 수율 시트 합계 행 번호
   contribs: UsageContrib[];
@@ -105,7 +107,7 @@ export function addGuideSheet(wb: ExcelJS.Workbook, ctx: AuditCtx) {
     ['수율', '표준소요 ÷ 실투입. 100% 면 레시피대로 딱 맞게 썼다는 뜻, 낮을수록 많이 버림.'],
     ['LOSS', '실투입 − 표준소요. 레시피보다 더 쓴 양. 여기에 단가를 곱하면 LOSS 금액.'],
     ['증감(%p)', `이번 달 수율 − ${ctx.cmpLabel} 수율. 마이너스면 나빠진 것.`],
-    ['합계 행', '수율은 퍼센트를 평균 내지 않고 「표준소요 합계 ÷ 실투입 합계」 로 냅니다 (가중평균).'],
+    ['합계 행', '화면 카드와 같은 기준 — 수율이 계산되고 정상 범위인 원재료(「집계」 열 = 포함)만 더합니다. 수율은 퍼센트를 평균 내지 않고 「표준소요 합계 ÷ 실투입 합계」 (가중평균).'],
   ];
   summary.forEach(([a, b]) => { const r = wrap(ws.addRow([a, b])); r.getCell(1).font = { bold: true }; ws.mergeCells(r.number, 2, r.number, 3); });
   ws.addRow([]);
@@ -133,6 +135,7 @@ export function addGuideSheet(wb: ExcelJS.Workbook, ctx: AuditCtx) {
     ['⑤ LOSS율', '실투입 중 버려진 비율', '④ ÷ ① = 1 − 수율.'],
     ['LOSS 금액(원)', '버려진 양의 돈 가치', '④ × 그 달 재고평가 단가.'],
     ['단가(원/kg)', 'LOSS 금액 계산에 쓴 단가', '설정 › 재고평가 단가 의 그 달 값. 0 이면 단가 미등록 → LOSS 금액도 0.'],
+    ['집계', '합계에 들어갔나', '포함 = 합계·카드에 반영. 제외 = 실투입 미입력·표준소요 0·실투입 0·수율 범위 밖이라 합계에서 뺌 (행은 그대로 보임).'],
     ['비고', '데이터 상태 경고', '아래 4번 참고.'],
     ['원인 점검 포인트', '화면에서 적어 둔 메모', '분석 화면 메모 칸의 내용.'],
   ].forEach((v) => wrap(ws.addRow(v)).getCell(1).font = { bold: true });
@@ -344,48 +347,58 @@ export function addAuditSheet(wb: ExcelJS.Workbook, ctx: AuditCtx) {
   ws.mergeCells(ws.rowCount, 4, ws.rowCount, 5);
   ws.mergeCells(ws.rowCount, 6, ws.rowCount, 12);
 
-  const sumStd = ctx.rows.reduce((a, r) => a + r.stdG, 0) / 1000;
-  const sumAct = ctx.rows.reduce((a, r) => a + r.actG, 0) / 1000;
-  const sumLoss = ctx.rows.reduce((a, r) => a + (r.lossG ?? 0), 0) / 1000;
-  const sumAmt = ctx.rows.reduce((a, r) => a + (r.lossAmt ?? 0), 0);
+  const inc = ctx.rows.filter((r) => r.included);
+  const allStd = ctx.rows.reduce((a, r) => a + r.stdG, 0) / 1000;
+  const sumStd = inc.reduce((a, r) => a + r.stdG, 0) / 1000;
+  const sumAct = inc.reduce((a, r) => a + r.actG, 0) / 1000;
+  const sumLoss = inc.reduce((a, r) => a + (r.lossG ?? 0), 0) / 1000;
+  const sumAmt = inc.reduce((a, r) => a + (r.lossAmt ?? 0), 0);
   const evidStd = ctx.contribs.filter((x) => viewKeys.has(x.key)).reduce((a, x) => a + x.grams, 0) / 1000;
-  const ys = ctx.rows.map((r) => r.yield).filter((v): v is number => v !== null);
+  const ys = inc.map((r) => r.yield).filter((v): v is number => v !== null);
   const simpleAvg = ys.length ? ys.reduce((a, b) => a + b, 0) / ys.length : null;
 
   const sr = ctx.sumRowNo;
   const rng = (col: string) => `${D}!${col}${first}:${col}${last}`;
+  const F = rng(c.f);
+  const sumif = (col: string) => `SUMIFS(${rng(col)},${F},"포함")`;
+  const appRef = (col: string) => `IF(ISBLANK(${D}!${col}${sr}),"",${D}!${col}${sr})`;
   type SumLine = { label: string; app: ExcelJS.CellValue; calc: ExcelJS.CellValue; tol: number | null; fmt: string; how: string };
   const lines: SumLine[] = [
     {
-      label: '표준소요 합계 (kg)', app: { formula: `IF(ISBLANK(${D}!${c.s}${sr}),"",${D}!${c.s}${sr})`, result: sumStd },
+      label: '표준소요 전체 (kg) — 근거 대조', app: { formula: `SUM(${rng(c.s)})`, result: allStd },
       calc: { formula: `SUM(${E}!J:J)`, result: evidStd }, tol: 0.01, fmt: '#,##0.0',
-      how: '「표준소요 근거」 시트의 생산량×개당g 을 전부 더한 값. 다르면 레시피 전개나 생산량 집계가 어긋난 것.',
+      how: '수율 시트 표준소요 열 전체 합 vs 「표준소요 근거」 시트의 생산량×개당g 합. 다르면 레시피 전개나 생산량 집계가 어긋난 것.',
     },
     {
-      label: '실투입 합계 (kg)', app: { formula: `IF(ISBLANK(${D}!${c.a}${sr}),"",${D}!${c.a}${sr})`, result: sumAct },
-      calc: { formula: `SUM(${rng(c.a)})`, result: sumAct }, tol: 0.01, fmt: '#,##0.0',
-      how: '수율 시트 실투입 열을 SUM.',
+      label: `표준소요 합계 (kg) — 집계 ${inc.length}종`, app: { formula: appRef(c.s), result: sumStd },
+      calc: { formula: sumif(c.s), result: sumStd }, tol: 0.01, fmt: '#,##0.0',
+      how: '수율 시트에서 「집계」 열이 포함인 행만 더한 값. 합계 행·화면 카드와 같은 기준.',
     },
     {
-      label: '가중평균 수율', app: { formula: `IF(ISBLANK(${D}!${c.y}${sr}),"",${D}!${c.y}${sr})`, result: sumAct > 0 ? sumStd / sumAct : undefined },
-      calc: { formula: `IFERROR(SUM(${rng(c.s)})/SUM(${rng(c.a)}),"")`, result: sumAct > 0 ? sumStd / sumAct : '' },
+      label: '실투입 합계 (kg)', app: { formula: appRef(c.a), result: sumAct },
+      calc: { formula: sumif(c.a), result: sumAct }, tol: 0.01, fmt: '#,##0.0',
+      how: '「집계」 포함 행의 실투입 합.',
+    },
+    {
+      label: '가중평균 수율', app: { formula: appRef(c.y), result: sumAct > 0 ? sumStd / sumAct : undefined },
+      calc: { formula: `IFERROR(${sumif(c.s)}/${sumif(c.a)},"")`, result: sumAct > 0 ? sumStd / sumAct : '' },
       tol: 0.0005, fmt: '0.0%',
-      how: '표준소요 합계 ÷ 실투입 합계. 앱 합계 행과 같은 방식.',
+      how: '표준소요 합계 ÷ 실투입 합계 (집계 포함 행). 화면 「가중평균 수율」 카드와 같은 값.',
     },
     {
       label: '(참고) 단순평균 수율', app: '—',
-      calc: { formula: `IFERROR(AVERAGE(${rng(c.y)}),"")`, result: simpleAvg ?? '' }, tol: null, fmt: '0.0%',
+      calc: { formula: `IFERROR(AVERAGEIFS(${rng(c.y)},${F},"포함"),"")`, result: simpleAvg ?? '' }, tol: null, fmt: '0.0%',
       how: '원재료별 수율 퍼센트를 그냥 평균 낸 값. 소량 원재료가 과대 반영돼 가중평균과 다르게 나오는 게 정상입니다 — 보고에는 가중평균을 쓰세요.',
     },
     {
-      label: 'LOSS 합계 (kg)', app: { formula: `IF(ISBLANK(${D}!${c.l}${sr}),"",${D}!${c.l}${sr})`, result: sumLoss },
-      calc: { formula: `SUM(${rng(c.l)})`, result: sumLoss }, tol: 0.01, fmt: '#,##0.0',
-      how: '원재료별 LOSS(kg) 합계. 미입력 원재료는 LOSS 가 없어 빠집니다.',
+      label: 'LOSS 합계 (kg)', app: { formula: appRef(c.l), result: sumLoss },
+      calc: { formula: sumif(c.l), result: sumLoss }, tol: 0.01, fmt: '#,##0.0',
+      how: '「집계」 포함 행의 LOSS(kg) 합.',
     },
     {
-      label: 'LOSS 금액 합계 (원)', app: { formula: `IF(ISBLANK(${D}!${c.la}${sr}),"",${D}!${c.la}${sr})`, result: Math.round(sumAmt) },
-      calc: { formula: `SUMPRODUCT(${rng(c.l)},${rng(c.pk)})`, result: sumAmt }, tol: Math.max(2, N), fmt: '#,##0',
-      how: 'Σ(LOSS kg × 단가 원/kg). 행마다 반올림한 값을 더하므로 몇 원 차이는 정상.',
+      label: 'LOSS 금액 합계 (원)', app: { formula: appRef(c.la), result: Math.round(sumAmt) },
+      calc: { formula: `SUMPRODUCT((${F}="포함")*${rng(c.l)}*${rng(c.pk)})`, result: sumAmt }, tol: Math.max(2, inc.length), fmt: '#,##0',
+      how: 'Σ(LOSS kg × 단가 원/kg), 집계 포함 행만. 행마다 반올림한 값을 더하므로 몇 원 차이는 정상. 화면 「LOSS 금액」 카드와 같은 값.',
     },
   ];
   const sumFirst = ws.rowCount + 1;

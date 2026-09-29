@@ -869,24 +869,34 @@ export default function YieldAnalysis() {
      화면의 두 합계를 나눈 값과 정확히 같게 두어, 사람이 손으로 검산해도 맞아떨어지게 한다.
      다만 실투입 미입력 행은 표준소요만 분자에 들어가고 분모에는 0 이라 수율을 부풀린다 —
      숨기지 않고 몇 종인지 같이 띄운다. */
+  /* 집계 기준은 위 카드(stat)와 똑같다 — 수율이 계산되고 정상 범위(20~200%)인 원재료만.
+     미입력·표준소요 0·이상치를 섞으면 카드와 합계 행이 서로 다른 숫자를 내 혼란스럽다. */
+  const sumIncluded = (r: Row) => r.yield !== null && inRange(r.yield);
   const viewSum = useMemo(() => {
-    let std = 0, act = 0, lossG = 0, lossAmt = 0, noInput = 0, odd = 0, pStd = 0, pAct = 0;
+    let std = 0, act = 0, lossG = 0, lossAmt = 0, noInput = 0, odd = 0, n = 0;
+    let cStd = 0, cAct = 0, pStd = 0, pAct = 0;
     view.forEach((r) => {
-      std += r.stdG;
-      act += r.actG;
-      pStd += r.prevStdG || 0;
-      pAct += r.prevActG || 0;
-      if (r.lossG !== null) lossG += r.lossG;
-      if (r.lossAmt !== null) lossAmt += r.lossAmt;
       if (r.stdG > 0 && !r.hasInput) noInput++;
       if (r.yield !== null && !inRange(r.yield)) odd++;
+      if (!sumIncluded(r)) return;
+      n++;
+      std += r.stdG;
+      act += r.actG;
+      if (r.lossG !== null) lossG += r.lossG;
+      if (r.lossAmt !== null) lossAmt += r.lossAmt;
+      // 비교는 두 달 모두 정상 범위인 원재료끼리 (카드의 '단순 비교' 와 같은 집합)
+      if (r.prevYield !== null && inRange(r.prevYield)) {
+        cStd += r.stdG; cAct += r.actG;
+        pStd += r.prevStdG || 0; pAct += r.prevActG || 0;
+      }
     });
     const y = act > 0 ? std / act : null;
-    // 비교월도 같은 방식 — 그 달 표준소요 합계 ÷ 그 달 실제투입 합계
+    const cy = cAct > 0 ? cStd / cAct : null;
     const py = pAct > 0 ? pStd / pAct : null;
     return {
       std, act, lossG, lossAmt, yield: y, lossRate: y === null ? null : 1 - y, noInput, odd,
-      prevYield: py, deltaPP: y !== null && py !== null ? (y - py) * 100 : null,
+      n, excluded: view.length - n,
+      prevYield: py, deltaPP: cy !== null && py !== null ? (cy - py) * 100 : null,
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [view]);
@@ -907,6 +917,7 @@ export default function YieldAnalysis() {
       { header: '⑤ LOSS율', key: 'lr', width: 12 },
       { header: 'LOSS 금액(원)', key: 'la', width: 15 },
       { header: '단가(원/kg)', key: 'pk', width: 12 },
+      { header: '집계', key: 'f', width: 7 },
       // 엑셀만 보는 사람을 위해 상태를 '데이터' 로 남긴다.
       // 색으로만 구분하면 정렬·필터하는 순간 의미가 사라진다.
       { header: '비고', key: 'st', width: 30 },
@@ -932,6 +943,7 @@ export default function YieldAnalysis() {
         l: r.lossG === null ? null : kg(r.lossG), lr: r.lossRate,
         la: r.lossAmt === null ? null : Math.round(r.lossAmt),
         pk: r.pricePerG * 1000,
+        f: sumIncluded(r) ? '포함' : '제외',
         st,
         note: notes[r.key] || '',
       });
@@ -951,14 +963,13 @@ export default function YieldAnalysis() {
     // 합계 — 화면 표와 같은 값. 엑셀만 받아 본 사람도 총계를 바로 볼 수 있어야 한다.
     ws.addRow({});
     const sumRow = ws.addRow({
-      n: '합계', c: `${view.length}종`,
+      n: '합계', c: `${viewSum.n}종`,
       s: kg(viewSum.std), a: kg(viewSum.act),
       y: viewSum.yield, p: viewSum.prevYield, d: viewSum.deltaPP,
       l: kg(viewSum.lossG), lr: viewSum.lossRate,
       la: Math.round(viewSum.lossAmt),
       st: [
-        viewSum.noInput > 0 ? `실투입 미입력 ${viewSum.noInput}종 포함 — 수율 과대` : '',
-        viewSum.odd > 0 ? `정상범위 밖 ${viewSum.odd}종 포함` : '',
+        viewSum.excluded > 0 ? `화면 카드와 같은 기준 — 집계 ${viewSum.n}종 (미입력·범위 밖 등 ${viewSum.excluded}종 제외, 집계 열 참고)` : '',
       ].filter(Boolean).join(' · '),
     });
     sumRow.font = { bold: true };
@@ -977,10 +988,11 @@ export default function YieldAnalysis() {
     const ctx = {
       month, cmpMonth, cmpLabel: cmpMode === 'yoy' ? '전년동월' : '전월',
       dataSheet: ws.name,
-      col: { s: letter('s'), a: letter('a'), y: letter('y'), l: letter('l'), la: letter('la'), pk: letter('pk') },
+      col: { s: letter('s'), a: letter('a'), y: letter('y'), l: letter('l'), la: letter('la'), pk: letter('pk'), f: letter('f') },
       rows: view.map((r) => ({
         key: r.key, name: r.name, code: r.code, stdG: r.stdG, actG: r.actG, hasInput: r.hasInput,
         yield: r.yield, prevYield: r.prevYield, lossG: r.lossG, lossAmt: r.lossAmt, pricePerG: r.pricePerG,
+        included: sumIncluded(r),
       })),
       sumRowNo: sumRow.number,
       contribs: au?.contribs || [],
@@ -1617,17 +1629,25 @@ export default function YieldAnalysis() {
                 const c = catStats.find((x) => x.name === openCat);
                 // 관리표 합계와 같은 규칙 — 표준소요 합계 ÷ 실투입 합계 (가중평균)
                 let sStd = 0, sAct = 0, sLoss = 0, sAmt = 0, sPStd = 0, sPAct = 0, sNo = 0, sOdd = 0;
+                // 위 표 합계·카드와 같은 기준 — 수율 계산 가능 + 정상 범위만
+                let sN = 0, sCStd = 0, sCAct = 0;
                 list.forEach((r) => {
-                  sStd += r.stdG; sAct += r.actG;
-                  sPStd += r.prevStdG || 0; sPAct += r.prevActG || 0;
-                  if (r.lossG !== null) sLoss += r.lossG;
-                  if (r.lossAmt !== null) sAmt += r.lossAmt;
                   if (r.stdG > 0 && !r.hasInput) sNo++;
                   if (r.yield !== null && !inRangeV(r.yield)) sOdd++;
+                  if (!sumIncluded(r)) return;
+                  sN++;
+                  sStd += r.stdG; sAct += r.actG;
+                  if (r.lossG !== null) sLoss += r.lossG;
+                  if (r.lossAmt !== null) sAmt += r.lossAmt;
+                  if (r.prevYield !== null && inRangeV(r.prevYield)) {
+                    sCStd += r.stdG; sCAct += r.actG;
+                    sPStd += r.prevStdG || 0; sPAct += r.prevActG || 0;
+                  }
                 });
                 const sY = sAct > 0 ? sStd / sAct : null;
                 const sPY = sPAct > 0 ? sPStd / sPAct : null;
-                const sD = sY !== null && sPY !== null ? (sY - sPY) * 100 : null;
+                const sCY = sCAct > 0 ? sCStd / sCAct : null;
+                const sD = sCY !== null && sPY !== null ? (sCY - sPY) * 100 : null;
                 return (
                   <div className="border-t bg-slate-50 px-3 py-3">
                     <div className="flex items-center justify-between mb-2">
@@ -1656,10 +1676,10 @@ export default function YieldAnalysis() {
                           </tr>
                           <tr className="bg-slate-100 text-gray-900 font-bold tabular-nums border-t">
                             <td className="px-2 py-1.5">
-                              합계 <span className="text-[10px] font-normal text-gray-500">({list.length}종)</span>
-                              {(sNo > 0 || sOdd > 0) && (
+                              합계 <span className="text-[10px] font-normal text-gray-500">({sN}종)</span>
+                              {list.length - sN > 0 && (
                                 <div className="text-[10px] font-normal text-amber-700">
-                                  {sNo > 0 && `미입력 ${sNo}종`}{sNo > 0 && sOdd > 0 && ' · '}{sOdd > 0 && `범위밖 ${sOdd}종`} 포함
+                                  {list.length - sN}종 제외{(sNo > 0 || sOdd > 0) && ' — '}{sNo > 0 && `미입력 ${sNo}`}{sNo > 0 && sOdd > 0 && ' · '}{sOdd > 0 && `범위밖 ${sOdd}`}
                                 </div>
                               )}
                             </td>
@@ -1779,24 +1799,23 @@ export default function YieldAnalysis() {
                     <tr className="bg-slate-100 border-t border-slate-300 font-bold text-gray-800">
                       <td className="px-3 py-2">
                         합계
-                        <span className="ml-1.5 font-normal text-[10px] text-gray-500">
-                          {view.length}종{search.trim() ? ' · 검색 결과만' : ''}
+                        <span className="ml-1.5 font-normal text-[10px] text-gray-500"
+                          title={'위 카드와 같은 기준 — 수율이 계산되고 정상 범위(20~200%)인 원재료만 더합니다.\n실투입 미입력·표준소요 0·범위 밖 원재료는 합계에서 빠집니다.'}>
+                          {viewSum.n}종{viewSum.excluded > 0 && ` (${viewSum.excluded}종 제외)`}{search.trim() ? ' · 검색 결과만' : ''}
                         </span>
                       </td>
                       <td className="px-2 py-2 text-right">{fmt(kg(viewSum.std))}</td>
                       <td className="px-2 py-2 text-right">{fmt(kg(viewSum.act))}</td>
                       <td className="px-2 py-2 text-right"
-                        title={'표준소요 합계 ÷ 실제투입 합계 (가중평균).\n퍼센트를 단순 평균하면 소량 원재료가 과대 반영됩니다.'
-                          + (viewSum.noInput > 0 ? `\n\n⚠ 실투입 미입력 ${viewSum.noInput}종이 섞여 있어 실제보다 높게 나옵니다.` : '')
-                          + (viewSum.odd > 0 ? `\n⚠ 정상범위 밖 ${viewSum.odd}종 포함.` : '')}>
+                        title={'표준소요 합계 ÷ 실제투입 합계 (가중평균). 위 「가중평균 수율」 카드와 같은 값.\n퍼센트를 단순 평균하면 소량 원재료가 과대 반영됩니다.'}>
                         {pct(viewSum.yield)}
-                        {(viewSum.noInput > 0 || viewSum.odd > 0) && <span className="text-amber-600"> ⚠</span>}
                       </td>
                       <td className="px-2 py-2 text-right text-gray-600"
-                        title={`${cmpMonth} 표준소요 합계 ÷ 실제투입 합계 (가중평균)`}>
+                        title={`${cmpMonth} 표준소요 합계 ÷ 실제투입 합계 (가중평균) — 두 달 모두 정상 범위인 원재료끼리`}>
                         {pct(viewSum.prevYield)}
                       </td>
-                      <td className={`px-2 py-2 text-right ${viewSum.deltaPP === null ? 'text-gray-300'
+                      <td title={'단순 비교 = 이번 달 − 비교월 (두 달 모두 정상 범위인 원재료끼리).\n위 카드의 「수율효과」는 여기서 원재료 구성(배합) 변화 몫을 뺀 값이라 조금 다를 수 있습니다.'}
+                        className={`px-2 py-2 text-right ${viewSum.deltaPP === null ? 'text-gray-300'
                         : viewSum.deltaPP < 0 ? 'text-rose-600' : 'text-emerald-600'}`}>
                         {viewSum.deltaPP === null ? '—' : `${viewSum.deltaPP > 0 ? '+' : ''}${fmt(viewSum.deltaPP, 1)}`}
                       </td>
@@ -1853,12 +1872,13 @@ export default function YieldAnalysis() {
                 </tbody>
               </table>
             </div>
-            {(viewSum.noInput > 0 || viewSum.odd > 0) && (
+            {viewSum.excluded > 0 && (
               <div className="px-4 py-2 border-t bg-amber-50 text-[11px] text-amber-800">
-                ⚠ 합계 수율 주의 —
-                {viewSum.noInput > 0 && <> <b>실투입 미입력 {viewSum.noInput}종</b>이 표준소요만 더해져 수율이 실제보다 높게 나옵니다.</>}
-                {viewSum.odd > 0 && <> <b>정상범위 밖 {viewSum.odd}종</b>이 섞여 있습니다.</>}
-                {' '}kg·금액 합계는 보이는 행을 그대로 더한 값이라 영향 없습니다.
+                합계는 위 카드와 같은 기준으로 <b>{viewSum.n}종</b>만 더했습니다 — 빠진 {viewSum.excluded}종:
+                {viewSum.noInput > 0 && <> 실투입 미입력 <b>{viewSum.noInput}종</b></>}
+                {viewSum.odd > 0 && <> · 정상범위 밖 <b>{viewSum.odd}종</b></>}
+                {viewSum.excluded - viewSum.noInput - viewSum.odd > 0 && <> · 표준소요 0 / 실투입 0 <b>{viewSum.excluded - viewSum.noInput - viewSum.odd}종</b></>}
+                . 이 원재료들은 표에는 그대로 보입니다.
               </div>
             )}
             <div className="px-4 py-2 border-t bg-slate-50 text-[11px] text-gray-500">
