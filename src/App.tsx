@@ -23,6 +23,8 @@ import ContainerAnalysis from './pages/ContainerAnalysis';
 import ProductSearch from './pages/ProductSearch';
 import YieldAnalysis from './pages/YieldAnalysis';
 import BarcodeCheck from './pages/BarcodeCheck';
+import CoolingInput from './pages/CoolingInput';
+import CoolingBoard from './pages/CoolingBoard';
 import Inbound from './pages/Inbound';
 import InboundHistory from './pages/InboundHistory';
 import Logo from './components/Logo';
@@ -111,6 +113,8 @@ function MainContainer() {
         <Route path="/scoop" element={<Scoop />} />
         <Route path="/scoop/board" element={<Scoop board />} />
         <Route path="/barcode" element={<BarcodeCheck />} />
+        <Route path="/cooling/input" element={<CoolingInput />} />
+        <Route path="/cooling/board" element={<CoolingBoard />} />
         <Route path="/remaining" element={<Remaining />} />
         <Route path="/report" element={<Report />} />
         <Route path="/import" element={<Import />} />
@@ -144,7 +148,7 @@ function MainContainer() {
 type Section = 'dashboard' | 'input' | 'analytics' | 'purchase' | 'attendance' | 'inventory';
 
 function getSection(pathname: string): Section {
-  if (pathname.startsWith('/machine') || pathname.startsWith('/external') || pathname.startsWith('/scoop') || pathname.startsWith('/barcode')) return 'input';
+  if (pathname.startsWith('/machine') || pathname.startsWith('/external') || pathname.startsWith('/scoop') || pathname.startsWith('/barcode') || pathname.startsWith('/cooling')) return 'input';
   if (pathname.startsWith('/analytics') || pathname === '/report' || pathname === '/remaining') return 'analytics';
   if (pathname.startsWith('/purchase')) return 'purchase';
   if (pathname.startsWith('/attendance')) return 'attendance';
@@ -164,6 +168,8 @@ const SUB_TABS: Record<Section, { label: string; to: string; exact?: boolean }[]
     { label: '내포장', to: '/scoop' },
     { label: '내포장 현황판', to: '/scoop/board' },
     { label: '바코드 확인', to: '/barcode' },
+    { label: '외포장 입력', to: '/cooling/input' },
+    { label: '냉각 입출고', to: '/cooling/board' },
   ],
   analytics: [
     { label: '일별요약', to: '/analytics', exact: true },
