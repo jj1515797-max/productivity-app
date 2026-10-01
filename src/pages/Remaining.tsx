@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { collection, doc, onSnapshot, writeBatch } from 'firebase/firestore';
+import { collection, doc, onSnapshot, setDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
 import { loadViewDate, saveViewDate } from '../lib/viewDate';
@@ -97,6 +97,7 @@ export default function Remaining() {
         actualProduction: actual,
         totalQty: it.totalQty || 0,
         logQty,
+        logId: logEntry ? logEntry[0] : undefined,
       };
     });
     // items 에 없지만 logistics 에는 있는 코드도 표시 (누락 방지)
@@ -113,6 +114,7 @@ export default function Remaining() {
           actualProduction: 0,
           date,
           logQty: qty,
+          logId: code,
         });
       }
     });
@@ -264,7 +266,7 @@ export default function Remaining() {
           totalLabel="부족 합계"
           totalValue={shortage.reduce((s, it) => s + (it.totalQty - it.actualProduction), 0)}
         >
-          {shortage.map((it) => <Row key={it.code} item={it} mode={hasLogistics ? 'logistics' : 'production'} />)}
+          {shortage.map((it) => <Row key={it.code} item={it} date={date} mode={hasLogistics ? 'logistics' : 'production'} />)}
         </Section>
       )}
 
@@ -279,13 +281,13 @@ export default function Remaining() {
             0,
           )}
         >
-          {surplus.map((it) => <Row key={it.code} item={it} mode={hasLogistics ? 'logistics' : 'production'} />)}
+          {surplus.map((it) => <Row key={it.code} item={it} date={date} mode={hasLogistics ? 'logistics' : 'production'} />)}
         </Section>
       )}
 
       {exact.length > 0 && (
         <Section title="잔여량 없음" count={exact.length} color="blue">
-          {exact.map((it) => <Row key={it.code} item={it} mode={hasLogistics ? 'logistics' : 'production'} />)}
+          {exact.map((it) => <Row key={it.code} item={it} date={date} mode={hasLogistics ? 'logistics' : 'production'} />)}
         </Section>
       )}
 
@@ -363,17 +365,42 @@ function Section({ title, count, color, totalLabel, totalValue, children }: {
   );
 }
 
-function Row({ item, mode }: { item: Item & { logQty?: number }; mode: 'production' | 'logistics' }) {
+function Row({ item, mode, date }: { item: Item & { logQty?: number; logId?: string }; mode: 'production' | 'logistics'; date: string }) {
+  const [editing, setEditing] = useState(false);
+  const [val, setVal] = useState('');
   if (mode === 'logistics') {
     const log = item.logQty ?? 0;
+    // 물류 잔여량 직접 수정 — 같은 문서(days/{날짜}/logistics/{코드})의 qty 만 바꾼다 (erpCode 등은 유지)
+    const save = () => {
+      const n = Number(val.replace(/[^\d-]/g, ''));
+      if (val.trim() === '' || !Number.isFinite(n) || n < 0) { setEditing(false); return; }
+      if (n === log) { setEditing(false); return; }
+      // 기다리지 않는다 — 화면은 바로 바뀌고, 서버 저장 실패만 알린다
+      const id = item.logId || item.code;
+      setDoc(doc(db, 'days', date, 'logistics', id), { code: id, qty: n }, { merge: true })
+        .catch((e) => alert(`${item.code} 잔여량 저장 실패: ${e?.message || e}`));
+      setEditing(false);
+    };
     return (
       <tr className="hover:bg-gray-50">
         <td className="px-4 py-2.5 font-mono text-xs text-gray-500">{item.code}</td>
         <td className="px-4 py-2.5 font-medium text-gray-800">{item.name}</td>
         <td className="px-4 py-2.5 text-right text-gray-600">{item.totalQty}</td>
-        <td className="px-4 py-2.5 text-right text-gray-700">{item.totalQty + log}</td>
-        <td className={`px-4 py-2.5 text-right font-bold ${log > 0 ? 'text-green-600' : 'text-blue-600'}`}>
-          {log > 0 ? `+${log}` : '✓'}
+        <td className="px-4 py-2.5 text-right text-gray-700">{item.totalQty + (editing && val !== '' && Number.isFinite(Number(val)) ? Number(val) : log)}</td>
+        <td className="px-4 py-1.5 text-right">
+          {editing ? (
+            <input autoFocus type="number" inputMode="numeric" min={0} value={val}
+              onChange={(e) => setVal(e.target.value)}
+              onFocus={(e) => e.target.select()}
+              onKeyDown={(e) => { if (e.key === 'Enter') save(); if (e.key === 'Escape') setEditing(false); }}
+              onBlur={save}
+              className="w-20 border-2 border-blue-500 rounded px-2 py-1 text-right font-bold" />
+          ) : (
+            <button onClick={() => { setVal(String(log)); setEditing(true); }} title="눌러서 잔여량 수정"
+              className={`px-2 py-1 rounded font-bold hover:bg-blue-50 hover:ring-1 hover:ring-blue-300 ${log > 0 ? 'text-green-600' : 'text-blue-600'}`}>
+              {log > 0 ? `+${log}` : '✓'} <span className="text-[10px] text-gray-400 font-normal">✎</span>
+            </button>
+          )}
         </td>
       </tr>
     );
