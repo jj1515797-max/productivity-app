@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { collection, deleteDoc, doc, setDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import {
-  CART_COL, CHANNELS, CH_STYLE, cartMinutes, splitByDate, chime, fmtLeft, hhmm, nextFreeSlot, slotLabel, useCoolingConfig,
+  CART_COL, CHANNELS, CH_STYLE, cartMinutes, splitByDate, unlockAudio, chime, fmtLeft, hhmm, nextFreeSlot, slotLabel, useCoolingConfig,
 } from '../lib/cooling';
 import type { Channel, CoolingCart, RoomConfig } from '../lib/cooling';
 import { useActiveCarts, useDayCarts, usePendingCards } from '../lib/coolingData';
@@ -60,18 +60,39 @@ export default function CoolingInput() {
     fresh.forEach((c) => notified.current.add(c.id));
     if (fresh.length && sound) chime('done');
   }, [done.map((c) => c.id).join(','), sound]); // eslint-disable-line react-hooks/exhaustive-deps
-  // 종료된 대차가 남아 있으면 1분마다 다시 울림
+  // 종료된 대차가 남아 있으면 출고할 때까지 3초마다 계속 울림 (「5분 조용히」 로 잠시 멈춤)
+  const [snoozeUntil, setSnoozeUntil] = useState(0);
+  const snoozed = now < snoozeUntil;
   useEffect(() => {
-    if (!sound || done.length === 0) return;
-    const t = setInterval(() => chime('done'), 60_000);
+    if (!sound || snoozed || done.length === 0) return;
+    const ring = () => {
+      chime('done');
+      try { navigator.vibrate?.([300, 150, 300]); } catch { /* 무시 */ }
+    };
+    const t = setInterval(ring, 3000);
     return () => clearInterval(t);
-  }, [sound, done.length]);
+  }, [sound, snoozed, done.length]);
+  // 아무 데나 한 번 누르면 소리를 깨워 둔다 + 화면 꺼짐 방지 (지원 기기만)
+  useEffect(() => {
+    window.addEventListener('pointerdown', unlockAudio);
+    let lock: any = null;
+    const req = async () => { try { lock = await (navigator as any).wakeLock?.request('screen'); } catch { /* 무시 */ } };
+    req();
+    const onVis = () => { if (document.visibilityState === 'visible') req(); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => {
+      window.removeEventListener('pointerdown', unlockAudio);
+      document.removeEventListener('visibilitychange', onVis);
+      try { lock?.release(); } catch { /* 무시 */ }
+    };
+  }, []);
 
   // 쓰기는 기다리지 않는다 — 화면은 바로 반영되고(오프라인이어도), 서버 저장 실패만 따로 알린다.
   // 기다리면 현장 와이파이가 약할 때 버튼이 멈춘 것처럼 보인다.
   const fire = (p: Promise<unknown>, what: string) => {
-    p.catch((e) => alert(`${what} 저장 실패: ${e?.message || e}\n인터넷 연결을 확인하고 다시 해 주세요.`));
+    p.catch((e) => showToast(`⚠ ${what} 저장 실패 — 인터넷 연결을 확인하고 다시 해 주세요 (${e?.message || e})`));
   };
+  const [ask, setAsk] = useState<{ title: string; msg: string; ok: string; danger?: boolean; onOk: () => void } | null>(null);
   const showToast = (msg: string, undo?: () => void) => {
     setToast({ msg, undo });
     window.setTimeout(() => setToast((t) => (t && t.msg === msg ? null : t)), 10_000);
@@ -86,15 +107,22 @@ export default function CoolingInput() {
     });
   };
 
-  /** 출고 취소 — 냉각실로 되돌린다. 원래 자리에 다른 대차가 들어왔으면 다음 빈자리로. */
+  /** 출고 취소 — 냉각실로 되돌린다. 원래 자리에 다른 대차가 들어왔으면 다음 빈자리로.
+   *  확인은 브라우저 confirm() 대신 화면 안 확인창 — 태블릿(홈 화면 앱 등)에서는 confirm 이 막혀 버튼이 안 먹는다. */
   const unrelease = (c: CoolingCart, quiet = false) => {
+    if (quiet) { doUnrelease(c, true); return; }
+    const dup = active.find((x) => x.id !== c.id && x.cartNo === c.cartNo);
+    setAsk({
+      title: `${c.cartNo}번 대차 출고 취소`,
+      msg: `${c.channel} · ${c.items.map((i) => i.code).join(', ')}\n냉각실로 되돌릴까요?`
+        + (dup ? `\n\n⚠ ${c.cartNo}번 대차가 지금 냉각실 ${dup.room}에도 있습니다.` : ''),
+      ok: '출고 취소',
+      onOk: () => doUnrelease(c),
+    });
+  };
+  const doUnrelease = (c: CoolingCart, quiet = false) => {
     const room = cfg.rooms.find((r) => r.id === c.room);
     const others = active.filter((x) => x.id !== c.id);
-    if (!quiet) {
-      const dup = others.find((x) => x.cartNo === c.cartNo);
-      if (dup && !confirm(`${c.cartNo}번 대차가 지금 냉각실 ${dup.room}에도 있습니다. 그래도 되돌릴까요?`)) return;
-      if (!confirm(`${c.cartNo}번 대차 (${c.channel} · ${c.items.map((i) => i.code).join(', ')}) 출고를 취소하고 냉각실로 되돌릴까요?`)) return;
-    }
     const taken = others.some((x) => x.room === c.room && x.slot === c.slot);
     const slot = !taken ? c.slot : room ? nextFreeSlot(room, others) : -1;
     fire(updateDoc(doc(db, CART_COL, c.id), { out: false, outAt: null, slot }), '출고 취소');
@@ -134,7 +162,12 @@ export default function CoolingInput() {
       {/* ① 냉각 종료 — 누르면 출고 */}
       {done.length > 0 && (
         <section className="space-y-2">
-          <div className="text-sm font-bold text-rose-700">🔔 냉각 종료 — 카드를 누르면 출고됩니다</div>
+          <div className="flex items-center gap-3">
+            <div className="text-sm font-bold text-rose-700">🔔 냉각 종료 — 카드를 누르면 출고됩니다</div>
+            {sound && (snoozed
+              ? <button onClick={() => setSnoozeUntil(0)} className="ml-auto px-3 py-1.5 text-sm rounded border border-rose-300 text-rose-700 bg-white">🔕 {fmtLeft(snoozeUntil - now)} 뒤 다시 울림 · 지금 켜기</button>
+              : <button onClick={() => setSnoozeUntil(Date.now() + 5 * 60_000)} className="ml-auto px-3 py-1.5 text-sm rounded bg-rose-600 text-white font-bold">🔕 5분 조용히</button>)}
+          </div>
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
             {done.map((c) => {
               const room = roomOf(c.room);
@@ -286,12 +319,32 @@ export default function CoolingInput() {
       {detail && (
         <CartDetail cart={active.find((c) => c.id === detail.id) || detail} room={roomOf(detail.room)} now={now}
           onClose={() => setDetail(null)}
-          onRelease={() => release(detail)}
+          onRelease={() => {
+            const c = active.find((x) => x.id === detail.id) || detail;
+            if (now >= c.endAt) { release(c); return; }
+            setAsk({ title: `${c.cartNo}번 대차 출고`, msg: `아직 냉각 중입니다 (${fmtLeft(c.endAt - now)} 남음).\n그래도 출고할까요?`, ok: '출고', danger: true, onOk: () => release(c) });
+          }}
           onMove={() => { setMoving(detail); setDetail(null); }}
-          onCancel={async () => {
-            if (!confirm(`${detail.cartNo}번 대차 입고를 취소할까요?\n(잘못 입고한 경우 — 품목이 다시 입고 대기로 돌아갑니다)`)) return;
-            fire(deleteDoc(doc(db, CART_COL, detail.id)), '입고 취소'); setDetail(null);
-          }} />
+          onCancel={() => setAsk({
+            title: `${detail.cartNo}번 대차 입고 취소`,
+            msg: '잘못 입고한 경우에 씁니다.\n대차 기록이 지워지고 품목이 다시 입고 대기로 돌아갑니다.',
+            ok: '입고 취소', danger: true,
+            onOk: () => { fire(deleteDoc(doc(db, CART_COL, detail.id)), '입고 취소'); setDetail(null); },
+          })} />
+      )}
+
+      {ask && (
+        <div className="fixed inset-0 z-[60] bg-black/50 flex items-center justify-center p-4" onClick={() => setAsk(null)}>
+          <div className="bg-white rounded-2xl p-5 w-full max-w-sm space-y-4" onClick={(e) => e.stopPropagation()}>
+            <div className="text-lg font-bold">{ask.title}</div>
+            <div className="text-gray-700 whitespace-pre-line">{ask.msg}</div>
+            <div className="grid grid-cols-2 gap-2">
+              <button onClick={() => setAsk(null)} className="py-3 rounded-lg border text-lg">아니요</button>
+              <button onClick={() => { const f = ask.onOk; setAsk(null); f(); }}
+                className={`py-3 rounded-lg text-white text-lg font-bold ${ask.danger ? 'bg-rose-600' : 'bg-blue-600'}`}>{ask.ok}</button>
+            </div>
+          </div>
+        </div>
       )}
 
       {toast && (
@@ -356,7 +409,7 @@ function InboundModal({ cards, channel, rooms, active, minutes, onClose, onSubmi
         </div>
 
         <button disabled={!no || room === null || !!inUse || busy}
-          onClick={async () => { setBusy(true); try { await onSubmit(no, room!); } catch (e: any) { alert(`입고 실패: ${e?.message || e}`); setBusy(false); } }}
+          onClick={async () => { setBusy(true); try { await onSubmit(no, room!); } catch { setBusy(false); } }}
           className="w-full py-4 rounded-xl bg-blue-600 text-white text-xl font-bold disabled:bg-gray-300">
           {busy ? '입고 중…' : '입고 · 냉각 시작'}
         </button>
@@ -393,7 +446,7 @@ function CartDetail({ cart, room, now, onClose, onRelease, onMove, onCancel }: {
         <div className="grid grid-cols-3 gap-2 pt-2">
           <button onClick={onCancel} className="py-3 rounded-lg border text-rose-600">입고 취소</button>
           <button onClick={onMove} className="py-3 rounded-lg border">자리 이동</button>
-          <button onClick={() => { if (left > 0 && !confirm('아직 냉각 중입니다. 그래도 출고할까요?')) return; onRelease(); }}
+          <button onClick={onRelease}
             className={`py-3 rounded-lg font-bold text-white ${left <= 0 ? 'bg-rose-600' : 'bg-gray-500'}`}>출고</button>
         </div>
       </div>

@@ -122,20 +122,31 @@ export function hhmm(t: number): string {
 
 /* ---------- 알림음 ---------- */
 let ctx: AudioContext | null = null;
+/** 소리는 화면을 한 번이라도 누른 뒤에만 난다(브라우저 정책). 아무 데나 누르는 순간 소리를 미리 깨워 둔다. */
+export function unlockAudio() {
+  try {
+    if (!ctx) ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+    if (ctx!.state === 'suspended') ctx!.resume();
+  } catch { /* 무시 */ }
+}
 export function chime(kind: 'done' | 'tap' = 'done') {
   try {
     if (!ctx) ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
     const a = ctx!;
-    if (a.state === 'suspended') a.resume();
-    const tone = (f: number, t: number, d: number) => {
-      const o = a.createOscillator(); const g = a.createGain();
-      o.frequency.value = f; o.type = 'sine';
-      g.gain.setValueAtTime(0.0001, a.currentTime + t);
-      g.gain.exponentialRampToValueAtTime(0.4, a.currentTime + t + 0.02);
-      g.gain.exponentialRampToValueAtTime(0.0001, a.currentTime + t + d);
-      o.connect(g).connect(a.destination); o.start(a.currentTime + t); o.stop(a.currentTime + t + d + 0.05);
+    const play = () => {
+      const tone = (f: number, t: number, d: number, type: OscillatorType = 'sine', vol = 0.4) => {
+        const o = a.createOscillator(); const g = a.createGain();
+        o.frequency.value = f; o.type = type;
+        g.gain.setValueAtTime(0.0001, a.currentTime + t);
+        g.gain.exponentialRampToValueAtTime(vol, a.currentTime + t + 0.02);
+        g.gain.exponentialRampToValueAtTime(0.0001, a.currentTime + t + d);
+        o.connect(g).connect(a.destination); o.start(a.currentTime + t); o.stop(a.currentTime + t + d + 0.05);
+      };
+      if (kind === 'tap') tone(1200, 0, 0.08);
+      // 공장 소음 속에서도 들리게 — 높낮이 두 음을 세 번 (약 1.5초), 크게
+      else for (let k = 0; k < 3; k++) { tone(1046, k * 0.5, 0.22, 'square', 0.6); tone(1568, k * 0.5 + 0.24, 0.22, 'square', 0.6); }
     };
-    if (kind === 'tap') tone(1200, 0, 0.08);
-    else { tone(880, 0, 0.25); tone(1175, 0.3, 0.25); tone(1568, 0.6, 0.4); }
+    // 잠들어 있던 소리를 깨운 '뒤에' 울려야 첫 소리가 씹히지 않는다
+    if (a.state === 'suspended') a.resume().then(play).catch(() => {}); else play();
   } catch { /* 무시 */ }
 }
