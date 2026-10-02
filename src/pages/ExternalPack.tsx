@@ -238,7 +238,7 @@ export default function ExternalPack() {
                 r.combinedDiff < 0 ? 'text-red-700' : '';
               return (
                 <tr key={r.key} onClick={() => tapRow(r)}
-                  className={`border-t border-gray-400 cursor-pointer select-none active:brightness-95 ${sortedAt.has(r.docId) ? 'bg-gray-200 text-gray-500' : r.bg}`}>
+                  className={`border-t border-gray-400 cursor-pointer select-none active:brightness-95 ${r.bg}`}>
                   <td className="font-mono font-bold" style={codeStyle}>{r.code}</td>
                   <td style={cellStyle}>{r.name}</td>
                   <td className="text-right font-bold" style={cellStyle}>{r.orderQty}</td>
