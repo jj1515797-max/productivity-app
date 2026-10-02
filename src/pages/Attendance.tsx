@@ -5,6 +5,7 @@ import { todayKey } from '../lib/dateUtil';
 import { loadViewDate, saveViewDate } from '../lib/viewDate';
 import type { AttendanceRecord, AttendanceStatus, Member } from '../types';
 import { ATTENDANCE_STATUSES } from '../types';
+import LeaveSearchModal from '../components/LeaveSearchModal';
 import { isOnLeave, getStatuses, effectiveStatuses, formatStatusLabel, leaveDaysFromStatuses } from '../lib/attendance';
 
 const STATUS_COLOR: Record<AttendanceStatus, { chip: string; soft: string; text: string; border: string }> = {
@@ -87,6 +88,7 @@ export default function Attendance() {
   const [editDept, setEditDept] = useState('');
   const [leaveTarget, setLeaveTarget] = useState<Member | null>(null);
   const [showTable, setShowTable] = useState(false);
+  const [showLeave, setShowLeave] = useState(false);
   const [openStatusFor, setOpenStatusFor] = useState<string | null>(null);
   const [popoverPos, setPopoverPos] = useState<{ x: number; y: number; width: number; mobile: boolean } | null>(null);
 
@@ -346,6 +348,11 @@ export default function Attendance() {
           className="px-3 py-1.5 text-xs rounded border border-emerald-400 text-emerald-700 bg-emerald-50 hover:bg-emerald-100 font-semibold"
           title="근태현황표"
         >📋 표</button>
+        <button
+          onClick={() => setShowLeave(true)}
+          className="px-3 py-1.5 text-xs rounded border border-orange-300 text-orange-700 bg-orange-50 hover:bg-orange-100 font-semibold"
+          title="사람별 연차·반차 사용 횟수 (월별 / 올해 누적)"
+        >🔎 연차검색</button>
         <div className="ml-auto text-xs text-gray-500">
           출근 분모 (휴직·휴무 제외) <span className="font-bold text-gray-800 ml-1">{counts.workforceN}명</span>
         </div>
@@ -524,6 +531,8 @@ export default function Attendance() {
           )}
         </div>
       )}
+
+      {showLeave && <LeaveSearchModal members={members} onClose={() => setShowLeave(false)} />}
 
       {/* 근태현황표 */}
       {showTable && (
