@@ -1,16 +1,17 @@
 /** 입력 › 냉각 입출고 — 물류팀·외부 인원용 실시간 현황판 (보기 전용)
  *  냉각실별 도면 + 종료 임박 순 목록 + 오늘 출고 기록 + 설정(도면 크기·단계별 냉각 시간) */
 import { useEffect, useState } from 'react';
-import { effectiveTodayKey } from '../lib/dateUtil';
 import { CH_STYLE, DEFAULT_CONFIG, fmtLeft, hhmm, slotLabel, useCoolingConfig } from '../lib/cooling';
 import type { CoolingCart, CoolingConfig } from '../lib/cooling';
 import { useActiveCarts, useDayCarts } from '../lib/coolingData';
 import CoolingRoomMap from '../components/CoolingRoomMap';
+import WorkDateNav, { useWorkDate } from '../components/WorkDateNav';
 
 export default function CoolingBoard() {
   const [now, setNow] = useState(Date.now());
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
-  const date = effectiveTodayKey();
+  const [date, setDate, today] = useWorkDate();
+  const isToday = date === today;
   const [cfg, saveCfg] = useCoolingConfig();
   const active = useActiveCarts();
   const day = useDayCarts(date);
@@ -24,14 +25,15 @@ export default function CoolingBoard() {
     <div className="space-y-4">
       <div className="flex items-center gap-3 flex-wrap">
         <h2 className="text-xl font-bold">냉각 입출고 현황</h2>
-        <span className="text-sm text-gray-600">냉각 중 <b>{active.length - doneCnt}</b>대 · <span className="text-rose-600">종료(출고 대기) <b>{doneCnt}</b>대</span> · 오늘 출고 <b>{outToday.length}</b>대</span>
+        <WorkDateNav date={date} setDate={setDate} today={today} />
+        <span className="text-sm text-gray-600">지금 냉각 중 <b>{active.length - doneCnt}</b>대 · <span className="text-rose-600">종료(출고 대기) <b>{doneCnt}</b>대</span> · {isToday ? '오늘' : date.slice(5)} 입고 <b>{day.length}</b>대 · 출고 <b>{outToday.length}</b>대</span>
         <button onClick={() => setShowCfg(!showCfg)} className="ml-auto px-3 py-1.5 text-sm border rounded bg-white">⚙ 설정</button>
         <span className="text-3xl font-mono font-bold text-gray-800 tabular-nums">{hhmm(now)}</span>
       </div>
 
       {showCfg && <ConfigPanel cfg={cfg} onSave={async (c) => { await saveCfg(c); setShowCfg(false); }} />}
 
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-3">
+      <div className="grid grid-cols-1 md:landscape:grid-cols-3 xl:grid-cols-3 gap-3">
         {cfg.rooms.map((room) => (
           <CoolingRoomMap key={room.id} room={room} now={now} carts={active.filter((c) => c.room === room.id)} onTapCart={setDetail} />
         ))}
@@ -71,25 +73,36 @@ export default function CoolingBoard() {
         </div>
       </div>
 
-      {outToday.length > 0 && (
-        <details className="bg-white border rounded-xl">
-          <summary className="px-4 py-2 cursor-pointer text-sm font-bold text-gray-700">오늘 출고 기록 {outToday.length}대</summary>
-          <table className="w-full text-sm">
-            <tbody className="divide-y">
-              {outToday.map((c) => (
-                <tr key={c.id}>
-                  <td className="px-3 py-1.5 tabular-nums text-gray-500">{c.outAt ? hhmm(c.outAt) : ''} 출고</td>
-                  <td className="px-3 py-1.5">{roomOf(c.room)?.name}</td>
-                  <td className="px-3 py-1.5 font-bold">{c.cartNo}번</td>
-                  <td className="px-3 py-1.5"><span className={`px-2 py-0.5 rounded text-white text-xs ${CH_STYLE[c.channel].bg}`}>{c.channel}</span></td>
-                  <td className="px-3 py-1.5">{c.items.map((i) => `${i.code} ${i.qty}`).join(', ')}</td>
-                  <td className="px-3 py-1.5 text-gray-500 tabular-nums">{hhmm(c.startAt)}~{hhmm(c.endAt)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </details>
-      )}
+      {/* 그 날짜의 입출고 기록 — 날짜를 바꿔 지난 기록도 본다 */}
+      {(() => {
+        const rec = [...day].sort((a, b) => b.startAt - a.startAt);
+        return (
+          <details className="bg-white border rounded-xl" open={!isToday || undefined}>
+            <summary className="px-4 py-2 cursor-pointer text-sm font-bold text-gray-700">
+              {isToday ? '오늘' : date} 입출고 기록 {rec.length}대 <span className="font-normal text-gray-500">(입고 {rec.length} · 출고 {outToday.length})</span>
+            </summary>
+            {rec.length === 0 ? <div className="px-4 py-6 text-center text-gray-400 text-sm">이 날짜에 입고한 대차가 없습니다</div> : (
+              <table className="w-full text-sm">
+                <thead className="text-xs text-gray-500 bg-gray-50">
+                  <tr><th className="px-3 py-1.5 text-left">입고</th><th className="px-3 py-1.5 text-left">출고</th><th className="px-3 py-1.5 text-left">냉각실</th><th className="px-3 py-1.5 text-left">대차</th><th className="px-3 py-1.5 text-left">채널</th><th className="px-3 py-1.5 text-left">품목</th></tr>
+                </thead>
+                <tbody className="divide-y">
+                  {rec.map((c) => (
+                    <tr key={c.id}>
+                      <td className="px-3 py-1.5 tabular-nums">{hhmm(c.startAt)}</td>
+                      <td className="px-3 py-1.5 tabular-nums">{c.out ? (c.outAt ? hhmm(c.outAt) : '출고') : <span className="text-blue-600 font-medium">냉각실에 있음</span>}</td>
+                      <td className="px-3 py-1.5">{roomOf(c.room)?.name}</td>
+                      <td className="px-3 py-1.5 font-bold">{c.cartNo}번</td>
+                      <td className="px-3 py-1.5"><span className={`px-2 py-0.5 rounded text-white text-xs ${CH_STYLE[c.channel].bg}`}>{c.channel}</span></td>
+                      <td className="px-3 py-1.5">{c.items.map((i) => `${i.code} ${i.name} ${i.qty}`).join(' / ')}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </details>
+        );
+      })()}
 
       {detail && (() => {
         const c = active.find((x) => x.id === detail.id) || detail;

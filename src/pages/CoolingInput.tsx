@@ -3,7 +3,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { collection, deleteDoc, doc, setDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../firebase';
-import { effectiveTodayKey } from '../lib/dateUtil';
 import {
   CART_COL, CHANNELS, CH_STYLE, cartMinutes, chime, fmtLeft, hhmm, nextFreeSlot, slotLabel, useCoolingConfig,
 } from '../lib/cooling';
@@ -11,13 +10,11 @@ import type { Channel, CoolingCart, RoomConfig } from '../lib/cooling';
 import { useActiveCarts, useDayCarts, usePendingCards } from '../lib/coolingData';
 import type { PendingCard } from '../lib/coolingData';
 import CoolingRoomMap from '../components/CoolingRoomMap';
+import WorkDateNav, { useWorkDate } from '../components/WorkDateNav';
 
 export default function CoolingInput() {
-  const [date, setDate] = useState(effectiveTodayKey());
-  useEffect(() => {
-    const t = setInterval(() => { const d = effectiveTodayKey(); if (d !== date) setDate(d); }, 60_000);
-    return () => clearInterval(t);
-  }, [date]);
+  const [date, setDate, today] = useWorkDate();
+  const isToday = date === today;
   const [now, setNow] = useState(Date.now());
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
 
@@ -119,12 +116,18 @@ export default function CoolingInput() {
     <div className="space-y-4 pb-24">
       <div className="flex items-center gap-3 flex-wrap">
         <h2 className="text-xl font-bold">외포장 입력</h2>
-        <span className="text-sm text-gray-500 font-mono">{date}</span>
+        <WorkDateNav date={date} setDate={(d) => { setSel(new Set()); setDate(d); }} today={today} />
         <span className="text-xs text-gray-500">냉각 중 {active.length - done.length}대 · 종료 {done.length}대</span>
         <button onClick={() => { const n = !sound; setSound(n); try { localStorage.setItem('coolSound', n ? 'on' : 'off'); } catch { /* 무시 */ } if (n) chime('tap'); }}
           className="ml-auto px-3 py-1.5 text-sm border rounded bg-white">{sound ? '🔔 알림음 켬' : '🔕 알림음 끔'}</button>
         <span className="text-3xl font-mono font-bold text-gray-800 tabular-nums">{hhmm(now)}</span>
       </div>
+
+      {!isToday && (
+        <div className="border border-orange-300 bg-orange-50 text-orange-800 rounded-lg px-4 py-2 text-sm">
+          <b>{date}</b> 기준으로 입고 대기·출고 기록을 보고 있습니다. 냉각실 도면과 냉각 종료 알림은 날짜와 상관없이 <b>지금</b> 상태입니다.
+        </div>
+      )}
 
       {/* ① 냉각 종료 — 누르면 출고 */}
       {done.length > 0 && (
@@ -165,7 +168,8 @@ export default function CoolingInput() {
             ))}
           </div>
         </div>
-        <div className="p-3">
+        {/* 카드가 많아도 아래 냉각실 도면이 바로 보이게 — 목록 안에서만 스크롤 */}
+        <div className="p-3 max-h-[45vh] overflow-y-auto overscroll-contain">
           {!loaded ? <div className="text-center text-gray-400 py-8">불러오는 중…</div>
             : filtered.length === 0 ? <div className="text-center text-gray-400 py-8">입고할 품목이 없습니다 — 내포장(1·2·3호기)에서 입력하면 여기에 뜹니다</div>
               : (
@@ -205,8 +209,8 @@ export default function CoolingInput() {
           <button onClick={() => setMoving(null)} className="ml-auto px-3 py-1 bg-white/20 rounded">취소</button>
         </div>
       )}
-      {/* 태블릿에서는 냉각실을 위아래로 — 칸이 넓어야 장갑 낀 손으로도 정확히 눌린다 */}
-      <div className="grid grid-cols-1 2xl:grid-cols-3 gap-3">
+      {/* 냉각 입출고 현황판과 같게 — 태블릿 가로·PC 에서는 냉각실 3개를 한 줄에, 세로로 들면 위아래로 */}
+      <div className="grid grid-cols-1 md:landscape:grid-cols-3 xl:grid-cols-3 gap-3">
         {cfg.rooms.map((room) => (
           <CoolingRoomMap key={room.id} room={room} now={now}
             carts={active.filter((c) => c.room === room.id)}
@@ -225,7 +229,7 @@ export default function CoolingInput() {
         return (
           <details className="bg-white border rounded-xl">
             <summary className="px-4 py-3 cursor-pointer font-bold text-gray-800">
-              오늘 출고한 대차 {outs.length}대 <span className="text-xs font-normal text-gray-500">— 잘못 출고했으면 눌러서 「출고 취소」</span>
+              {isToday ? '오늘' : date} 출고한 대차 {outs.length}대 <span className="text-xs font-normal text-gray-500">— 잘못 출고했으면 눌러서 「출고 취소」</span>
             </summary>
             <div className="divide-y">
               {outs.map((c) => (
