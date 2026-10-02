@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { collection, deleteDoc, doc, setDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import {
-  CART_COL, CHANNELS, CH_STYLE, cartMinutes, chime, fmtLeft, hhmm, nextFreeSlot, slotLabel, useCoolingConfig,
+  CART_COL, CHANNELS, CH_STYLE, cartMinutes, splitByDate, chime, fmtLeft, hhmm, nextFreeSlot, slotLabel, useCoolingConfig,
 } from '../lib/cooling';
 import type { Channel, CoolingCart, RoomConfig } from '../lib/cooling';
 import { useActiveCarts, useDayCarts, usePendingCards } from '../lib/coolingData';
@@ -51,7 +51,9 @@ export default function CoolingInput() {
   };
 
   /* ---------- 냉각 종료 알림 ---------- */
-  const done = active.filter((c) => now >= c.endAt);
+  // 보고 있는 날짜의 대차만 — 다른 날짜에 넣은 건 도면에 흐리게만, 알림·개수에서는 뺀다
+  const { shown, ghosts } = splitByDate(active, date, today);
+  const done = shown.filter((c) => now >= c.endAt);
   const notified = useRef<Set<string>>(new Set());
   useEffect(() => {
     const fresh = done.filter((c) => !notified.current.has(c.id));
@@ -117,7 +119,7 @@ export default function CoolingInput() {
       <div className="flex items-center gap-3 flex-wrap">
         <h2 className="text-xl font-bold">외포장 입력</h2>
         <WorkDateNav date={date} setDate={(d) => { setSel(new Set()); setDate(d); }} today={today} />
-        <span className="text-xs text-gray-500">냉각 중 {active.length - done.length}대 · 종료 {done.length}대</span>
+        <span className="text-xs text-gray-500">냉각 중 {shown.length - done.length}대 · 종료 {done.length}대</span>
         <button onClick={() => { const n = !sound; setSound(n); try { localStorage.setItem('coolSound', n ? 'on' : 'off'); } catch { /* 무시 */ } if (n) chime('tap'); }}
           className="ml-auto px-3 py-1.5 text-sm border rounded bg-white">{sound ? '🔔 알림음 켬' : '🔕 알림음 끔'}</button>
         <span className="text-3xl font-mono font-bold text-gray-800 tabular-nums">{hhmm(now)}</span>
@@ -125,7 +127,7 @@ export default function CoolingInput() {
 
       {!isToday && (
         <div className="border border-orange-300 bg-orange-50 text-orange-800 rounded-lg px-4 py-2 text-sm">
-          <b>{date}</b> 기준으로 입고 대기·출고 기록을 보고 있습니다. 냉각실 도면과 냉각 종료 알림은 날짜와 상관없이 <b>지금</b> 상태입니다.
+          <b>{date}</b> 에 넣은 대차만 보고 있습니다 (입고 대기·냉각실·알림·출고 기록 모두). 다른 날짜에 넣고 아직 안 뺀 대차는 도면에 회색 「다른 날」로 자리만 표시됩니다.
         </div>
       )}
 
@@ -213,7 +215,8 @@ export default function CoolingInput() {
       <div className="grid grid-cols-1 md:landscape:grid-cols-3 xl:grid-cols-3 gap-3">
         {cfg.rooms.map((room) => (
           <CoolingRoomMap key={room.id} room={room} now={now}
-            carts={active.filter((c) => c.room === room.id)}
+            carts={shown.filter((c) => c.room === room.id)}
+            ghosts={ghosts.filter((c) => c.room === room.id)}
             moving={moving}
             onTapCart={(c) => setDetail(c)}
             onLongPressCart={(c) => { chime('tap'); setMoving(c); }}

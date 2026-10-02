@@ -1,7 +1,7 @@
 /** 입력 › 냉각 입출고 — 물류팀·외부 인원용 실시간 현황판 (보기 전용)
  *  냉각실별 도면 + 종료 임박 순 목록 + 오늘 출고 기록 + 설정(도면 크기·단계별 냉각 시간) */
 import { useEffect, useState } from 'react';
-import { CH_STYLE, DEFAULT_CONFIG, fmtLeft, hhmm, slotLabel, useCoolingConfig } from '../lib/cooling';
+import { CH_STYLE, DEFAULT_CONFIG, fmtLeft, hhmm, slotLabel, splitByDate, useCoolingConfig } from '../lib/cooling';
 import type { CoolingCart, CoolingConfig } from '../lib/cooling';
 import { useActiveCarts, useDayCarts } from '../lib/coolingData';
 import CoolingRoomMap from '../components/CoolingRoomMap';
@@ -19,14 +19,15 @@ export default function CoolingBoard() {
   const [detail, setDetail] = useState<CoolingCart | null>(null);
   const [showCfg, setShowCfg] = useState(false);
   const roomOf = (id: number) => cfg.rooms.find((r) => r.id === id);
-  const doneCnt = active.filter((c) => now >= c.endAt).length;
+  const { shown, ghosts } = splitByDate(active, date, today);
+  const doneCnt = shown.filter((c) => now >= c.endAt).length;
 
   return (
     <div className="space-y-4">
       <div className="flex items-center gap-3 flex-wrap">
         <h2 className="text-xl font-bold">냉각 입출고 현황</h2>
         <WorkDateNav date={date} setDate={setDate} today={today} />
-        <span className="text-sm text-gray-600">지금 냉각 중 <b>{active.length - doneCnt}</b>대 · <span className="text-rose-600">종료(출고 대기) <b>{doneCnt}</b>대</span> · {isToday ? '오늘' : date.slice(5)} 입고 <b>{day.length}</b>대 · 출고 <b>{outToday.length}</b>대</span>
+        <span className="text-sm text-gray-600">냉각 중 <b>{shown.length - doneCnt}</b>대 · <span className="text-rose-600">종료(출고 대기) <b>{doneCnt}</b>대</span> · {isToday ? '오늘' : date.slice(5)} 입고 <b>{day.length}</b>대 · 출고 <b>{outToday.length}</b>대</span>
         <button onClick={() => setShowCfg(!showCfg)} className="ml-auto px-3 py-1.5 text-sm border rounded bg-white">⚙ 설정</button>
         <span className="text-3xl font-mono font-bold text-gray-800 tabular-nums">{hhmm(now)}</span>
       </div>
@@ -35,7 +36,7 @@ export default function CoolingBoard() {
 
       <div className="grid grid-cols-1 md:landscape:grid-cols-3 xl:grid-cols-3 gap-3">
         {cfg.rooms.map((room) => (
-          <CoolingRoomMap key={room.id} room={room} now={now} carts={active.filter((c) => c.room === room.id)} onTapCart={setDetail} />
+          <CoolingRoomMap key={room.id} room={room} now={now} carts={shown.filter((c) => c.room === room.id)} ghosts={ghosts.filter((c) => c.room === room.id)} onTapCart={setDetail} />
         ))}
       </div>
 
@@ -52,8 +53,8 @@ export default function CoolingBoard() {
               </tr>
             </thead>
             <tbody className="divide-y">
-              {active.length === 0 && <tr><td colSpan={7} className="px-3 py-8 text-center text-gray-400">냉각실에 대차가 없습니다</td></tr>}
-              {active.map((c) => {
+              {shown.length === 0 && <tr><td colSpan={7} className="px-3 py-8 text-center text-gray-400">냉각실에 대차가 없습니다</td></tr>}
+              {shown.map((c) => {
                 const left = c.endAt - now;
                 const room = roomOf(c.room);
                 return (

@@ -5,10 +5,12 @@ import { CH_SHORT, CH_STYLE, fmtLeft } from '../lib/cooling';
 import type { CoolingCart, RoomConfig } from '../lib/cooling';
 
 export default function CoolingRoomMap({
-  room, carts, now, compact = false, moving, onTapCart, onLongPressCart, onTapSlot,
+  room, carts, ghosts = [], now, compact = false, moving, onTapCart, onLongPressCart, onTapSlot,
 }: {
   room: RoomConfig;
   carts: CoolingCart[];
+  /** 다른 날짜에 넣은 대차 — 자리는 실제로 차 있으니 흐리게만 보여 준다 */
+  ghosts?: CoolingCart[];
   now: number;
   compact?: boolean;
   moving?: CoolingCart | null;
@@ -18,6 +20,8 @@ export default function CoolingRoomMap({
 }) {
   const bySlot = new Map<number, CoolingCart>();
   carts.forEach((c) => { if (c.slot >= 0) bySlot.set(c.slot, c); });
+  const ghostBySlot = new Map<number, CoolingCart>();
+  ghosts.forEach((c) => { if (c.slot >= 0 && !bySlot.has(c.slot)) ghostBySlot.set(c.slot, c); });
   const unplaced = carts.filter((c) => c.slot < 0 || c.slot >= room.rows * room.cols);
   const timer = useRef<number | null>(null);
   const longFired = useRef(false);
@@ -36,15 +40,26 @@ export default function CoolingRoomMap({
     <div className="bg-white border rounded-xl overflow-hidden">
       <div className="px-3 py-2 border-b bg-slate-50 flex items-center gap-2">
         <span className="font-bold text-gray-800">{room.name}</span>
-        <span className="text-xs text-gray-500">{carts.length}대 / {room.rows * room.cols}칸</span>
+        <span className="text-xs text-gray-500">{carts.length}대 / {room.rows * room.cols}칸{ghosts.length > 0 && ` · 다른 날 ${ghosts.length}대`}</span>
         {doneCount > 0 && <span className="text-xs font-bold text-rose-600 animate-pulse">냉각 종료 {doneCount}대</span>}
       </div>
       <div className="p-2">
-        <div className="text-[10px] text-gray-400 text-center mb-1">▲ 안쪽</div>
+        <div className="text-[10px] text-gray-400 text-center mb-1 border-b border-gray-300 pb-0.5">안쪽 (벽)</div>
         <div className="grid gap-1" style={{ gridTemplateColumns: `repeat(${room.cols}, minmax(0, 1fr))` }}>
           {Array.from({ length: room.rows * room.cols }, (_, slot) => {
             const c = bySlot.get(slot);
             const isTarget = !!moving && moving.id !== c?.id;
+            const g = !c ? ghostBySlot.get(slot) : undefined;
+            if (g) {
+              return (
+                <div key={slot} title={`${g.date} 에 넣은 대차 — 그 날짜로 바꾸면 보입니다`}
+                  className={`${cell} rounded border border-gray-300 bg-gray-100 p-1 leading-tight text-gray-400 select-none`}>
+                  <div className={`font-bold ${compact ? 'text-sm' : 'text-base'}`}>{g.cartNo}</div>
+                  <div className="text-[10px]">다른 날</div>
+                  <div className="text-[10px] font-mono">{g.date.slice(5)}</div>
+                </div>
+              );
+            }
             if (!c) {
               return (
                 <button key={slot} type="button" onClick={() => onTapSlot?.(slot)}
@@ -77,7 +92,12 @@ export default function CoolingRoomMap({
             );
           })}
         </div>
-        <div className="text-[10px] text-gray-400 text-center mt-1">▼ 입구</div>
+        {/* 입구 — 문 위치가 한눈에 보이게 얇은 색 띠로 (태블릿에서 공간 덜 차지하게 높이는 작게) */}
+        <div className="mt-1.5 flex items-center gap-1.5">
+          <div className="flex-1 h-1 rounded-full bg-amber-400" />
+          <span className="text-[11px] font-bold text-amber-700 whitespace-nowrap">🚪 입구</span>
+          <div className="flex-1 h-1 rounded-full bg-amber-400" />
+        </div>
         {unplaced.length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1 items-center">
             <span className="text-[11px] text-amber-700">자리 미지정:</span>

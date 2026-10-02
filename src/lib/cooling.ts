@@ -102,6 +102,13 @@ export function slotLabel(room: RoomConfig, slot: number): string {
   return `오른쪽 ${room.cols - c}줄 · 안쪽부터 ${r + 1}번째`;
 }
 
+/** 보고 있는 날짜의 대차만 정상 표시, 나머지는 '다른 날' 로 흐리게.
+ *  생산 당일을 볼 때는 전날 넣고 아직 안 뺀 대차도 실제로 냉각실에 있으니 같이 보여 준다. */
+export function splitByDate(carts: CoolingCart[], date: string, today: string) {
+  const mine = (c: CoolingCart) => c.date === date || (date === today && c.date < today);
+  return { shown: carts.filter(mine), ghosts: carts.filter((c) => !mine(c)) };
+}
+
 export function fmtLeft(ms: number): string {
   const s = Math.max(0, Math.round(ms / 1000));
   const m = Math.floor(s / 60);
