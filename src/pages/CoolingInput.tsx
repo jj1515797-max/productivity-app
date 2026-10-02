@@ -11,6 +11,7 @@ import { useActiveCarts, useDayCarts, usePendingCards } from '../lib/coolingData
 import type { PendingCard } from '../lib/coolingData';
 import CoolingRoomMap from '../components/CoolingRoomMap';
 import WorkDateNav, { useWorkDate } from '../components/WorkDateNav';
+import { useSorted } from '../lib/packSort';
 
 export default function CoolingInput() {
   const [date, setDate, today] = useWorkDate();
@@ -21,10 +22,20 @@ export default function CoolingInput() {
   const [cfg] = useCoolingConfig();
   const active = useActiveCarts();
   const dayCarts = useDayCarts(date);
-  const { cards, loaded } = usePendingCards(date, dayCarts);
+  const sorted = useSorted(date);
+  const { cards, loaded } = usePendingCards(date, dayCarts, sorted);
 
   const [sel, setSel] = useState<Set<string>>(new Set());
   const [chFilter, setChFilter] = useState<Channel | '전체'>('전체');
+  // 외포장 1·2·3 — 여러 개 고를 수 있고, 아무것도 안 고르면 전체
+  const [packFilter, setPackFilter] = useState<Set<number>>(() => {
+    try { return new Set(JSON.parse(localStorage.getItem('coolPackFilter') || '[]')); } catch { return new Set(); }
+  });
+  const togglePack = (n: number) => setPackFilter((s) => {
+    const x = new Set(s); if (x.has(n)) x.delete(n); else x.add(n);
+    try { localStorage.setItem('coolPackFilter', JSON.stringify([...x])); } catch { /* 무시 */ }
+    return x;
+  });
   const [showIn, setShowIn] = useState(false);
   const [detail, setDetail] = useState<CoolingCart | null>(null);
   const [moving, setMoving] = useState<CoolingCart | null>(null);
@@ -139,7 +150,8 @@ export default function CoolingInput() {
     setMoving(null);
   };
 
-  const filtered = chFilter === '전체' ? cards : cards.filter((c) => c.channel === chFilter);
+  const byPack = packFilter.size === 0 ? cards : cards.filter((c) => c.packs.some((p) => packFilter.has(p)));
+  const filtered = chFilter === '전체' ? byPack : byPack.filter((c) => c.channel === chFilter);
   const roomOf = (id: number) => cfg.rooms.find((r) => r.id === id);
 
   return (
@@ -193,12 +205,19 @@ export default function CoolingInput() {
       <section className="bg-white border rounded-xl">
         <div className="px-4 py-2.5 border-b flex items-center gap-2 flex-wrap">
           <span className="font-bold text-gray-800">입고 대기</span>
-          <span className="text-xs text-gray-500">내포장에서 입력된 품목 · 같은 채널끼리 여러 개 골라 한 대차로 입고</span>
-          <div className="ml-auto flex gap-1">
+          <span className="text-xs text-gray-500">외포장에서 「분류 완료」 한 품목 · 같은 채널끼리 여러 개 골라 한 대차로 입고</span>
+          <div className="ml-auto flex gap-1 items-center">
+            {[1, 2, 3].map((n) => (
+              <button key={n} onClick={() => togglePack(n)}
+                className={`px-3 py-1 text-xs rounded-full border-2 font-bold ${packFilter.has(n) ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white border-indigo-200 text-indigo-700'}`}>
+                외포장 {n} {cards.filter((c) => c.packs.includes(n)).length}
+              </button>
+            ))}
+            <span className="w-px h-5 bg-gray-300 mx-1" />
             {(['전체', ...CHANNELS] as const).map((ch) => (
               <button key={ch} onClick={() => setChFilter(ch)}
                 className={`px-2.5 py-1 text-xs rounded-full border ${chFilter === ch ? 'bg-gray-900 text-white border-gray-900' : 'bg-white'}`}>
-                {ch}{ch !== '전체' && ` ${cards.filter((c) => c.channel === ch).length}`}
+                {ch}{ch !== '전체' && ` ${byPack.filter((c) => c.channel === ch).length}`}
               </button>
             ))}
           </div>
@@ -206,7 +225,7 @@ export default function CoolingInput() {
         {/* 카드가 많아도 아래 냉각실 도면이 바로 보이게 — 목록 안에서만 스크롤 */}
         <div className="p-3 max-h-[45vh] overflow-y-auto overscroll-contain">
           {!loaded ? <div className="text-center text-gray-400 py-8">불러오는 중…</div>
-            : filtered.length === 0 ? <div className="text-center text-gray-400 py-8">입고할 품목이 없습니다 — 내포장(1·2·3호기)에서 입력하면 여기에 뜹니다</div>
+            : filtered.length === 0 ? <div className="text-center text-gray-400 py-8">{cards.length === 0 ? '입고할 품목이 없습니다 — 외포장-1·2·3 화면에서 품목 행을 눌러 「분류 완료」 하면 여기에 뜹니다' : '고른 필터에 맞는 품목이 없습니다'}</div>
               : (
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
                   {filtered.map((c) => {
@@ -222,6 +241,7 @@ export default function CoolingInput() {
                         <div className="text-sm text-gray-700 truncate pr-2">{c.name}</div>
                         <div className="mt-1 text-2xl font-extrabold tabular-nums">{c.remain.toLocaleString()}<span className="text-xs font-normal text-gray-500 ml-1">개</span></div>
                         <div className="text-[11px] text-gray-500">
+                          <b className="text-indigo-700 mr-1">외포장{c.packs.join('·')}</b>
                           {c.lastAt && <b className="text-gray-700 mr-1">{c.lastAt}</b>}
                           {c.inQty > 0 && `이미 ${c.inQty} 입고 · `}
                           생산 {c.produced.toLocaleString()}/{c.target.toLocaleString()}

@@ -5,6 +5,7 @@ import { db } from '../firebase';
 import { todayKey, effectiveTodayKey } from '../lib/dateUtil';
 import { loadViewDate, saveViewDate } from '../lib/viewDate';
 import type { Item, MachineEntry } from '../types';
+import { markSorted, unmarkSorted, useSorted } from '../lib/packSort';
 
 const MACHINES = ['1호기', '2호기', '3호기'] as const;
 
@@ -136,6 +137,7 @@ export default function ExternalPack() {
       const combinedDiff = combined - totalQty;
       return {
         key: `${e.code}-${idx}`,
+        docId: e.docId,
         code: e.code,
         name: item?.name || '',
         orderQty,
@@ -147,6 +149,24 @@ export default function ExternalPack() {
       };
     });
   }, [items, entries, combinedByCode]);
+
+  // 분류 완료 — 행을 누르면 기록, 다시 누르면 취소(화면 안 확인창). 냉각 입고 대기는 이 기록이 있는 품목만 띄운다.
+  const packNo = Number(id);
+  const sortedList = useSorted(date);
+  const sortedAt = useMemo(() => {
+    const m = new Map<string, number>();
+    sortedList.forEach((x) => { if (x.pack === packNo) m.set(x.entryId, x.at); });
+    return m;
+  }, [sortedList, packNo]);
+  const [undo, setUndo] = useState<{ docId: string; code: string; name: string } | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const tapRow = (r: { docId: string; code: string; name: string }) => {
+    if (sortedAt.has(r.docId)) { setUndo(r); return; }
+    // 기다리지 않는다 — 화면은 바로 바뀌고, 저장 실패만 알린다 (와이파이 약할 때 멈춘 것처럼 보이지 않게)
+    markSorted(date, packNo, r.docId, r.code).then(() => setErr(null)).catch((e) => setErr(`${r.code} 분류 완료 저장 실패 — ${e?.message || e}`));
+  };
+  const hm = (t: number) => { const d = new Date(t); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
+  const doneCount = rows.filter((r) => sortedAt.has(r.docId)).length;
 
   return (
     <div className="space-y-4">
@@ -169,6 +189,7 @@ export default function ExternalPack() {
         {!isToday && (
           <span className="text-xs text-orange-600 font-medium">⚠ 과거 날짜 보는 중</span>
         )}
+        <span className="text-sm text-gray-600">분류 완료 <b className="text-emerald-700">{doneCount}</b> / {rows.length} <span className="text-xs text-gray-400">· 행을 누르면 분류 완료</span></span>
         {/* 실시간 시계 (초 제외, 크게) */}
         <span className="ml-auto text-3xl font-mono font-bold text-gray-800 tabular-nums" aria-label="현재 시각">
           🕐 {now.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false })}
@@ -207,6 +228,7 @@ export default function ExternalPack() {
               <th className="p-2 text-right sticky top-0 z-10 bg-slate-100 whitespace-nowrap">실제 생산량</th>
               <th className="p-2 text-right sticky top-0 z-10 bg-slate-100 whitespace-nowrap">모자란 수량</th>
               <th className="p-2 text-right sticky top-0 z-10 bg-slate-100 whitespace-nowrap">추가 생산량</th>
+              <th className="p-2 text-center sticky top-0 z-10 bg-slate-100 whitespace-nowrap">분류</th>
             </tr>
           </thead>
           <tbody>
@@ -215,7 +237,8 @@ export default function ExternalPack() {
                 r.combinedDiff > 0 ? 'text-green-700' :
                 r.combinedDiff < 0 ? 'text-red-700' : '';
               return (
-                <tr key={r.key} className={`border-t border-gray-400 ${r.bg}`}>
+                <tr key={r.key} onClick={() => tapRow(r)}
+                  className={`border-t border-gray-400 cursor-pointer select-none active:brightness-95 ${sortedAt.has(r.docId) ? 'bg-gray-200 text-gray-500' : r.bg}`}>
                   <td className="font-mono font-bold" style={codeStyle}>{r.code}</td>
                   <td style={cellStyle}>{r.name}</td>
                   <td className="text-right font-bold" style={cellStyle}>{r.orderQty}</td>
@@ -227,15 +250,36 @@ export default function ExternalPack() {
                   <td className="text-right" style={cellStyle}>
                     {r.additional > 0 ? r.additional : ''}
                   </td>
+                  <td className="text-center" style={cellStyle}>
+                    {sortedAt.has(r.docId)
+                      ? <span className="inline-block px-2 py-1 rounded bg-emerald-600 text-white font-bold" style={{ fontSize: Math.max(12, fontSize * 0.7) }}>✔ 분류 완료 {hm(sortedAt.get(r.docId)!)}</span>
+                      : <span className="text-gray-400" style={{ fontSize: Math.max(12, fontSize * 0.7) }}>눌러서 완료</span>}
+                  </td>
                 </tr>
               );
             })}
             {rows.length === 0 && (
-              <tr><td colSpan={7} className="p-6 text-center text-slate-400">{machine}에서 입력된 내역이 없습니다</td></tr>
+              <tr><td colSpan={8} className="p-6 text-center text-slate-400">{machine}에서 입력된 내역이 없습니다</td></tr>
             )}
           </tbody>
         </table>
       </div>
+      {err && <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-50 bg-rose-600 text-white rounded-lg px-4 py-3 shadow-xl" onClick={() => setErr(null)}>⚠ {err}</div>}
+      {undo && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" onClick={() => setUndo(null)}>
+          <div className="bg-white rounded-2xl p-5 w-full max-w-sm space-y-4" onClick={(e) => e.stopPropagation()}>
+            <div className="text-lg font-bold">분류 완료 취소</div>
+            <div className="text-gray-700"><b className="font-mono">{undo.code}</b> {undo.name}<br />분류 완료를 취소할까요? (냉각 입고 대기에서 빠집니다)</div>
+            <div className="grid grid-cols-2 gap-2">
+              <button onClick={() => setUndo(null)} className="py-3 rounded-lg border text-lg">아니요</button>
+              <button onClick={() => {
+                const u = undo; setUndo(null);
+                unmarkSorted(date, packNo, u.docId).catch((e) => setErr(`${u.code} 취소 저장 실패 — ${e?.message || e}`));
+              }} className="py-3 rounded-lg bg-rose-600 text-white text-lg font-bold">분류 취소</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

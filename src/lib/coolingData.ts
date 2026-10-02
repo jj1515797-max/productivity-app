@@ -5,6 +5,7 @@ import { db } from '../firebase';
 import type { Item, MachineEntry } from '../types';
 import { CART_COL } from './cooling';
 import type { Channel, CoolingCart } from './cooling';
+import type { PackSorted } from './packSort';
 
 /** 냉각실에 있는(출고 안 된) 대차 — 날짜와 무관 */
 export function useActiveCarts(): CoolingCart[] {
@@ -39,35 +40,31 @@ export interface PendingCard {
   remain: number;
   produced: number;        // 내포장(호기) 입력 합계
   target: number;          // 총수량
-  lastAt: string;          // 내포장 마지막 입력 시각 HH:MM
+  lastAt: string;          // 외포장 분류 완료 시각 HH:MM (가장 최근)
+  packs: number[];         // 분류 완료한 외포장 번호 (1·2·3)
 }
 
-/** 내포장(1·2·3호기)에서 입력된 품목만 → 품목×채널 카드.
+/** 외포장(1·2·3)에서 「분류 완료」 한 품목만 → 품목×채널 카드.
  *  잔여(생산 − 총수량, 물류 잔여량 입력이 있으면 그 값)는 주문 몫에 더한다. */
-export function usePendingCards(date: string, dayCarts: CoolingCart[]): { cards: PendingCard[]; loaded: boolean } {
+export function usePendingCards(date: string, dayCarts: CoolingCart[], sorted: PackSorted[]): { cards: PendingCard[]; loaded: boolean } {
   const [items, setItems] = useState<Item[] | null>(null);
   const [qty, setQty] = useState<Record<string, Record<string, number>>>({});
-  const [last, setLast] = useState<Record<string, Record<string, string>>>({});
   const [logi, setLogi] = useState<Record<string, number>>({});
 
   useEffect(() => { setItems(null); return onSnapshot(collection(db, 'days', date, 'items'), (s) => {
     const a: Item[] = []; s.forEach((d) => a.push(d.data() as Item)); setItems(a);
   }); }, [date]);
   useEffect(() => {
-    setQty({}); setLast({});
+    setQty({});
     const unsubs = (['1호기', '2호기', '3호기'] as const).map((m) =>
       onSnapshot(collection(db, 'days', date, 'machines', m, 'entries'), (s) => {
         const map: Record<string, number> = {};
-        const tm: Record<string, string> = {};
         s.forEach((d) => {
           const e = d.data() as MachineEntry;
           const k = String(e.code || '').toLowerCase();
           map[k] = (map[k] || 0) + (e.actualProduction || 0) + (e.additionalProduction || 0);
-          const t = [e.workTime, e.additionalWorkTime].filter(Boolean).sort().pop() || '';
-          if (t > (tm[k] || '')) tm[k] = t;
         });
         setQty((p) => ({ ...p, [m]: map }));
-        setLast((p) => ({ ...p, [m]: tm }));
       }));
     return () => unsubs.forEach((u) => u());
   }, [date]);
@@ -81,17 +78,25 @@ export function usePendingCards(date: string, dayCarts: CoolingCart[]): { cards:
     if (!items) return [];
     const produced: Record<string, number> = {};
     Object.values(qty).forEach((m) => Object.entries(m).forEach(([k, v]) => { produced[k] = (produced[k] || 0) + v; }));
-    const lastAt: Record<string, string> = {};
-    Object.values(last).forEach((m) => Object.entries(m).forEach(([k, v]) => { if (v > (lastAt[k] || '')) lastAt[k] = v; }));
     const inQty: Record<string, number> = {};
     dayCarts.forEach((c) => c.items.forEach((i) => {
       const k = `${i.code.toLowerCase()}|${c.channel}`;
       inQty[k] = (inQty[k] || 0) + (i.qty || 0);
     }));
+    // 품목코드 → 분류 완료한 외포장 번호·가장 최근 시각
+    const sortedBy: Record<string, { packs: Set<number>; at: number }> = {};
+    sorted.forEach((x) => {
+      const k = String(x.code || '').toLowerCase();
+      const e = sortedBy[k] || (sortedBy[k] = { packs: new Set(), at: 0 });
+      e.packs.add(x.pack);
+      if (x.at > e.at) e.at = x.at;
+    });
+    const hm = (t: number) => { const d = new Date(t); return `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
     const out: PendingCard[] = [];
     items.forEach((it) => {
+      const sb = sortedBy[it.code.toLowerCase()];
+      if (!sb) return;                         // 외포장에서 분류 완료 안 한 품목은 안 띄운다
       const p = produced[it.code.toLowerCase()] || 0;
-      if (p <= 0) return;                      // 내포장에서 아직 입력 안 한 품목은 안 띄운다
       const norm = it.code.toLowerCase().replace(/[-\s]/g, '');
       const extra = logi[norm] !== undefined ? logi[norm] : Math.max(0, p - (it.totalQty || 0));
       const plan: [Channel, number][] = [
@@ -106,14 +111,14 @@ export function usePendingCards(date: string, dayCarts: CoolingCart[]): { cards:
         const k = `${it.code.toLowerCase()}|${ch}`;
         const done = inQty[k] || 0;
         if (done >= q) return;
-        out.push({ key: `${it.code}|${ch}`, code: it.code, name: it.name, channel: ch, planQty: q, inQty: done, remain: q - done, produced: p, target: it.totalQty || 0, lastAt: lastAt[it.code.toLowerCase()] || '' });
+        out.push({ key: `${it.code}|${ch}`, code: it.code, name: it.name, channel: ch, planQty: q, inQty: done, remain: q - done, produced: p, target: it.totalQty || 0, lastAt: hm(sb.at), packs: [...sb.packs].sort() });
       });
     });
-    // 방금 포장된 품목이 위로 — 같은 시각이면 코드·채널 순
+    // 방금 분류된 품목이 위로 — 같은 시각이면 코드·채널 순
     const chOrder = ['주문', '쿠팡', '마켓컬리', '오아시스', '샘플'];
     out.sort((a, b) => b.lastAt.localeCompare(a.lastAt) || a.code.localeCompare(b.code) || chOrder.indexOf(a.channel) - chOrder.indexOf(b.channel));
     return out;
-  }, [items, qty, logi, dayCarts, last]);
+  }, [items, qty, logi, dayCarts, sorted]);
 
   return { cards, loaded: items !== null };
 }
