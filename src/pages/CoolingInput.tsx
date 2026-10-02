@@ -82,9 +82,24 @@ export default function CoolingInput() {
     fire(updateDoc(doc(db, CART_COL, c.id), { out: true, outAt: Date.now() }), '출고');
     setDetail(null);
     showToast(`${c.cartNo}번 대차 출고 (${c.channel} · ${c.items.map((i) => i.code).join(', ')})`, () => {
-      fire(updateDoc(doc(db, CART_COL, c.id), { out: false, outAt: null }), '출고 되돌리기');
+      unrelease(c, true);
       setToast(null);
     });
+  };
+
+  /** 출고 취소 — 냉각실로 되돌린다. 원래 자리에 다른 대차가 들어왔으면 다음 빈자리로. */
+  const unrelease = (c: CoolingCart, quiet = false) => {
+    const room = cfg.rooms.find((r) => r.id === c.room);
+    const others = active.filter((x) => x.id !== c.id);
+    if (!quiet) {
+      const dup = others.find((x) => x.cartNo === c.cartNo);
+      if (dup && !confirm(`${c.cartNo}번 대차가 지금 냉각실 ${dup.room}에도 있습니다. 그래도 되돌릴까요?`)) return;
+      if (!confirm(`${c.cartNo}번 대차 (${c.channel} · ${c.items.map((i) => i.code).join(', ')}) 출고를 취소하고 냉각실로 되돌릴까요?`)) return;
+    }
+    const taken = others.some((x) => x.room === c.room && x.slot === c.slot);
+    const slot = !taken ? c.slot : room ? nextFreeSlot(room, others) : -1;
+    fire(updateDoc(doc(db, CART_COL, c.id), { out: false, outAt: null, slot }), '출고 취소');
+    if (!quiet && room) showToast(`${c.cartNo}번 대차 출고 취소 → ${room.name} ${slotLabel(room, slot)}`);
   };
 
   /* ---------- 자리 이동 ---------- */
@@ -202,6 +217,32 @@ export default function CoolingInput() {
         ))}
       </div>
       <div className="text-xs text-gray-500">칸을 <b>꾹 누르면</b> 자리 이동 · 칸을 누르면 상세(출고·입고 취소)</div>
+
+      {/* 오늘 출고한 대차 — 잘못 출고했으면 여기서 되돌린다 */}
+      {(() => {
+        const outs = dayCarts.filter((c) => c.out).sort((a, b) => (b.outAt || 0) - (a.outAt || 0));
+        if (outs.length === 0) return null;
+        return (
+          <details className="bg-white border rounded-xl">
+            <summary className="px-4 py-3 cursor-pointer font-bold text-gray-800">
+              오늘 출고한 대차 {outs.length}대 <span className="text-xs font-normal text-gray-500">— 잘못 출고했으면 눌러서 「출고 취소」</span>
+            </summary>
+            <div className="divide-y">
+              {outs.map((c) => (
+                <div key={c.id} className="px-4 py-2.5 flex items-center gap-3 flex-wrap">
+                  <span className="text-sm text-gray-500 tabular-nums w-20">{c.outAt ? hhmm(c.outAt) : ''} 출고</span>
+                  <span className="text-xl font-extrabold w-14">{c.cartNo}번</span>
+                  <span className={`px-2 py-0.5 rounded text-white text-xs font-bold ${CH_STYLE[c.channel].bg}`}>{c.channel}</span>
+                  <span className="text-sm text-gray-600">{roomOf(c.room)?.name}</span>
+                  <span className="text-sm flex-1 min-w-[200px]">{c.items.map((i) => `${i.code} ${i.name} ${i.qty}`).join(' / ')}</span>
+                  <button onClick={() => unrelease(c)}
+                    className="px-4 py-2 rounded-lg border-2 border-blue-500 text-blue-700 font-bold active:bg-blue-50">↩ 출고 취소</button>
+                </div>
+              ))}
+            </div>
+          </details>
+        );
+      })()}
 
       {/* 하단 고정 — 선택한 카드 입고 */}
       {selCards.length > 0 && (
