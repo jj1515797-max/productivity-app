@@ -84,22 +84,22 @@ export const minutesFor = (cfg: CoolingConfig, code: string) => cfg.durations[st
 export const cartMinutes = (cfg: CoolingConfig, codes: string[]) =>
   Math.max(...codes.map((c) => minutesFor(cfg, c)), 1);
 
-/** 채우는 순서 — 안쪽(위) 줄부터, 각 줄은 오른쪽부터 */
+/** 채우는 순서 — 맨 오른쪽 줄을 안쪽(위)부터 입구(아래)까지 채우고, 그다음 왼쪽 줄로 */
 export function fillOrder(room: RoomConfig): number[] {
   const out: number[] = [];
-  for (let r = 0; r < room.rows; r++) for (let c = room.cols - 1; c >= 0; c--) out.push(r * room.cols + c);
+  for (let c = room.cols - 1; c >= 0; c--) for (let r = 0; r < room.rows; r++) out.push(r * room.cols + c);
   return out;
 }
 export function nextFreeSlot(room: RoomConfig, carts: CoolingCart[]): number {
   const used = new Set(carts.filter((c) => !c.out && c.room === room.id).map((c) => c.slot));
   return fillOrder(room).find((s) => !used.has(s)) ?? -1;
 }
-/** 화면에 보이는 자리 이름 — 1열이 가장 안쪽, 칸은 오른쪽부터 1번 */
+/** 화면에 보이는 자리 이름 — 오른쪽부터 1줄, 줄 안에서는 안쪽부터 1번째 */
 export function slotLabel(room: RoomConfig, slot: number): string {
   if (slot < 0) return '자리 미지정';
   const r = Math.floor(slot / room.cols);
   const c = slot % room.cols;
-  return `${r + 1}열 ${room.cols - c}번째`;
+  return `오른쪽 ${room.cols - c}줄 · 안쪽부터 ${r + 1}번째`;
 }
 
 export function fmtLeft(ms: number): string {

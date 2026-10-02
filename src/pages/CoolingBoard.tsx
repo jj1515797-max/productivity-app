@@ -123,19 +123,20 @@ function ConfigPanel({ cfg, onSave }: { cfg: CoolingConfig; onSave: (c: CoolingC
   return (
     <div className="bg-white border rounded-xl p-4 space-y-4">
       <div>
-        <div className="font-bold text-sm mb-2">냉각실 도면 <span className="font-normal text-gray-500 text-xs">— 줄(안쪽→입구) × 칸. 채우는 순서: 안쪽 줄부터, 오른쪽부터</span></div>
+        <div className="font-bold text-sm mb-2">냉각실 도면 <span className="font-normal text-gray-500 text-xs">— 채우는 순서: 맨 오른쪽 줄을 안쪽→입구로 채우고, 다 차면 왼쪽 줄로</span></div>
         <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
           {c.rooms.map((r, i) => (
             <div key={r.id} className="border rounded-lg p-3 space-y-2">
               <input value={r.name} onChange={(e) => { const rooms = [...c.rooms]; rooms[i] = { ...r, name: e.target.value }; setC({ ...c, rooms }); }}
                 className="w-full border rounded px-2 py-1 font-bold" />
               <div className="flex items-center gap-2 text-sm">
-                <input type="number" min={1} max={20} value={r.rows}
-                  onChange={(e) => { const rooms = [...c.rooms]; rooms[i] = { ...r, rows: Math.max(1, Math.min(20, Number(e.target.value) || 1)) }; setC({ ...c, rooms }); }}
-                  className="w-16 border rounded px-2 py-1" /> 줄 ×
+                줄
                 <input type="number" min={1} max={20} value={r.cols}
                   onChange={(e) => { const rooms = [...c.rooms]; rooms[i] = { ...r, cols: Math.max(1, Math.min(20, Number(e.target.value) || 1)) }; setC({ ...c, rooms }); }}
-                  className="w-16 border rounded px-2 py-1" /> 칸
+                  className="w-16 border rounded px-2 py-1" />개 × 한 줄에
+                <input type="number" min={1} max={20} value={r.rows}
+                  onChange={(e) => { const rooms = [...c.rooms]; rooms[i] = { ...r, rows: Math.max(1, Math.min(20, Number(e.target.value) || 1)) }; setC({ ...c, rooms }); }}
+                  className="w-16 border rounded px-2 py-1" />대
                 <span className="text-gray-500">= {r.rows * r.cols}대</span>
               </div>
             </div>
