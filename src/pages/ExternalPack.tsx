@@ -228,7 +228,7 @@ export default function ExternalPack() {
               <th className="p-2 text-right sticky top-0 z-10 bg-slate-100 whitespace-nowrap">실제 생산량</th>
               <th className="p-2 text-right sticky top-0 z-10 bg-slate-100 whitespace-nowrap">모자란 수량</th>
               <th className="p-2 text-right sticky top-0 z-10 bg-slate-100 whitespace-nowrap">추가 생산량</th>
-              <th className="p-2 text-center sticky top-0 z-10 bg-slate-100 whitespace-nowrap">분류</th>
+              <th className="px-1 py-2 text-center sticky top-0 z-10 bg-slate-100 whitespace-nowrap w-16">분류</th>
             </tr>
           </thead>
           <tbody>
@@ -250,10 +250,11 @@ export default function ExternalPack() {
                   <td className="text-right" style={cellStyle}>
                     {r.additional > 0 ? r.additional : ''}
                   </td>
-                  <td className="text-center" style={cellStyle}>
+                  {/* 분류 칸은 좁게 — 완료면 ✔ + 시각, 아니면 빈 동그라미 */}
+                  <td className="text-center px-1 w-16 whitespace-nowrap" style={{ fontSize: Math.max(11, Math.round(fontSize * 0.6)) }}>
                     {sortedAt.has(r.docId)
-                      ? <span className="inline-block px-2 py-1 rounded bg-emerald-600 text-white font-bold" style={{ fontSize: Math.max(12, fontSize * 0.7) }}>✔ 분류 완료 {hm(sortedAt.get(r.docId)!)}</span>
-                      : <span className="text-gray-400" style={{ fontSize: Math.max(12, fontSize * 0.7) }}>눌러서 완료</span>}
+                      ? <span className="inline-flex flex-col items-center leading-tight text-emerald-700 font-bold"><span className="text-[1.4em]">✔</span>{hm(sortedAt.get(r.docId)!)}</span>
+                      : <span className="inline-block w-[1.6em] h-[1.6em] rounded-full border-2 border-gray-400" />}
                   </td>
                 </tr>
               );
