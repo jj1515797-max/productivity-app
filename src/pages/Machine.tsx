@@ -6,6 +6,7 @@ import { todayKey, formatTime, effectiveTodayKey } from '../lib/dateUtil';
 import { loadViewDate, saveViewDate } from '../lib/viewDate';
 import type { Item, MachineEntry } from '../types';
 import { compareCode } from '../lib/codeUtil';
+import { unmarkSorted } from '../lib/packSort';
 
 export default function Machine() {
   const { id } = useParams();
@@ -121,6 +122,8 @@ export default function Machine() {
   const remove = async (docId: string, code: string) => {
     if (!confirm(`${code} 기록을 삭제할까요?`)) return;
     await deleteDoc(doc(db, 'days', date, 'machines', machine, 'entries', docId));
+    // 외포장에서 이 입력을 「분류 완료」 해 뒀으면 그 기록도 같이 지운다 (냉각 입고 대기에 남지 않게)
+    unmarkSorted(date, Number(id), docId).catch(() => {});
   };
 
   // 실제/추가 생산량만 그 자리에서 수정 — 작업시간은 건드리지 않아 순서가 안 바뀜

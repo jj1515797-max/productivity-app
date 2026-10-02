@@ -49,22 +49,27 @@ export interface PendingCard {
 export function usePendingCards(date: string, dayCarts: CoolingCart[], sorted: PackSorted[]): { cards: PendingCard[]; loaded: boolean } {
   const [items, setItems] = useState<Item[] | null>(null);
   const [qty, setQty] = useState<Record<string, Record<string, number>>>({});
+  // 호기별 살아 있는 입력 문서 ID — 내포장에서 지운 입력의 분류 완료 기록은 무시하려고
+  const [entryIds, setEntryIds] = useState<Record<string, Set<string>>>({});
   const [logi, setLogi] = useState<Record<string, number>>({});
 
   useEffect(() => { setItems(null); return onSnapshot(collection(db, 'days', date, 'items'), (s) => {
     const a: Item[] = []; s.forEach((d) => a.push(d.data() as Item)); setItems(a);
   }); }, [date]);
   useEffect(() => {
-    setQty({});
+    setQty({}); setEntryIds({});
     const unsubs = (['1호기', '2호기', '3호기'] as const).map((m) =>
       onSnapshot(collection(db, 'days', date, 'machines', m, 'entries'), (s) => {
         const map: Record<string, number> = {};
+        const ids = new Set<string>();
         s.forEach((d) => {
+          ids.add(d.id);
           const e = d.data() as MachineEntry;
           const k = String(e.code || '').toLowerCase();
           map[k] = (map[k] || 0) + (e.actualProduction || 0) + (e.additionalProduction || 0);
         });
         setQty((p) => ({ ...p, [m]: map }));
+        setEntryIds((p) => ({ ...p, [m]: ids }));
       }));
     return () => unsubs.forEach((u) => u());
   }, [date]);
@@ -86,6 +91,9 @@ export function usePendingCards(date: string, dayCarts: CoolingCart[], sorted: P
     // 품목코드 → 분류 완료한 외포장 번호·가장 최근 시각
     const sortedBy: Record<string, { packs: Set<number>; at: number }> = {};
     sorted.forEach((x) => {
+      // 그 호기 입력이 지워졌으면(내포장에서 삭제) 분류 완료 기록도 없는 것으로 본다
+      const live = entryIds[`${x.pack}호기`];
+      if (!live || !live.has(x.entryId)) return;
       const k = String(x.code || '').toLowerCase();
       const e = sortedBy[k] || (sortedBy[k] = { packs: new Set(), at: 0 });
       e.packs.add(x.pack);
@@ -118,7 +126,7 @@ export function usePendingCards(date: string, dayCarts: CoolingCart[], sorted: P
     const chOrder = ['주문', '쿠팡', '마켓컬리', '오아시스', '샘플'];
     out.sort((a, b) => b.lastAt.localeCompare(a.lastAt) || a.code.localeCompare(b.code) || chOrder.indexOf(a.channel) - chOrder.indexOf(b.channel));
     return out;
-  }, [items, qty, logi, dayCarts, sorted]);
+  }, [items, qty, logi, dayCarts, sorted, entryIds]);
 
   return { cards, loaded: items !== null };
 }

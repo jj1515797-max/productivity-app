@@ -210,7 +210,7 @@ export default function CoolingInput() {
             {[1, 2, 3].map((n) => (
               <button key={n} onClick={() => togglePack(n)}
                 className={`px-3 py-1 text-xs rounded-full border-2 font-bold ${packFilter.has(n) ? 'bg-indigo-600 text-white border-indigo-600' : 'bg-white border-indigo-200 text-indigo-700'}`}>
-                외포장 {n} {cards.filter((c) => c.packs.includes(n)).length}
+                외포장 {n}
               </button>
             ))}
             <span className="w-px h-5 bg-gray-300 mx-1" />
