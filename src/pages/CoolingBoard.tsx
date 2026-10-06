@@ -13,13 +13,15 @@ export default function CoolingBoard() {
   const [date, setDate, today] = useWorkDate();
   const isToday = date === today;
   const [cfg, saveCfg] = useCoolingConfig();
-  const active = useActiveCarts();
+  const activeAll = useActiveCarts();
+  const active = activeAll.filter((c) => !c.waiting);   // 대기(버퍼)는 냉각실·타이머와 따로
   const day = useDayCarts(date);
   const outToday = day.filter((c) => c.out).sort((a, b) => (b.outAt || 0) - (a.outAt || 0));
   const [detail, setDetail] = useState<CoolingCart | null>(null);
   const [showCfg, setShowCfg] = useState(false);
   const roomOf = (id: number) => cfg.rooms.find((r) => r.id === id);
   const { shown, ghosts } = splitByDate(active, date, today);
+  const { shown: waiting } = splitByDate(activeAll.filter((c) => c.waiting), date, today);
   const doneCnt = shown.filter((c) => now >= c.endAt).length;
 
   return (
@@ -27,12 +29,28 @@ export default function CoolingBoard() {
       <div className="flex items-center gap-3 flex-wrap">
         <h2 className="text-xl font-bold">냉각 입출고 현황</h2>
         <WorkDateNav date={date} setDate={setDate} today={today} />
-        <span className="text-sm text-gray-600">냉각 중 <b>{shown.length - doneCnt}</b>대 · <span className="text-rose-600">종료(출고 대기) <b>{doneCnt}</b>대</span> · {isToday ? '오늘' : date.slice(5)} 입고 <b>{day.length}</b>대 · 출고 <b>{outToday.length}</b>대</span>
+        <span className="text-sm text-gray-600">대기 <b>{waiting.length}</b>대 · 냉각 중 <b>{shown.length - doneCnt}</b>대 · <span className="text-rose-600">종료(출고 대기) <b>{doneCnt}</b>대</span> · {isToday ? '오늘' : date.slice(5)} 입고 <b>{day.length}</b>대 · 출고 <b>{outToday.length}</b>대</span>
         <button onClick={() => setShowCfg(!showCfg)} className="ml-auto px-3 py-1.5 text-sm border rounded bg-white">⚙ 설정</button>
         <span className="text-3xl font-mono font-bold text-gray-800 tabular-nums">{hhmm(now)}</span>
       </div>
 
       {showCfg && <ConfigPanel cfg={cfg} onSave={async (c) => { await saveCfg(c); setShowCfg(false); }} />}
+
+      {waiting.length > 0 && (
+        <div className="bg-amber-50 border-2 border-amber-300 rounded-xl px-4 py-2.5">
+          <div className="font-bold text-amber-900 text-sm mb-1.5">⏸ 대기 중 대차 {waiting.length}대 <span className="font-normal text-amber-800">— 실어 두고 아직 냉각실에 안 넣음 (타이머 전)</span></div>
+          <div className="flex flex-wrap gap-2">
+            {waiting.map((c) => (
+              <span key={c.id} className="bg-white border rounded-lg px-2.5 py-1 text-sm">
+                <b className="text-base">{c.cartNo}번</b>
+                <span className={`ml-1.5 px-1.5 py-0.5 rounded text-white text-xs ${CH_STYLE[c.channel].bg}`}>{c.channel}</span>
+                <span className="ml-1.5 text-gray-600">{c.items.map((i) => i.code).join(', ')}</span>
+                {c.waitAt ? <span className="ml-1.5 text-xs text-gray-400">{hhmm(c.waitAt)}~</span> : null}
+              </span>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 md:landscape:grid-cols-3 xl:grid-cols-3 gap-3">
         {cfg.rooms.map((room) => (
@@ -90,8 +108,8 @@ export default function CoolingBoard() {
                 <tbody className="divide-y">
                   {rec.map((c) => (
                     <tr key={c.id}>
-                      <td className="px-3 py-1.5 tabular-nums">{hhmm(c.startAt)}</td>
-                      <td className="px-3 py-1.5 tabular-nums">{c.out ? (c.outAt ? hhmm(c.outAt) : '출고') : <span className="text-blue-600 font-medium">냉각실에 있음</span>}</td>
+                      <td className="px-3 py-1.5 tabular-nums">{c.waiting ? '—' : hhmm(c.startAt)}</td>
+                      <td className="px-3 py-1.5 tabular-nums">{c.out ? (c.outAt ? hhmm(c.outAt) : '출고') : c.waiting ? <span className="text-amber-700 font-medium">대기 중</span> : <span className="text-blue-600 font-medium">냉각실에 있음</span>}</td>
                       <td className="px-3 py-1.5">{roomOf(c.room)?.name}</td>
                       <td className="px-3 py-1.5 font-bold">{c.cartNo}번</td>
                       <td className="px-3 py-1.5"><span className={`px-2 py-0.5 rounded text-white text-xs ${CH_STYLE[c.channel].bg}`}>{c.channel}</span></td>

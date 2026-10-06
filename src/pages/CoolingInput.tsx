@@ -6,7 +6,7 @@ import { db } from '../firebase';
 import {
   CART_COL, CHANNELS, CH_STYLE, cartMinutes, splitByDate, unlockAudio, chime, fmtLeft, hhmm, nextFreeSlot, slotLabel, useCoolingConfig,
 } from '../lib/cooling';
-import type { Channel, CoolingCart, RoomConfig } from '../lib/cooling';
+import type { CartItem, Channel, CoolingCart, RoomConfig } from '../lib/cooling';
 import { useActiveCarts, useDayCarts, usePendingCards } from '../lib/coolingData';
 import type { PendingCard } from '../lib/coolingData';
 import CoolingRoomMap from '../components/CoolingRoomMap';
@@ -20,7 +20,10 @@ export default function CoolingInput() {
   useEffect(() => { const t = setInterval(() => setNow(Date.now()), 1000); return () => clearInterval(t); }, []);
 
   const [cfg] = useCoolingConfig();
-  const active = useActiveCarts();
+  const activeAll = useActiveCarts();
+  // 대기(버퍼) 대차는 냉각실·타이머·알림과 무관 — 따로 뺀다
+  const active = activeAll.filter((c) => !c.waiting);
+  const waitingAll = activeAll.filter((c) => c.waiting);
   const dayCarts = useDayCarts(date);
   const sorted = useSorted(date);
   const { cards, loaded } = usePendingCards(date, dayCarts, sorted);
@@ -37,6 +40,8 @@ export default function CoolingInput() {
     return x;
   });
   const [showIn, setShowIn] = useState(false);
+  const [q, setQ] = useState('');                                    // 입고 대기 검색 (숫자만 쳐도 됨)
+  const [waitOpen, setWaitOpen] = useState<CoolingCart | null>(null); // 대기 대차 열기
   const [detail, setDetail] = useState<CoolingCart | null>(null);
   const [moving, setMoving] = useState<CoolingCart | null>(null);
   const [toast, setToast] = useState<{ msg: string; undo?: () => void } | null>(null);
@@ -151,7 +156,20 @@ export default function CoolingInput() {
   };
 
   const byPack = packFilter.size === 0 ? cards : cards.filter((c) => c.packs.some((p) => packFilter.has(p)));
-  const filtered = chFilter === '전체' ? byPack : byPack.filter((c) => c.channel === chFilter);
+  const byCh = chFilter === '전체' ? byPack : byPack.filter((c) => c.channel === chFilter);
+  // 검색: 숫자만 → 코드 번호가 같은 것 (63 → E63, F63). 없으면 그 숫자로 시작하는 것. 글자가 섞이면 코드·이름 포함
+  const filtered = (() => {
+    const t = q.trim().toLowerCase();
+    if (!t) return byCh;
+    if (/^\d+$/.test(t)) {
+      const num = (code: string) => (code.match(/\d+/g) || []).join('').replace(/^0+/, '');
+      const want = t.replace(/^0+/, '');
+      const exact = byCh.filter((c) => num(c.code) === want);
+      return exact.length ? exact : byCh.filter((c) => num(c.code).startsWith(want));
+    }
+    return byCh.filter((c) => c.code.toLowerCase().includes(t) || c.name.toLowerCase().includes(t));
+  })();
+  const { shown: waiting } = splitByDate(waitingAll, date, today);
   const roomOf = (id: number) => cfg.rooms.find((r) => r.id === id);
 
   return (
@@ -159,7 +177,7 @@ export default function CoolingInput() {
       <div className="flex items-center gap-3 flex-wrap">
         <h2 className="text-xl font-bold">외포장 입력</h2>
         <WorkDateNav date={date} setDate={(d) => { setSel(new Set()); setDate(d); }} today={today} />
-        <span className="text-xs text-gray-500">냉각 중 {shown.length - done.length}대 · 종료 {done.length}대</span>
+        <span className="text-xs text-gray-500">대기 {waiting.length}대 · 냉각 중 {shown.length - done.length}대 · 종료 {done.length}대</span>
         <button onClick={() => { const n = !sound; setSound(n); try { localStorage.setItem('coolSound', n ? 'on' : 'off'); } catch { /* 무시 */ } if (n) chime('tap'); }}
           className="ml-auto px-3 py-1.5 text-sm border rounded bg-white">{sound ? '🔔 알림음 켬' : '🔕 알림음 끔'}</button>
         <span className="text-3xl font-mono font-bold text-gray-800 tabular-nums">{hhmm(now)}</span>
@@ -222,10 +240,27 @@ export default function CoolingInput() {
             ))}
           </div>
         </div>
+        <div className="px-3 pt-3 flex items-center gap-2 flex-wrap">
+          <div className="relative">
+            <input value={q} onChange={(e) => setQ(e.target.value)} inputMode="search" enterKeyHint="search"
+              placeholder="🔍 번호만 쳐도 됨 (63 → E63, F63)"
+              className="w-72 max-w-full border-2 border-gray-300 focus:border-blue-500 rounded-lg pl-3 pr-9 py-2 text-base" />
+            {q && <button onClick={() => setQ('')} aria-label="검색 지우기"
+              className="absolute right-1.5 top-1/2 -translate-y-1/2 w-7 h-7 rounded-full bg-gray-200 text-gray-600 font-bold">✕</button>}
+          </div>
+          {q && <span className="text-sm text-gray-500">{filtered.length}개</span>}
+          {/* 채널을 골라 둔 상태면 보이는 카드를 한 번에 고를 수 있다 */}
+          {chFilter !== '전체' && filtered.length > 0 && (
+            <button onClick={() => { chime('tap'); setSel(new Set(filtered.map((c) => c.key))); }}
+              className="ml-auto px-3 py-2 rounded-lg border-2 border-blue-500 text-blue-700 font-bold">
+              보이는 {chFilter} {filtered.length}개 모두 선택
+            </button>
+          )}
+        </div>
         {/* 카드가 많아도 아래 냉각실 도면이 바로 보이게 — 목록 안에서만 스크롤 */}
         <div className="p-3 max-h-[45vh] overflow-y-auto overscroll-contain">
           {!loaded ? <div className="text-center text-gray-400 py-8">불러오는 중…</div>
-            : filtered.length === 0 ? <div className="text-center text-gray-400 py-8">{cards.length === 0 ? '입고할 품목이 없습니다 — 외포장-1·2·3 화면에서 품목 행을 눌러 「분류 완료」 하면 여기에 뜹니다' : '고른 필터에 맞는 품목이 없습니다'}</div>
+            : filtered.length === 0 ? <div className="text-center text-gray-400 py-8">{cards.length === 0 ? '입고할 품목이 없습니다 — 외포장-1·2·3 화면에서 품목 행을 눌러 「분류 완료」 하면 여기에 뜹니다' : q ? `「${q}」 에 맞는 품목이 없습니다` : '고른 필터에 맞는 품목이 없습니다'}</div>
               : (
                 <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
                   {filtered.map((c) => {
@@ -256,7 +291,27 @@ export default function CoolingInput() {
         </div>
       </section>
 
-      {/* ③ 냉각실 도면 */}
+      {/* ③ 대기 (버퍼) — 대차에 실어 두기만 한 것. 눌러서 품목을 더 싣거나 냉각실로 보낸다 */}
+      {waiting.length > 0 && (
+        <section className="bg-amber-50 border-2 border-amber-300 rounded-xl p-3 space-y-2">
+          <div className="font-bold text-amber-900">⏸ 대기 중 대차 {waiting.length}대 <span className="text-xs font-normal text-amber-800">— 눌러서 품목 추가 · 냉각실로 넣기 (넣는 순간 타이머 시작)</span></div>
+          <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
+            {waiting.map((c) => (
+              <button key={c.id} onClick={() => { chime('tap'); setWaitOpen(c); }}
+                className={`text-left rounded-xl border-2 ${CH_STYLE[c.channel].border} bg-white p-3 active:scale-[0.97]`}>
+                <div className="flex items-center gap-2">
+                  <span className="text-2xl font-extrabold">{c.cartNo}번</span>
+                  <span className={`px-2 py-0.5 rounded text-white text-xs font-bold ${CH_STYLE[c.channel].bg}`}>{c.channel}</span>
+                </div>
+                <div className="text-sm text-gray-700 mt-1 line-clamp-2">{c.items.map((i) => i.code).join(', ')}</div>
+                <div className="text-xs text-gray-500 mt-0.5">{c.items.length}품목 · {c.items.reduce((s2, i) => s2 + i.qty, 0)}개{c.waitAt ? ` · ${hhmm(c.waitAt)}부터 대기` : ''}</div>
+              </button>
+            ))}
+          </div>
+        </section>
+      )}
+
+      {/* ④ 냉각실 도면 */}
       {moving && (
         <div className="sticky top-14 z-30 bg-blue-600 text-white rounded-lg px-4 py-3 flex items-center gap-3 shadow-lg">
           <span className="font-bold">{moving.cartNo}번 대차 이동 — 옮길 칸을 누르세요</span>
@@ -316,10 +371,22 @@ export default function CoolingInput() {
       )}
 
       {showIn && selChannel && (
-        <InboundModal cards={selCards} channel={selChannel} rooms={cfg.rooms} active={active}
+        <InboundModal cards={selCards} channel={selChannel} rooms={cfg.rooms} active={active} waiting={waitingAll}
           minutes={cartMinutes(cfg, selCards.map((c) => c.code))}
           onClose={() => setShowIn(false)}
           onSubmit={async (cartNo, room) => {
+            if (room === 0) {
+              // 대기 — 냉각실·타이머 없이 대차 내용만 저장
+              const ref = doc(collection(db, CART_COL));
+              fire(setDoc(ref, {
+                date, cartNo, room: 0, slot: -1, channel: selChannel,
+                items: selCards.map((c) => ({ code: c.code, name: c.name, qty: c.remain })),
+                startAt: 0, endAt: 0, durationMin: 0, out: false, waiting: true, waitAt: Date.now(),
+              }), '대기');
+              setShowIn(false); setSel(new Set());
+              showToast(`${cartNo}번 대차 → 대기 (냉각실에 넣을 때 타이머 시작)`, () => { fire(deleteDoc(ref), '대기 되돌리기'); setToast(null); });
+              return;
+            }
             const r = cfg.rooms.find((x) => x.id === room)!;
             const min = cartMinutes(cfg, selCards.map((c) => c.code));
             const start = Date.now();
@@ -335,6 +402,34 @@ export default function CoolingInput() {
               () => { fire(deleteDoc(ref), '입고 되돌리기'); setToast(null); });
           }} />
       )}
+
+      {waitOpen && (() => {
+        const cart = waitingAll.find((c) => c.id === waitOpen.id);
+        if (!cart) return null;
+        return (
+          <WaitingModal cart={cart} cards={cards.filter((c) => c.channel === cart.channel)} rooms={cfg.rooms} active={active}
+            minutesOf={(codes) => cartMinutes(cfg, codes)}
+            onClose={() => setWaitOpen(null)}
+            onSave={(items) => { fire(updateDoc(doc(db, CART_COL, cart.id), { items }), '대기 품목 추가'); setWaitOpen(null); showToast(`${cart.cartNo}번 대차 품목 저장 (대기 유지)`); }}
+            onDelete={() => setAsk({
+              title: `${cart.cartNo}번 대차 대기 취소`,
+              msg: '대기 대차 기록을 지웁니다.\n실은 품목은 다시 입고 대기로 돌아갑니다.',
+              ok: '대기 취소', danger: true,
+              onOk: () => { fire(deleteDoc(doc(db, CART_COL, cart.id)), '대기 취소'); setWaitOpen(null); },
+            })}
+            onDispatch={(items, roomId) => {
+              const r = cfg.rooms.find((x) => x.id === roomId)!;
+              const min = cartMinutes(cfg, items.map((i) => i.code));
+              const start = Date.now();
+              const slot = nextFreeSlot(r, active);
+              fire(updateDoc(doc(db, CART_COL, cart.id), {
+                items, room: roomId, slot, waiting: false, startAt: start, endAt: start + min * 60_000, durationMin: min,
+              }), '냉각실 입고');
+              setWaitOpen(null);
+              showToast(`${cart.cartNo}번 대차 대기 → ${r.name} ${slotLabel(r, slot)} · ${min}분 후 종료 (${hhmm(start + min * 60_000)})`);
+            }} />
+        );
+      })()}
 
       {detail && (
         <CartDetail cart={active.find((c) => c.id === detail.id) || detail} room={roomOf(detail.room)} now={now}
@@ -377,64 +472,198 @@ export default function CoolingInput() {
   );
 }
 
-function InboundModal({ cards, channel, rooms, active, minutes, onClose, onSubmit }: {
-  cards: PendingCard[]; channel: Channel; rooms: RoomConfig[]; active: CoolingCart[]; minutes: number;
+/** 태블릿용 창 틀 — 화면 가운데 고정 높이. 내용이 길면 안에서만 스크롤하고, 아래 버튼 줄은 항상 보인다.
+ *  (전에는 아래에서 올라오는 창이라 내용이 늘면 위로 커지고, 길면 버튼이 화면 밖으로 밀려 못 눌렀다) */
+function Shell({ head, children, foot, onClose, wide }: {
+  head: React.ReactNode; children: React.ReactNode; foot: React.ReactNode; onClose: () => void; wide?: boolean;
+}) {
+  return (
+    <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-2 sm:p-4" onClick={onClose}>
+      <div className={`bg-white w-full ${wide ? 'max-w-4xl' : 'max-w-lg'} rounded-2xl flex flex-col max-h-[94dvh] overflow-hidden`}
+        onClick={(e) => e.stopPropagation()}>
+        <div className="px-4 py-3 border-b flex items-center gap-2 shrink-0">
+          {head}
+          <button onClick={onClose} aria-label="닫기" className="ml-auto w-11 h-11 rounded-full text-2xl text-gray-500 active:bg-gray-100 shrink-0">✕</button>
+        </div>
+        <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain p-4">{children}</div>
+        <div className="px-4 py-3 border-t bg-gray-50 shrink-0">{foot}</div>
+      </div>
+    </div>
+  );
+}
+
+/** 대차 번호 키패드 — 숫자 칸은 높이 고정이라 숫자를 눌러도 화면이 들썩이지 않는다 */
+function CartNoPad({ no, setNo, warn }: { no: string; setNo: (f: (v: string) => string) => void; warn?: string }) {
+  const key = (k: string) => {
+    chime('tap');
+    if (k === '←') setNo((v) => v.slice(0, -1));
+    else if (k === 'C') setNo(() => '');
+    else setNo((v) => (v + k).slice(0, 4));
+  };
+  return (
+    <div>
+      <div className="text-sm font-bold text-gray-700 mb-1">① 대차 번호</div>
+      <div className={`h-20 flex items-center justify-center text-5xl leading-none font-extrabold tabular-nums border-2 rounded-xl ${warn ? 'border-rose-500 text-rose-600 bg-rose-50' : 'border-gray-300'}`}>
+        {no || <span className="text-gray-300 text-3xl">번호를 누르세요</span>}
+      </div>
+      {/* 경고 자리를 늘 비워 둔다 — 경고가 생겼다 사라질 때 아래 버튼이 움직이지 않게 */}
+      <div className="h-10 text-sm text-rose-600 font-bold leading-tight pt-1 overflow-hidden">{warn || ''}</div>
+      <div className="grid grid-cols-3 gap-2">
+        {['1', '2', '3', '4', '5', '6', '7', '8', '9', 'C', '0', '←'].map((k) => (
+          <button key={k} onClick={() => key(k)}
+            className={`h-14 text-2xl font-bold rounded-xl select-none active:bg-gray-300 ${k === 'C' || k === '←' ? 'bg-gray-200 text-gray-700' : 'bg-gray-100'}`}>{k}</button>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** 냉각실 1·2·3 + 대기 — 같은 크기 버튼 4개 */
+function RoomPick({ rooms, active, room, setRoom, allowWait }: {
+  rooms: RoomConfig[]; active: CoolingCart[]; room: number | null; setRoom: (r: number) => void; allowWait: boolean;
+}) {
+  const free = Object.fromEntries(rooms.map((r) => [r.id, r.rows * r.cols - active.filter((c) => c.room === r.id && c.slot >= 0).length]));
+  return (
+    <div>
+      <div className="text-sm font-bold text-gray-700 mb-1">② 어디로</div>
+      <div className={`grid ${allowWait ? 'grid-cols-2' : 'grid-cols-3'} gap-2`}>
+        {rooms.map((r) => (
+          <button key={r.id} onClick={() => { chime('tap'); setRoom(r.id); }}
+            className={`h-20 rounded-xl border-2 font-bold ${room === r.id ? 'border-blue-600 bg-blue-600 text-white' : 'border-gray-300 bg-white'}`}>
+            <div className="text-lg">{r.name}</div>
+            <div className={`text-xs ${room === r.id ? 'text-blue-100' : free[r.id] <= 0 ? 'text-rose-600' : 'text-gray-500'}`}>빈칸 {Math.max(0, free[r.id])}</div>
+          </button>
+        ))}
+        {allowWait && (
+          <button onClick={() => { chime('tap'); setRoom(0); }}
+            className={`h-20 rounded-xl border-2 font-bold ${room === 0 ? 'border-amber-500 bg-amber-500 text-white' : 'border-amber-300 bg-amber-50 text-amber-900'}`}>
+            <div className="text-lg">⏸ 대기</div>
+            <div className={`text-xs ${room === 0 ? 'text-amber-100' : 'text-amber-700'}`}>타이머 없이 담아 두기</div>
+          </button>
+        )}
+      </div>
+      <div className="h-5 text-xs text-amber-700 mt-1">{room !== null && room > 0 && free[room] <= 0 ? '빈칸이 없어 「자리 미지정」으로 들어갑니다.' : ''}</div>
+    </div>
+  );
+}
+
+function ItemList({ items, title }: { items: { code: string; name: string; qty: number }[]; title: string }) {
+  return (
+    <div>
+      <div className="text-sm font-bold text-gray-700 mb-1">{title} <span className="font-normal text-gray-500">{items.length}품목 · {items.reduce((s2, i) => s2 + i.qty, 0)}개</span></div>
+      <div className="border rounded-lg divide-y max-h-48 overflow-y-auto overscroll-contain">
+        {items.map((i) => (
+          <div key={i.code} className="px-3 py-1.5 flex items-center gap-2 text-sm">
+            <b className="font-mono w-14">{i.code}</b><span className="flex-1 truncate">{i.name}</span><b className="tabular-nums">{i.qty}</b>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function InboundModal({ cards, channel, rooms, active, waiting, minutes, onClose, onSubmit }: {
+  cards: PendingCard[]; channel: Channel; rooms: RoomConfig[]; active: CoolingCart[]; waiting: CoolingCart[]; minutes: number;
   onClose: () => void; onSubmit: (cartNo: string, room: number) => Promise<void>;
 }) {
   const [no, setNo] = useState('');
   const [room, setRoom] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
-  const inUse = no ? active.find((c) => c.cartNo === no) : undefined;
-  const free = useMemo(() => Object.fromEntries(rooms.map((r) => [r.id, r.rows * r.cols - active.filter((c) => c.room === r.id && c.slot >= 0).length])), [rooms, active]);
-  const key = (k: string) => {
-    chime('tap');
-    if (k === '←') setNo((v) => v.slice(0, -1));
-    else if (k === 'C') setNo('');
-    else setNo((v) => (v + k).slice(0, 4));
-  };
+  const inUse = no ? [...active, ...waiting].find((c) => c.cartNo === no) : undefined;
+  const warn = inUse ? `⚠ ${no}번은 이미 ${inUse.waiting ? '대기' : `냉각실 ${inUse.room}`}에 있습니다 (${inUse.channel}). 번호를 확인하세요.` : '';
   return (
-    <div className="fixed inset-0 z-50 bg-black/50 flex items-end sm:items-center justify-center" onClick={onClose}>
-      <div className="bg-white w-full sm:max-w-xl rounded-t-2xl sm:rounded-2xl p-5 space-y-4" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center gap-2">
-          <span className={`px-2 py-1 rounded text-white font-bold ${CH_STYLE[channel].bg}`}>{channel}</span>
-          <span className="font-bold text-lg">대차 입고</span>
-          <span className="text-sm text-gray-500">냉각 {minutes}분</span>
-          <button onClick={onClose} className="ml-auto text-2xl text-gray-400">✕</button>
-        </div>
-        <div className="text-sm text-gray-700">{cards.map((c) => `${c.code} ${c.name} ${c.remain}개`).join(' / ')}</div>
-
-        <div>
-          <div className="text-sm font-bold text-gray-700 mb-1">① 대차 번호</div>
-          <div className={`text-center text-5xl font-extrabold tabular-nums border-2 rounded-xl py-3 ${inUse ? 'border-rose-500 text-rose-600' : 'border-gray-300'}`}>{no || <span className="text-gray-300">—</span>}</div>
-          {inUse && <div className="text-sm text-rose-600 font-bold mt-1">⚠ {no}번은 이미 냉각실 {inUse.room}에 있습니다 ({inUse.channel} · {inUse.items.map((i) => i.code).join(', ')}). 번호를 확인하세요.</div>}
-          <div className="grid grid-cols-3 gap-2 mt-2">
-            {['1', '2', '3', '4', '5', '6', '7', '8', '9', 'C', '0', '←'].map((k) => (
-              <button key={k} onClick={() => key(k)} className="py-4 text-2xl font-bold rounded-xl bg-gray-100 active:bg-gray-300">{k}</button>
-            ))}
-          </div>
-        </div>
-
-        <div>
-          <div className="text-sm font-bold text-gray-700 mb-1">② 냉각실</div>
-          <div className="grid grid-cols-3 gap-2">
-            {rooms.map((r) => (
-              <button key={r.id} onClick={() => { chime('tap'); setRoom(r.id); }}
-                className={`py-4 rounded-xl border-2 font-bold ${room === r.id ? 'border-blue-600 bg-blue-600 text-white' : 'border-gray-200'}`}>
-                <div className="text-lg">{r.name}</div>
-                <div className={`text-xs ${room === r.id ? 'text-blue-100' : free[r.id] <= 0 ? 'text-rose-600' : 'text-gray-500'}`}>빈칸 {Math.max(0, free[r.id])}</div>
-              </button>
-            ))}
-          </div>
-          {room !== null && free[room] <= 0 && <div className="text-xs text-amber-700 mt-1">빈칸이 없어 「자리 미지정」으로 들어갑니다.</div>}
-        </div>
-
+    <Shell wide onClose={onClose}
+      head={<>
+        <span className={`px-2 py-1 rounded text-white font-bold ${CH_STYLE[channel].bg}`}>{channel}</span>
+        <span className="font-bold text-lg">대차 입고</span>
+        <span className="text-sm text-gray-500">냉각 {minutes}분</span>
+      </>}
+      foot={
         <button disabled={!no || room === null || !!inUse || busy}
           onClick={async () => { setBusy(true); try { await onSubmit(no, room!); } catch { setBusy(false); } }}
-          className="w-full py-4 rounded-xl bg-blue-600 text-white text-xl font-bold disabled:bg-gray-300">
-          {busy ? '입고 중…' : '입고 · 냉각 시작'}
+          className={`w-full h-16 rounded-xl text-white text-xl font-bold disabled:bg-gray-300 ${room === 0 ? 'bg-amber-500' : 'bg-blue-600'}`}>
+          {busy ? '저장 중…' : !no ? '대차 번호를 누르세요' : room === null ? '냉각실 또는 대기를 고르세요'
+            : room === 0 ? `${no}번 대차 → 대기에 넣기` : `${no}번 대차 → ${rooms.find((r) => r.id === room)?.name} 입고 · 냉각 시작`}
         </button>
+      }>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <CartNoPad no={no} setNo={setNo} warn={warn} />
+        <div className="space-y-3">
+          <ItemList title="실을 품목" items={cards.map((c) => ({ code: c.code, name: c.name, qty: c.remain }))} />
+          <RoomPick rooms={rooms} active={active} room={room} setRoom={setRoom} allowWait />
+        </div>
       </div>
-    </div>
+    </Shell>
+  );
+}
+
+/** 대기 대차 — 같은 채널 품목을 더 싣고, 냉각실로 보낸다(그때 타이머 시작) */
+function WaitingModal({ cart, cards, rooms, active, minutesOf, onClose, onSave, onDelete, onDispatch }: {
+  cart: CoolingCart; cards: PendingCard[]; rooms: RoomConfig[]; active: CoolingCart[];
+  minutesOf: (codes: string[]) => number;
+  onClose: () => void; onSave: (items: CartItem[]) => void; onDelete: () => void; onDispatch: (items: CartItem[], room: number) => void;
+}) {
+  const [add, setAdd] = useState<Set<string>>(new Set());
+  const [room, setRoom] = useState<number | null>(null);
+  const [q, setQ] = useState('');
+  const merged = useMemo(() => {
+    const m = new Map<string, CartItem>(cart.items.map((i) => [i.code, { ...i }]));
+    cards.filter((c) => add.has(c.key)).forEach((c) => {
+      const e = m.get(c.code);
+      if (e) e.qty += c.remain; else m.set(c.code, { code: c.code, name: c.name, qty: c.remain });
+    });
+    return [...m.values()];
+  }, [cart.items, cards, add]);
+  const t = q.trim().toLowerCase();
+  const num = (code: string) => (code.match(/\d+/g) || []).join('').replace(/^0+/, '');
+  const list = !t ? cards : /^\d+$/.test(t) ? cards.filter((c) => num(c.code).startsWith(t.replace(/^0+/, '')))
+    : cards.filter((c) => c.code.toLowerCase().includes(t) || c.name.toLowerCase().includes(t));
+  const min = minutesOf(merged.map((i) => i.code));
+  return (
+    <Shell wide onClose={onClose}
+      head={<>
+        <span className="text-2xl font-extrabold">{cart.cartNo}번</span>
+        <span className={`px-2 py-1 rounded text-white font-bold ${CH_STYLE[cart.channel].bg}`}>{cart.channel}</span>
+        <span className="text-sm text-amber-700 font-bold">⏸ 대기 중</span>
+        <span className="text-sm text-gray-500">냉각 {min}분</span>
+      </>}
+      foot={
+        <div className="grid grid-cols-3 gap-2">
+          <button onClick={onDelete} className="h-16 rounded-xl border-2 border-rose-300 text-rose-600 font-bold">대기 취소</button>
+          <button onClick={() => onSave(merged)} disabled={add.size === 0}
+            className="h-16 rounded-xl border-2 border-amber-400 text-amber-800 font-bold disabled:opacity-40">품목만 추가<br /><span className="text-xs font-normal">(대기 유지)</span></button>
+          <button onClick={() => room && onDispatch(merged, room)} disabled={!room}
+            className="h-16 rounded-xl bg-blue-600 text-white text-lg font-bold disabled:bg-gray-300">
+            {room ? `${rooms.find((r) => r.id === room)?.name} 입고 · 냉각 시작` : '냉각실을 고르세요'}
+          </button>
+        </div>
+      }>
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+        <div className="space-y-3">
+          <ItemList title="대차에 실린 품목" items={merged} />
+          <RoomPick rooms={rooms} active={active} room={room} setRoom={(r) => setRoom(r)} allowWait={false} />
+        </div>
+        <div>
+          <div className="text-sm font-bold text-gray-700 mb-1">＋ 같이 실을 {cart.channel} 품목 <span className="font-normal text-gray-500">(눌러서 추가)</span></div>
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="🔍 번호·이름" className="w-full border-2 rounded-lg px-3 py-2 mb-2" />
+          <div className="max-h-[42dvh] overflow-y-auto overscroll-contain space-y-1.5">
+            {list.length === 0 && <div className="text-sm text-gray-400 py-4 text-center">추가할 {cart.channel} 품목이 없습니다</div>}
+            {list.map((c) => {
+              const on = add.has(c.key);
+              return (
+                <button key={c.key} onClick={() => { chime('tap'); setAdd((s) => { const n = new Set(s); if (n.has(c.key)) n.delete(c.key); else n.add(c.key); return n; }); }}
+                  className={`w-full h-14 px-3 rounded-lg border-2 flex items-center gap-2 text-left ${on ? 'border-blue-500 bg-blue-50' : 'border-gray-200 bg-white'}`}>
+                  <span className={`w-6 h-6 rounded border-2 flex items-center justify-center shrink-0 ${on ? 'bg-blue-600 border-blue-600 text-white' : 'border-gray-400'}`}>{on ? '✔' : ''}</span>
+                  <b className="font-mono w-14 shrink-0">{c.code}</b>
+                  <span className="flex-1 truncate">{c.name}</span>
+                  <b className="tabular-nums">{c.remain}</b>
+                </button>
+              );
+            })}
+          </div>
+        </div>
+      </div>
+    </Shell>
   );
 }
 
@@ -444,32 +673,27 @@ function CartDetail({ cart, room, now, onClose, onRelease, onMove, onCancel }: {
 }) {
   const left = cart.endAt - now;
   return (
-    <div className="fixed inset-0 z-50 bg-black/50 flex items-end sm:items-center justify-center" onClick={onClose}>
-      <div className="bg-white w-full sm:max-w-md rounded-t-2xl sm:rounded-2xl p-5 space-y-3" onClick={(e) => e.stopPropagation()}>
-        <div className="flex items-center gap-2">
-          <span className="text-3xl font-extrabold">{cart.cartNo}번</span>
-          <span className={`px-2 py-1 rounded text-white font-bold ${CH_STYLE[cart.channel].bg}`}>{cart.channel}</span>
-          <button onClick={onClose} className="ml-auto text-2xl text-gray-400">✕</button>
+    <Shell onClose={onClose}
+      head={<>
+        <span className="text-3xl font-extrabold">{cart.cartNo}번</span>
+        <span className={`px-2 py-1 rounded text-white font-bold ${CH_STYLE[cart.channel].bg}`}>{cart.channel}</span>
+      </>}
+      foot={
+        <div className="grid grid-cols-3 gap-2">
+          <button onClick={onCancel} className="h-14 rounded-xl border-2 border-rose-300 text-rose-600 font-bold">입고 취소</button>
+          <button onClick={onMove} className="h-14 rounded-xl border-2 font-bold">자리 이동</button>
+          <button onClick={onRelease} className={`h-14 rounded-xl font-bold text-white text-lg ${left <= 0 ? 'bg-rose-600' : 'bg-gray-500'}`}>출고</button>
         </div>
+      }>
+      <div className="space-y-3">
         <div className="text-gray-700">{room?.name || `냉각실 ${cart.room}`} · {room ? slotLabel(room, cart.slot) : ''}</div>
         <div className={`text-2xl font-bold ${left <= 0 ? 'text-rose-600' : ''}`}>
           {left <= 0 ? `냉각 종료 (${fmtLeft(-left)} 지남)` : `남은 시간 ${fmtLeft(left)}`}
-          <span className="text-sm font-normal text-gray-500 ml-2">{hhmm(cart.startAt)} 입고 → {hhmm(cart.endAt)} 종료 ({cart.durationMin}분)</span>
+          <div className="text-sm font-normal text-gray-500">{hhmm(cart.startAt)} 입고 → {hhmm(cart.endAt)} 종료 ({cart.durationMin}분)</div>
         </div>
-        <table className="w-full text-sm">
-          <tbody className="divide-y">
-            {cart.items.map((i) => (
-              <tr key={i.code}><td className="py-1 font-mono font-bold">{i.code}</td><td>{i.name}</td><td className="text-right font-bold">{i.qty}</td></tr>
-            ))}
-          </tbody>
-        </table>
-        <div className="grid grid-cols-3 gap-2 pt-2">
-          <button onClick={onCancel} className="py-3 rounded-lg border text-rose-600">입고 취소</button>
-          <button onClick={onMove} className="py-3 rounded-lg border">자리 이동</button>
-          <button onClick={onRelease}
-            className={`py-3 rounded-lg font-bold text-white ${left <= 0 ? 'bg-rose-600' : 'bg-gray-500'}`}>출고</button>
-        </div>
+        {/* 품목이 많아도(아침에 몰아 넣을 때) 이 안에서만 스크롤 — 아래 출고 버튼은 항상 보인다 */}
+        <ItemList title="실린 품목" items={cart.items} />
       </div>
-    </div>
+    </Shell>
   );
 }

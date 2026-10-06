@@ -42,6 +42,9 @@ export interface CoolingCart {
   durationMin: number;
   out: boolean;
   outAt?: number;
+  /** 대기(버퍼) — 대차에 실어 두기만 하고 아직 냉각실에 안 넣음. room 0, 타이머 없음 */
+  waiting?: boolean;
+  waitAt?: number;
 }
 
 export interface RoomConfig { id: number; name: string; rows: number; cols: number }
