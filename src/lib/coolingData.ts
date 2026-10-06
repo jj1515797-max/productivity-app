@@ -6,6 +6,7 @@ import type { Item, MachineEntry } from '../types';
 import { CART_COL } from './cooling';
 import type { Channel, CoolingCart } from './cooling';
 import type { PackSorted } from './packSort';
+import { compareCode } from './codeUtil';
 
 /** 냉각실에 있는(출고 안 된) 대차 — 날짜와 무관 */
 export function useActiveCarts(): CoolingCart[] {
@@ -122,9 +123,10 @@ export function usePendingCards(date: string, dayCarts: CoolingCart[], sorted: P
         out.push({ key: `${it.code}|${ch}`, code: it.code, name: it.name, channel: ch, planQty: q, inQty: done, remain: q - done, produced: p, target: it.totalQty || 0, lastAt: hm(sb.at), packs: [...sb.packs].sort() });
       });
     });
-    // 방금 분류된 품목이 위로 — 같은 시각이면 코드·채널 순
+    // 찾기 쉽게 품목코드 순 — 1순위 알파벳(A→B→C…), 2순위 숫자(A01 → A05 → A10). 같은 품목이면 채널 순
     const chOrder = ['주문', '쿠팡', '마켓컬리', '오아시스', '샘플'];
-    out.sort((a, b) => b.lastAt.localeCompare(a.lastAt) || a.code.localeCompare(b.code) || chOrder.indexOf(a.channel) - chOrder.indexOf(b.channel));
+    const ck = (c: string) => c.replace(/[-\s]/g, '');   // H-002 같은 표기도 H002 로 비교
+    out.sort((a, b) => compareCode(ck(a.code), ck(b.code)) || a.code.localeCompare(b.code) || chOrder.indexOf(a.channel) - chOrder.indexOf(b.channel));
     return out;
   }, [items, qty, logi, dayCarts, sorted, entryIds]);
 
