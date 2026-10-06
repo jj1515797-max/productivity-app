@@ -398,6 +398,8 @@ export function resolveSheet(
   packWeightOf: (short: string) => number | null,
   productNameOf: (short: string) => string,
   skippedRows: SkippedRow[] = [],
+  /** 제품 키 만드는 법 — 냉장은 단축코드(F-003-01 → F03), 실온은 코드가 없어 제품명을 그대로 키로 쓴다 */
+  shortOf: (prodCode: string) => string = canonicalShort,
 ): ProductReport[] {
   const byProd = new Map<string, DevRow[]>();
   rows.forEach((r) => {
@@ -426,7 +428,7 @@ export function resolveSheet(
     const scale = (!anyPct && rawSum > 0.9 && rawSum < 1.1) ? 100 : 1;
     const list = scale === 1 ? list0 : list0.map((r) => ({ ...r, pct: r.pct * 100 }));
 
-    const short = canonicalShort(prodCode);
+    const short = shortOf(prodCode);
     const pw = packWeightOf(short);
     const resolved: ResolvedRow[] = list.map((r) => {
       const m = matchIngredient(r.rawName, prodCode, bom, master);
@@ -558,6 +560,50 @@ export function parseDevSheet(text: string): {
       prodCode, prodName: mi >= 0 ? (cells[mi] || '').trim() : '', rawName, pct,
       hadPercentSign: (cells[pi] || '').includes('%'),
     });
+  }
+  return { rows, skipped, errors, headerUsed };
+}
+
+/** 실온 이유식 배합비 시트 — 제품코드가 없다. 제품명 / 원재료명 / 배합비%
+ *  제품명을 prodCode 자리에 넣어 냉장과 같은 매칭·검증 로직을 그대로 쓴다. */
+export function parseAmbientSheet(text: string): {
+  rows: DevRow[]; skipped: SkippedRow[]; errors: string[]; headerUsed: boolean;
+} {
+  const errors: string[] = [];
+  const skipped: SkippedRow[] = [];
+  const lines = text.split('\n').filter((l) => l.trim());
+  if (lines.length === 0) return { rows: [], skipped: [], errors: ['데이터가 없습니다'], headerUsed: false };
+
+  const split = (l: string) => (l.includes('\t') ? l.split('\t') : l.split(',')).map((c) => c.trim());
+  const norm = (s: string) => s.replace(/\s+/g, '').replace(/\([^)]*\)/g, '').toLowerCase();
+
+  const head = split(lines[0]).map(norm);
+  const findCol = (...cands: string[]) => head.findIndex((h) => cands.some((c) => h.includes(c)));
+  let mi = findCol('제품명', '품목명', '제품');
+  let ni = findCol('원재료', '재료명', '원료');
+  let pi = findCol('배합비', '비율', '%');
+  let start = 1;
+  const headerUsed = mi >= 0 && ni >= 0 && pi >= 0;
+  if (!headerUsed) {
+    // 머리글이 없다 — 제품명 / 원재료명 / % (열이 더 있으면 맨 끝을 % 로)
+    const w = split(lines[0]).length;
+    mi = 0; ni = 1; pi = Math.max(2, w - 1);
+    start = 0;
+  }
+
+  const rows: DevRow[] = [];
+  for (let i = start; i < lines.length; i++) {
+    const cells = split(lines[i]);
+    const prodName = (cells[mi] || '').trim();
+    const rawName = (cells[ni] || '').trim();
+    const pctRaw = (cells[pi] || '').trim().replace(/,/g, '').replace('%', '');
+    if (!prodName && !rawName) continue;
+    if (!prodName) { errors.push(`${i + 1}행: 제품명 없음 — "${lines[i].trim().slice(0, 40)}"`); continue; }
+    if (!rawName) { errors.push(`${i + 1}행: 원재료명 없음`); continue; }
+    if (isSkipMark(pctRaw)) { skipped.push({ prodCode: prodName, rawName, mark: pctRaw }); continue; }
+    const pct = parseFloat(pctRaw);
+    if (!isFinite(pct)) { errors.push(`${i + 1}행: 배합비를 읽을 수 없음 — "${pctRaw}"`); continue; }
+    rows.push({ prodCode: prodName, prodName, rawName, pct, hadPercentSign: (cells[pi] || '').includes('%') });
   }
   return { rows, skipped, errors, headerUsed };
 }

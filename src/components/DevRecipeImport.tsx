@@ -15,7 +15,7 @@ import { canonicalShort, normalizeCode } from '../lib/codeUtil';
 import { normalizeMaterialName } from '../lib/wasteCompute';
 import {
   BomIndex, BomIngredient, MasterIngredient, ProductReport, ResolvedRow,
-  bomFor, bomSourceFor, cleanName, parseDevSheet, resolveSheet, PINNED,} from '../lib/devRecipeMatch';
+  bomFor, bomSourceFor, cleanName, parseAmbientSheet, parseDevSheet, resolveSheet, similarity, PINNED,} from '../lib/devRecipeMatch';
 
 const KIND_LABEL: Record<string, { t: string; cls: string }> = {
   exact:    { t: '완전일치',  cls: 'bg-emerald-100 text-emerald-800' },
@@ -40,7 +40,17 @@ const PINNED_LIST = Array.from(
   new Map(Object.values(PINNED).map((v) => [v.code, v])).values(),
 );
 
-export default function DevRecipeImport() {
+/** 실온 이유식 문서 ID — 설정 › 실온 레시피 DB 와 같은 규칙 (공백 없앤 소문자 제품명) */
+const ambientDocId = (name: string) => (name || '').trim().toLowerCase().replace(/\s+/g, '');
+
+/** mode='cold'   : 냉장 — 제품코드 기준, 현장 BOM(recipes) 참조 → recipesYield
+ *  mode='ambient': 실온 이유식 — 제품코드가 없어 제품명 기준, 현장 실온 레시피(ambientRecipes) 참조 → ambientRecipesYield
+ *                  배합비 × 개당 중량(기본 180g) = 개당 g */
+export default function DevRecipeImport({ mode = 'cold' }: { mode?: 'cold' | 'ambient' }) {
+  const amb = mode === 'ambient';
+  const [ambW, setAmbW] = useState(180);
+  const [ambNames, setAmbNames] = useState<string[]>([]);              // 현장 실온 레시피 제품명
+  const [nameMap, setNameMap] = useState<Record<string, string>>({});  // 시트 제품명 → 현장 제품명
   const [text, setText] = useState('');
   const [rawBom, setRawBom] = useState<BomIndex>(new Map());
   const [bomMaster, setBomMaster] = useState<MasterIngredient[]>([]);
@@ -67,10 +77,11 @@ export default function DevRecipeImport() {
     try {
       // 정제수처럼 '배합비엔 있고 현장 BOM 엔 없는' 원재료가 있다.
       // BOM 만 후보로 쓰면 영원히 못 찾으므로 설정 › 원재료 ERP 코드까지 읽는다.
-      const [rs, ps, inv] = await Promise.all([
+      const [rs, ps, inv, ar] = await Promise.all([
         getDocs(collection(db, 'recipes')),
         getDocs(collection(db, 'productSettings')),
         getDocs(collection(db, 'materialPricesInventory')).catch(() => null),
+        amb ? getDocs(collection(db, 'ambientRecipes')) : Promise.resolve(null),
       ]);
       const b: BomIndex = new Map();
       const useCount = new Map<string, { name: string; code: string; uses: number }>();
@@ -101,6 +112,27 @@ export default function DevRecipeImport() {
           e.uses++; useCount.set(c, e);
         });
       });
+      // 실온 — 제품 BOM 은 실온 레시피에서 (제품명이 키). 냉장 BOM 은 원재료 후보(코드 목록)로만 쓴다.
+      if (amb && ar) {
+        b.clear(); idMap.clear();
+        const names: string[] = [];
+        ar.forEach((d) => {
+          const v = d.data() as { name?: string; ingredients?: { name: string; code?: string }[] };
+          const nm = (v.name || d.id).trim();
+          names.push(nm);
+          const key = normalizeCode(nm);
+          idMap.set(key, d.id);
+          const list: BomIngredient[] = (v.ingredients || []).map((i) => ({ name: i.name, code: i.code }));
+          b.set(key, list);
+          list.forEach((i) => {
+            const c = normalizeCode(i.code || '');
+            if (!c) return;
+            const e = useCount.get(c) || { name: i.name, code: c, uses: 0 };
+            e.uses++; useCount.set(c, e);
+          });
+        });
+        setAmbNames(names.sort((x, y) => x.localeCompare(y)));
+      }
       const pw = new Map<string, number>();
       const pn = new Map<string, string>();
       ps.forEach((d) => {
@@ -178,18 +210,25 @@ export default function DevRecipeImport() {
     return out.sort((a, b) => b.uses - a.uses || a.name.localeCompare(b.name));
   }, [bomMaster, erpMaster]);
 
-  const parsed = useMemo(() => (text.trim() ? parseDevSheet(text)
-    : { rows: [], skipped: [], errors: [], headerUsed: false }), [text]);
+  const parsed = useMemo(() => {
+    if (!text.trim()) return { rows: [], skipped: [], errors: [], headerUsed: false };
+    if (!amb) return parseDevSheet(text);
+    // 실온: 시트 제품명을 현장 제품명으로 바꿔 둔 게 있으면 적용 (생산 입력 이름과 같아야 분석에 잡힌다)
+    const p0 = parseAmbientSheet(text);
+    const m = (n: string) => nameMap[n] || n;
+    return { ...p0, rows: p0.rows.map((r) => ({ ...r, prodCode: m(r.prodCode) })), skipped: p0.skipped.map((r) => ({ ...r, prodCode: m(r.prodCode) })) };
+  }, [text, amb, nameMap]);
 
   const reports: ProductReport[] = useMemo(() => {
     if (!loaded || parsed.rows.length === 0) return [];
     return resolveSheet(
       parsed.rows, bom, master,
-      (short) => packW.get(short) ?? null,
-      (short) => prodName.get(short) || '',
+      amb ? () => (ambW > 0 ? ambW : null) : (short) => packW.get(short) ?? null,
+      amb ? (short) => short : (short) => prodName.get(short) || '',
       parsed.skipped,
+      amb ? (x) => x.trim() : undefined,
     );
-  }, [parsed, bom, master, packW, prodName, loaded]);
+  }, [parsed, bom, master, packW, prodName, loaded, amb, ambW]);
 
   const rowKey = (p: ProductReport, r: ResolvedRow, i: number) => `${p.short}|${i}|${r.rawName}`;
   const effOf = (p: ProductReport, r: ResolvedRow, i: number) => {
@@ -273,9 +312,10 @@ export default function DevRecipeImport() {
     if (noCode.length > 0) { alert(`ERP 코드가 비어 있는 행이 ${noCode.length}건 있습니다.`); return; }
     const skipN = reports.reduce((s2, p) => s2 + p.skipped.length, 0);
     const msg = [
-      `분석용 레시피 DB(recipesYield)에 ${reports.length}개 제품을 저장합니다.`,
+      amb ? `분석용 실온 레시피 DB(ambientRecipesYield)에 ${reports.length}개 제품을 저장합니다 (개당 ${ambW}g 기준).`
+        : `분석용 레시피 DB(recipesYield)에 ${reports.length}개 제품을 저장합니다.`,
       '',
-      '· 현장 BOM(레시피 DB)은 건드리지 않습니다.',
+      amb ? '· 현장 실온 레시피 DB 는 건드리지 않습니다.' : '· 현장 BOM(레시피 DB)은 건드리지 않습니다.',
       '· 개발이 쪼개 놓은 줄은 합치지 않고 그대로 저장합니다.',
       skipN > 0 ? `· 배합비 칸이 '삭제' 인 ${skipN}행은 빼고 저장합니다.` : '',
       `· 전 제품 배합비 합계 100% 확인 완료.`,
@@ -290,6 +330,23 @@ export default function DevRecipeImport() {
       for (let i = 0; i < reports.length; i += CHUNK) {
         const batch = writeBatch(db);
         reports.slice(i, i + CHUNK).forEach((p) => {
+          if (amb) {
+            // 실온: 제품명이 키. 현장 실온 레시피와 같은 문서 ID 를 써야 생산 입력(제품명)과 연결된다.
+            const id = docIdOf.get(normalizeCode(p.prodCode)) || ambientDocId(p.prodCode);
+            batch.set(doc(db, 'ambientRecipesYield', id), {
+              name: p.prodCode,
+              batchPieces: 1,                    // 개당 g 으로 저장
+              packWeight: p.packWeight,
+              pctSum: Math.round(p.pctSum * 10000) / 10000,
+              source: 'dev-batch',
+              ingredients: p.rows.map((r, k) => {
+                const e = effOf(p, r, k);
+                return { seq: k + 1, name: e.name || r.rawName, code: e.code, gPerBatch: r.gPerPiece ?? 0, pct: r.pct, devName: r.rawName };
+              }),
+              updatedAt: new Date().toISOString(),
+            }, { merge: false });
+            return;
+          }
           // 전체코드로 먼저 찾는다. 단축코드로만 찾으면 F-003-01 이 F-003-51 문서를 덮어쓸 수 있다.
           const id = docIdOf.get(normalizeCode(p.prodCode)) || docIdOf.get(p.short) || p.prodCode;
           batch.set(doc(db, 'recipesYield', id), {
@@ -340,6 +397,13 @@ export default function DevRecipeImport() {
 
   return (
     <div className="space-y-3">
+      {amb && (
+        <div className="bg-teal-50 border border-teal-200 rounded p-2.5 text-xs text-teal-900">
+          <b>실온 이유식</b>은 제품코드가 없어 <b>제품명</b>으로 연결합니다 — 시트 제품명이 <b>생산 입력(실온) 제품명과 같아야</b> 분석에 잡힙니다.
+          현장 실온 레시피에 같은 이름이 없으면 비슷한 이름을 추천하니 눌러서 맞춰 주세요.<br />
+          · 개당 g = 배합비% × <b>개당 중량</b> ÷ 100 · 저장 대상은 <b>분석용 실온 레시피 DB(ambientRecipesYield)</b> 뿐입니다.
+        </div>
+      )}
       <div className="bg-indigo-50 border border-indigo-200 rounded p-2.5 text-xs text-indigo-900">
         개발에서 받은 <b>배합비 % 시트</b>를 붙여넣으면 <b>기존 BOM 을 참조해 ERP 코드를 채워</b>
         분석용 레시피로 바꿔줍니다.<br />
@@ -365,13 +429,23 @@ export default function DevRecipeImport() {
           </div>
         </div>
         <div className="text-[11px] text-gray-500">
-          <b>제품코드 / (제품명) / 원재료명 / 배합비%</b> — 탭 또는 쉼표 구분. 머리글이 있으면 자동 인식합니다.
+          <b>{amb ? '제품명 / 원재료명 / 배합비%' : '제품코드 / (제품명) / 원재료명 / 배합비%'}</b> — 탭 또는 쉼표 구분. 머리글이 있으면 자동 인식합니다.
           배합비는 <b>품목코드별 합계가 100%</b>여야 합니다 — 아니면 저장을 막습니다.
           엑셀에서 값으로 붙여 <code className="bg-gray-100 px-1 rounded">0.3369</code> 처럼 들어와도
           <b>제품 단위 합계를 보고</b> 자동으로 %로 바꿉니다 (0.19% 같은 소량 원재료는 그대로 둡니다).
         </div>
-        <textarea value={text} onChange={(e) => { setText(e.target.value); setOv({}); setDone(null); }}
-          placeholder={'품목코드\t제품명\t원재료명\t배합비(%)\nE-001\t순수쌀미음\t정제수\t91.65\nE-001\t순수쌀미음\t맵쌀\t8.35'}
+        {amb && (
+          <label className="flex items-center gap-2 text-xs">
+            <b>개당 중량</b>
+            <input type="number" min={1} value={ambW} onChange={(e) => setAmbW(Math.max(0, Number(e.target.value) || 0))}
+              className="w-20 border rounded px-2 py-1 text-right font-bold" /> g
+            <span className="text-gray-500">— 배합비 100% 가 이 무게가 됩니다 (기본 180g)</span>
+          </label>
+        )}
+        <textarea value={text} onChange={(e) => { setText(e.target.value); setOv({}); setDone(null); setNameMap({}); }}
+          placeholder={amb
+            ? '제품명\t원재료명\t배합비(%)\n한우야채진밥\t정제수\t55.2\n한우야채진밥\t멥쌀\t20.1'
+            : '품목코드\t제품명\t원재료명\t배합비(%)\nE-001\t순수쌀미음\t정제수\t91.65\nE-001\t순수쌀미음\t맵쌀\t8.35'}
           className="w-full h-32 border rounded p-2 font-mono text-xs" />
         {parsed.errors.length > 0 && (
           <div className="text-xs text-rose-700 bg-rose-50 border border-rose-200 rounded p-2">
@@ -415,7 +489,7 @@ export default function DevRecipeImport() {
             </span>
             <button onClick={save} disabled={!canSave || saving}
               className="ml-auto bg-indigo-600 text-white rounded px-4 py-1.5 font-semibold disabled:bg-gray-300">
-              {saving ? '저장중...' : `분석용 레시피로 저장 (${stat.prods}개 제품)`}
+              {saving ? '저장중...' : `${amb ? '분석용 실온 레시피로' : '분석용 레시피로'} 저장 (${stat.prods}개 제품)`}
             </button>
           </div>
           {!canSave && (
@@ -475,7 +549,18 @@ export default function DevRecipeImport() {
                 <div key={p.short} className="border rounded bg-white">
                   <div className="px-3 py-2 border-b bg-slate-50 flex items-baseline gap-2 flex-wrap text-xs">
                     <b className="text-sm text-gray-800">{p.prodCode}</b>
-                    <span className="text-gray-600">{p.name || p.rows[0]?.prodName}</span>
+                    {!amb && <span className="text-gray-600">{p.name || p.rows[0]?.prodName}</span>}
+                    {amb && (() => {
+                      const origs = Object.keys(nameMap).filter((k) => nameMap[k] === p.prodCode && k !== p.prodCode);
+                      if (origs.length === 0) return null;
+                      return (
+                        <span className="bg-teal-100 text-teal-800 rounded px-1.5">
+                          시트 「{origs.join(', ')}」 → 현장 이름으로 맞춤
+                          <button onClick={() => { const next = { ...nameMap }; origs.forEach((k) => delete next[k]); setNameMap(next); setOv({}); }}
+                            className="ml-1 underline">되돌리기</button>
+                        </span>
+                      );
+                    })()}
                     <span className="text-gray-400">
                       {p.rows.length}행{p.skipped.length > 0 && ` (삭제 ${p.skipped.length})`}
                     </span>
@@ -483,7 +568,7 @@ export default function DevRecipeImport() {
                       합계 {fmt(p.pctSum)}%
                     </span>
                     <span className={p.packWeight === null ? 'text-rose-600 font-bold' : 'text-gray-500'}>
-                      포장중량 {p.packWeight === null ? '미등록' : `${p.packWeight}g`}
+                      {amb ? '개당 중량' : '포장중량'} {p.packWeight === null ? '미등록' : `${p.packWeight}g`}
                     </span>
                     {leftoverBom.length > 0 && (
                       <span className="bg-red-600 text-white rounded px-2 py-0.5 font-bold">
@@ -508,6 +593,42 @@ export default function DevRecipeImport() {
                   {(() => {
                     const src = bomSourceFor(bom, p.prodCode);
                     const list = src.list;
+                    if (list.length === 0 && amb) {
+                      // 실온: 현장 실온 레시피에 같은 제품명이 없다 → 비슷한 이름 추천 (생산 입력 이름과 맞춰야 분석에 잡힌다)
+                      const me = cleanName(p.prodCode);
+                      const sugg = ambNames.map((n) => ({ n, sc: similarity(me, cleanName(n)) }))
+                        .filter((x) => x.sc >= 0.35).sort((a, b) => b.sc - a.sc).slice(0, 5);
+                      const origs = Object.keys(nameMap).filter((k) => nameMap[k] === p.prodCode);
+                      const remap = (to: string) => {
+                        const next = { ...nameMap };
+                        const keys = origs.length ? origs : [p.prodCode];
+                        keys.forEach((k) => { next[k] = to; });
+                        setNameMap(next); setOv({});
+                      };
+                      return (
+                        <div className="px-3 py-2 bg-amber-50 border-b border-amber-300 text-[12px]">
+                          <div className="font-bold text-amber-900">
+                            ⚠ 현장 실온 레시피에 「{p.prodCode}」 이(가) 없습니다
+                            <span className="font-normal ml-1">— 생산 입력(실온) 제품명과 다르면 분석에 안 잡힙니다</span>
+                          </div>
+                          {sugg.length > 0 ? (
+                            <div className="mt-1 flex flex-wrap gap-1 items-center">
+                              <span className="text-amber-800">혹시 이 제품인가요?</span>
+                              {sugg.map((x) => (
+                                <button key={x.n} onClick={() => remap(x.n)}
+                                  className="bg-white border border-amber-400 text-amber-900 rounded px-2 py-0.5 hover:bg-amber-100">
+                                  {x.n} <span className="text-amber-500">{Math.round(x.sc * 100)}%</span>
+                                </button>
+                              ))}
+                            </div>
+                          ) : <div className="mt-1 text-amber-800">비슷한 이름도 없습니다 — 새 제품이면 이대로 저장해도 됩니다 (원재료는 전체 목록에서 매칭).</div>}
+                          {origs.length > 0 && (
+                            <button onClick={() => { const next = { ...nameMap }; origs.forEach((k) => delete next[k]); setNameMap(next); setOv({}); }}
+                              className="mt-1 text-[11px] underline text-amber-800">시트 이름으로 되돌리기</button>
+                          )}
+                        </div>
+                      );
+                    }
                     if (list.length === 0) return (
                       <div className="px-3 py-2 bg-red-600 text-white text-[12px] font-bold border-b">
                         🚨 레시피 DB 에 <span className="bg-white text-red-700 rounded px-1.5">{p.prodCode}</span> 문서가 없습니다
@@ -530,7 +651,7 @@ export default function DevRecipeImport() {
                           {open ? '▾' : '▸'} <b>이 제품 현장 BOM {list.length}종</b> 보기
                           {src.how === 'exact' ? (
                             <span className="text-gray-400 ml-1">
-                              — 레시피 DB 의 <b className="font-mono">{p.prodCode}</b> 문서. ERP BOM 과 맞는지 확인하세요
+                              — {amb ? '현장 실온 레시피의' : '레시피 DB 의'} <b className="font-mono">{p.prodCode}</b> 문서. ERP BOM 과 맞는지 확인하세요
                             </span>
                           ) : (
                             <span className="ml-1 bg-red-600 text-white rounded px-1.5 py-0.5 font-bold">

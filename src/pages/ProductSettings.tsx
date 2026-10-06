@@ -50,6 +50,7 @@ export default function ProductSettings() {
   const [showYieldAmbient, setShowYieldAmbient] = useState(false);
   const [showCategory, setShowCategory] = useState(false);
   const [showDevImport, setShowDevImport] = useState(false);
+  const [showDevImportAmb, setShowDevImportAmb] = useState(false);
   const [yieldRecipeCount, setYieldRecipeCount] = useState<number | null>(null);
   const [yieldSubCount, setYieldSubCount] = useState<number | null>(null);
   const [yieldAmbientCount, setYieldAmbientCount] = useState<number | null>(null);
@@ -427,6 +428,16 @@ export default function ProductSettings() {
               <RecipeDB onCountChange={setYieldSubCount} collectionName="subRecipesYield" label="분석용 반제품 레시피" />
             </div>
           )}
+        </Section>
+
+        <Section
+          icon="🔗"
+          title="실온이유식 개발 배합비 → 분석용 실온 레시피 변환"
+          badge=""
+          open={showDevImportAmb}
+          onToggle={() => setShowDevImportAmb(!showDevImportAmb)}
+        >
+          {showDevImportAmb && <DevRecipeImport mode="ambient" />}
         </Section>
 
         <Section
