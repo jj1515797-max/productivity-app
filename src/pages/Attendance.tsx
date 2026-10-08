@@ -645,6 +645,12 @@ export default function Attendance() {
               canClear={liveHas}
               onClose={() => setLeaveTarget(null)}
               onApply={async (from, to) => {
+                // 이미 해제된 사람인데 종료일이 오늘 이후면 오늘부터 다시 휴직이 된다 — 옛 기록의 종료일이 그대로 채워져 있을 수 있어 확인
+                const t = todayKey();
+                if (!liveHas && (!to || to >= t) && !confirm(
+                  `지금 인원 정보에서는 휴직이 이미 해제돼 있습니다.\n`
+                  + `종료일이 ${to || '무기한'} 이라 ${t}(오늘)부터 다시 휴직으로 바뀝니다.\n\n`
+                  + `지난 날짜만 고치려면 종료일을 ${shiftDate(t, -1)} 이전으로 하거나 「복직 처리」를 쓰세요.\n진행할까요?`)) return;
                 let r: { patched: number; failed: string[]; membersWritten: boolean };
                 try {
                   r = await setLeaveRetro(shown, { leaveFrom: base.leaveFrom, leaveTo: base.leaveTo }, from, to);
