@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { addDoc, collection, deleteDoc, doc, getDoc, onSnapshot, setDoc, updateDoc } from 'firebase/firestore';
+import { addDoc, collection, deleteDoc, doc, getDoc, onSnapshot, runTransaction, setDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
 import { loadViewDate, saveViewDate } from '../lib/viewDate';
 import type { AttendanceRecord, AttendanceStatus, Member } from '../types';
 import { ATTENDANCE_STATUSES } from '../types';
 import LeaveSearchModal from '../components/LeaveSearchModal';
-import { isOnLeave, getStatuses, effectiveStatuses, formatStatusLabel, leaveDaysFromStatuses } from '../lib/attendance';
+import { isOnLeave, getStatuses, effectiveStatuses, formatStatusLabel, leaveDaysFromStatuses, leaveRetroPlan } from '../lib/attendance';
 
 const STATUS_COLOR: Record<AttendanceStatus, { chip: string; soft: string; text: string; border: string }> = {
   출근:    { chip: 'bg-emerald-500', soft: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-300' },
@@ -71,6 +71,7 @@ export default function Attendance() {
   const [members, setMembers] = useState<Member[]>([]);
   /** 과거 날짜에 적용되는 멤버 상태 (스냅샷). null 이면 live members 사용 */
   const [snapshotMembers, setSnapshotMembers] = useState<Member[] | null>(null);
+  const [snapTick, setSnapTick] = useState(0);   // 휴직 소급 수정 후 지금 보는 날짜 스냅샷 다시 읽기
   // 스냅샷이 없으면 live members 사용하되, 조회 날짜보다 늦게 입사(createdAt)한 사람은 제외
   // → 오늘 추가한 신입이 어제/과거 조회 시 안 보이게
   const effectiveMembers = useMemo(() => {
@@ -87,6 +88,19 @@ export default function Attendance() {
   const [editName, setEditName] = useState('');
   const [editDept, setEditDept] = useState('');
   const [leaveTarget, setLeaveTarget] = useState<Member | null>(null);
+  // 지금 인원 정보엔 휴직이 없는데(이미 해제) 어제 기록엔 남아 있으면 — 오늘 화면에서도 복직 처리할 수 있게 어제 기록을 읽어 둔다
+  const [recentLeave, setRecentLeave] = useState<{ id: string; leaveFrom?: string | null; leaveTo?: string | null } | null>(null);
+  useEffect(() => {
+    setRecentLeave(null);
+    if (!leaveTarget) return;
+    const live = members.find((x) => x.id === leaveTarget.id);
+    if (live?.leaveFrom || leaveTarget.leaveFrom) return;
+    const y = shiftDate(todayKey(), -1);
+    getDoc(doc(db, 'attendanceSnapshot', y)).then((s) => {
+      const e = (s.exists() ? ((s.data() as { members?: Member[] }).members || []) : []).find((x) => x.id === leaveTarget.id);
+      if (e?.leaveFrom && isOnLeave(e, y)) setRecentLeave({ id: e.id, leaveFrom: e.leaveFrom, leaveTo: e.leaveTo });
+    }).catch(() => {});
+  }, [leaveTarget, members]);
   const [showTable, setShowTable] = useState(false);
   const [showLeave, setShowLeave] = useState(false);
   const [openStatusFor, setOpenStatusFor] = useState<string | null>(null);
@@ -154,9 +168,11 @@ export default function Attendance() {
   }, [date]);
 
   // 날짜 변경 시 스냅샷 로드 (오늘은 항상 live, 과거 날짜는 스냅샷 우선)
+  const snapDateRef = useRef('');
   useEffect(() => {
-    setSnapshotMembers(null);
-    if (date === todayKey()) return;
+    // 날짜가 바뀔 때만 비운다 — 휴직 수정 뒤 다시 읽을 때는 새 값이 올 때까지 기존 화면 유지
+    if (snapDateRef.current !== date) { setSnapshotMembers(null); snapDateRef.current = date; }
+    if (date === todayKey()) { setSnapshotMembers(null); return; }
     let cancel = false;
     getDoc(doc(db, 'attendanceSnapshot', date)).then((s) => {
       if (cancel) return;
@@ -166,7 +182,7 @@ export default function Attendance() {
       }
     }).catch(() => {});
     return () => { cancel = true; };
-  }, [date]);
+  }, [date, snapTick]);
 
   // 오늘 멤버 변경 사항을 오늘 스냅샷에 항상 동기화 (과거 스냅샷은 절대 안 건드림)
   useEffect(() => {
@@ -303,15 +319,61 @@ export default function Attendance() {
     await updateDoc(doc(db, 'members', m.id), { active: false });
   };
 
-  const setLeave = async (m: Member, leaveFrom: string | null, leaveTo: string | null) => {
-    const update: Partial<Member> = {};
-    update.leaveFrom = leaveFrom || undefined;
-    update.leaveTo = leaveTo || undefined;
-    // Firestore: undefined 필드는 제거하기 위해 deleteField 사용 대신 빈 문자열로
-    await updateDoc(doc(db, 'members', m.id), {
-      leaveFrom: leaveFrom || null,
-      leaveTo: leaveTo || null,
-    });
+  /** 휴직 기간 저장 — 인원 문서만 바꾼다 (지난 날짜 기록은 그대로). 「완전 해제」가 이 경로다. */
+  const setLeaveForward = async (m: Member, leaveFrom: string | null, leaveTo: string | null) => {
+    await updateDoc(doc(db, 'members', m.id), { leaveFrom: leaveFrom || null, leaveTo: leaveTo || null });
+  };
+
+  /** 휴직 기간 변경 + 지난 날짜 소급.
+   *  과거 날짜 화면은 그날 저장해 둔 인원 스냅샷(attendanceSnapshot/{날짜})을 보여주므로
+   *  인원 문서만 바꾸면 지난 날짜는 예전 휴직 상태 그대로 남는다 (공유를 늦게 받아 소급해야 하는 경우).
+   *
+   *  지키는 규칙
+   *   · 인원 문서엔 휴직 기간이 하나뿐이다. 지난 스냅샷엔 '이미 끝난 다른 휴직' 이 남아 있을 수 있으므로
+   *     고치는 대상은 「지금 고치는 그 휴직」(base) 으로 표시된 날과, 휴직이 없던 날뿐이다.
+   *     다른 휴직으로 기록된 날은 절대 건드리지 않는다.
+   *   · 끝난 휴직 뒤에 새 휴직을 등록하는 경우(새 시작일 > 예전 종료일)는 예전 휴직을 고치는 게 아니다 → 예전 기간은 그대로.
+   *   · 휴직 여부가 실제로 바뀌는 날만 쓴다. 날짜마다 트랜잭션 — 같은 날 다른 사람 수정과 겹쳐도 덮어쓰지 않는다.
+   *   · 스냅샷을 먼저 고치고 인원 문서를 마지막에 바꾼다 — 중간에 끊기면 같은 버튼으로 다시 하면 된다. */
+  const setLeaveRetro = async (m: Member, base: { leaveFrom?: string | null; leaveTo?: string | null },
+    leaveFrom: string | null, leaveTo: string | null): Promise<{ patched: number; failed: string[]; membersWritten: boolean }> => {
+    const today = todayKey();
+    const live = members.find((x) => x.id === m.id);
+    const plan = leaveRetroPlan(base, leaveFrom, leaveTo, live ? { leaveFrom: live.leaveFrom, leaveTo: live.leaveTo } : null);
+    const failed: string[] = [];
+    let patched = 0;
+    if (plan.scanFrom && plan.scanFrom < today) {
+      const floor = shiftDate(today, -400);                // 너무 먼 과거까지 읽지 않게
+      const dates: string[] = [];
+      for (let d = plan.scanFrom < floor ? floor : plan.scanFrom; d < today; d = shiftDate(d, 1)) dates.push(d);
+      for (let i = 0; i < dates.length; i += 30) {
+        const res = await Promise.allSettled(dates.slice(i, i + 30).map((d) =>
+          runTransaction(db, async (tx) => {
+            const ref = doc(db, 'attendanceSnapshot', d);
+            const snap = await tx.get(ref);
+            if (!snap.exists()) return false;              // 스냅샷 없는 날은 지금 인원 정보를 그대로 쓰므로 고칠 필요 없음
+            const data = snap.data() as { members?: Member[] };
+            if (!Array.isArray(data.members)) return false;
+            const idx = data.members.findIndex((x) => x.id === m.id);
+            if (idx < 0) return false;
+            const cur = data.members[idx];
+            if (!plan.shouldPatch(cur, d)) return false;   // 다른 휴직이거나, 그날 휴직 여부가 그대로면 안 고침
+            const ms = data.members.slice();
+            ms[idx] = { ...cur, leaveFrom: (leaveFrom || null) as any, leaveTo: (leaveTo || null) as any };
+            tx.update(ref, { members: ms, leaveFixedAt: new Date().toISOString() });
+            return true;
+          })));
+        res.forEach((r, k) => {
+          if (r.status === 'fulfilled') { if (r.value) patched++; }
+          else failed.push(dates[i + k]);
+        });
+      }
+    }
+    // 다 고쳐졌을 때만 인원 문서 확정. 지난 날짜의 옛 휴직을 고치는 경우엔 현재 휴직 정보는 그대로 둔다
+    const membersWritten = failed.length === 0 && plan.writeMembers;
+    if (membersWritten) await setLeaveForward(m, leaveFrom, leaveTo);
+    if (patched > 0) setSnapTick((t) => t + 1);
+    return { patched, failed, membersWritten };
   };
 
   const isToday = date === todayKey();
@@ -554,19 +616,59 @@ export default function Attendance() {
 
       {/* 휴직 관리 모달 */}
       {leaveTarget && (
-        <LeaveModal
-          member={leaveTarget}
-          today={date}
-          onClose={() => setLeaveTarget(null)}
-          onApply={async (from, to) => {
-            await setLeave(leaveTarget, from, to);
-            setLeaveTarget(null);
-          }}
-          onClear={async () => {
-            await setLeave(leaveTarget, null, null);
-            setLeaveTarget(null);
-          }}
-        />
+        (() => {
+          // 고치는 대상(base) = 화면에 보이는 그 휴직.
+          //  · 보고 있는 날짜 기록에 휴직이면 그 휴직 (지난 날짜는 그날 스냅샷)
+          //  · 아니면 지금 인원 정보의 휴직
+          //  · 그것도 이미 해제됐는데 어제 기록엔 휴직이면 어제 기록 (늦게 안 복직 — 오늘 화면에서도 처리)
+          const live = members.find((x) => x.id === leaveTarget.id);
+          const liveHas = !!live?.leaveFrom;
+          let base: { leaveFrom?: string | null; leaveTo?: string | null } = {};
+          let note = '';
+          if (leaveTarget.leaveFrom && isOnLeave(leaveTarget, date)) {
+            base = leaveTarget;
+            if (!liveHas) note = `${date} 기록 기준 휴직입니다 (지금 인원 정보에서는 이미 해제됨)`;
+            else if (live!.leaveFrom !== leaveTarget.leaveFrom || (live!.leaveTo || '') !== (leaveTarget.leaveTo || '')) note = `${date} 기록 기준 휴직입니다 (지금 인원 정보: ${live!.leaveFrom} ~ ${live!.leaveTo || ''})`;
+          } else if (liveHas) {
+            base = live!;
+          } else if (recentLeave && recentLeave.id === leaveTarget.id) {
+            base = recentLeave;
+            note = `어제(${shiftDate(todayKey(), -1)}) 기록 기준 휴직입니다 (지금 인원 정보에서는 이미 해제됨)`;
+          }
+          const shown: Member = { ...(live || leaveTarget), leaveFrom: base.leaveFrom || undefined, leaveTo: base.leaveTo || undefined };
+          return (
+            <LeaveModal
+              key={`${leaveTarget.id}-${base.leaveFrom || ''}-${base.leaveTo || ''}`}
+              member={shown}
+              today={date}
+              note={note}
+              canClear={liveHas}
+              onClose={() => setLeaveTarget(null)}
+              onApply={async (from, to) => {
+                let r: { patched: number; failed: string[]; membersWritten: boolean };
+                try {
+                  r = await setLeaveRetro(shown, { leaveFrom: base.leaveFrom, leaveTo: base.leaveTo }, from, to);
+                } catch (e: any) {
+                  alert(`저장 실패: ${e?.message || e}\n인터넷 연결을 확인하고 다시 눌러 주세요.`);
+                  return;
+                }
+                if (r.failed.length > 0) {
+                  alert(`⚠ 지난 날짜 ${r.failed.length}일을 고치지 못했습니다 (${r.failed.slice(0, 5).join(', ')}${r.failed.length > 5 ? ' …' : ''}).\n인터넷 연결을 확인하고 같은 버튼을 다시 눌러 주세요. (인원 정보는 아직 안 바꿨습니다)`);
+                  return;
+                }
+                setLeaveTarget(null);
+                const parts = [];
+                if (r.patched > 0) parts.push(`지난 날짜 ${r.patched}일의 휴직 기록을 함께 고쳤습니다.`);
+                if (!r.membersWritten) parts.push('지난 기록만 고쳤고, 지금 휴직 정보(현재 휴직)는 그대로 두었습니다.');
+                if (parts.length) alert(parts.join('\n'));
+              }}
+              onClear={async () => {
+                try { await setLeaveForward(shown, null, null); setLeaveTarget(null); }
+                catch (e: any) { alert(`저장 실패: ${e?.message || e}`); }
+              }}
+            />
+          );
+        })()
       )}
 
       {/* 상태 팝오버 (모바일=중앙 모달 / PC=fixed 위치) */}
@@ -759,10 +861,14 @@ function AddMemberModal({
 }
 
 function LeaveModal({
-  member, today, onClose, onApply, onClear,
+  member, today, note, canClear, onClose, onApply, onClear,
 }: {
   member: Member;
   today: string;
+  /** 지금 인원 정보가 아니라 지난 기록 기준 휴직을 보여줄 때 그 사실 */
+  note?: string;
+  /** 완전 해제 버튼 — 지금 인원 정보에 휴직이 있을 때만 의미가 있다 */
+  canClear: boolean;
   onClose: () => void;
   onApply: (from: string, to: string | null) => Promise<void>;
   onClear: () => Promise<void>;
@@ -771,6 +877,22 @@ function LeaveModal({
   const [from, setFrom] = useState(member.leaveFrom || today);
   const [to, setTo] = useState(member.leaveTo || '');
   const [saving, setSaving] = useState(false);
+  // 복직일 = 다시 출근하는 첫날. 그 전날까지 휴직, 그날부터 해제. 기본값은 지금 보고 있는 날짜
+  const [back, setBack] = useState(today);
+  const backTo = back ? shiftDate(back, -1) : '';
+  const backInvalid = !back || !member.leaveFrom || back <= member.leaveFrom;
+
+  const applyBack = async () => {
+    if (!member.leaveFrom || !back) return;
+    if (back <= member.leaveFrom) {
+      alert(`복직일이 휴직 시작일(${member.leaveFrom}) 이후여야 합니다.`);
+      return;
+    }
+    if (!confirm(`'${member.name}' 복직 처리\n\n· ${member.leaveFrom} ~ ${backTo} : 휴직\n· ${back} 부터 : 출근 (휴직 해제)\n\n지난 날짜 기록도 이 기준으로 함께 고칩니다. 진행할까요?`)) return;
+    setSaving(true);
+    try { await onApply(member.leaveFrom, backTo); }
+    finally { setSaving(false); }
+  };
 
   const apply = async () => {
     if (!from) return;
@@ -781,7 +903,7 @@ function LeaveModal({
   };
 
   const clear = async () => {
-    if (!confirm(`'${member.name}'의 휴직을 완전히 해제할까요?`)) return;
+    if (!confirm(`'${member.name}'의 휴직을 완전히 해제할까요?\n\n지난 날짜 기록은 그대로 둡니다 (${todayKey()} 부터 휴직 아님).\n지난 날짜부터 복직으로 바꾸려면 「복직 처리」 를 쓰세요.`)) return;
     setSaving(true);
     try { await onClear(); }
     finally { setSaving(false); }
@@ -795,18 +917,41 @@ function LeaveModal({
             <h3 className="font-bold text-gray-800 flex items-center gap-2">💼 휴직 관리</h3>
             <div className="text-xs text-gray-500 mt-0.5">{member.name}{member.dept && ` · ${member.dept}`}</div>
           </div>
-          <button onClick={onClose} className="w-7 h-7 rounded-full hover:bg-gray-200 text-gray-500">×</button>
+          <button onClick={onClose} disabled={saving} className="w-7 h-7 rounded-full hover:bg-gray-200 text-gray-500 disabled:opacity-30">×</button>
         </div>
         <div className="p-5 space-y-4">
+          {note && (
+            <div className="px-3 py-2 bg-amber-50 border border-amber-300 rounded text-xs text-amber-900">ⓘ {note}</div>
+          )}
           {isOn ? (
             <div className="px-3 py-2 bg-zinc-100 border border-zinc-300 rounded text-sm text-zinc-700">
-              현재 <b>휴직 중</b> ({member.leaveFrom}{member.leaveTo ? ` ~ ${member.leaveTo}` : ' ~ 현재'})
+              {note ? '' : '현재 '}<b>휴직 중</b> ({member.leaveFrom}{member.leaveTo ? ` ~ ${member.leaveTo}` : ' ~ 현재'})
             </div>
           ) : (
             <div className="px-3 py-2 bg-emerald-50 border border-emerald-200 rounded text-sm text-emerald-700">
               현재 휴직 상태가 아닙니다
             </div>
           )}
+          {member.leaveFrom && (
+            <div className="border-2 border-emerald-300 bg-emerald-50 rounded-lg p-3 space-y-2">
+              <div className="text-sm font-bold text-emerald-900">✅ 복직 처리 <span className="font-normal text-emerald-800 text-xs">— 늦게 알았어도 지난 날짜까지 소급됩니다</span></div>
+              <div className="flex items-end gap-2">
+                <div className="flex-1">
+                  <label className="block text-xs font-medium text-emerald-800 mb-1">복직일 (이날부터 출근)</label>
+                  <input type="date" value={back} onChange={(e) => setBack(e.target.value)}
+                    className="w-full border rounded-md px-3 py-2 text-sm bg-white" />
+                </div>
+                <button onClick={applyBack} disabled={saving || backInvalid}
+                  className="px-4 py-2 bg-emerald-600 text-white rounded font-bold hover:bg-emerald-700 disabled:bg-gray-300">{saving ? '고치는 중…' : '복직 처리'}</button>
+              </div>
+              <div className="text-[11px] text-emerald-800 leading-relaxed">
+                {backInvalid
+                  ? (back && member.leaveFrom ? `복직일은 휴직 시작일(${member.leaveFrom}) 이후여야 합니다.` : '복직일을 고르세요.')
+                  : <>· <b>{member.leaveFrom} ~ {backTo}</b> 휴직 · <b>{back}</b>부터 출근으로 바뀝니다.</>}
+              </div>
+            </div>
+          )}
+          <div className="text-[11px] font-semibold text-gray-500 pt-1">휴직 기간 직접 수정</div>
           <div className="grid grid-cols-2 gap-3">
             <div>
               <label className="block text-xs font-medium text-gray-600 mb-1">휴직 시작일</label>
@@ -830,18 +975,19 @@ function LeaveModal({
           <p className="text-[11px] text-gray-500 leading-relaxed">
             · 종료일을 비우면 무기한 휴직으로 등록됩니다.<br />
             · 등록 후 해당 기간 동안 출근/연차/휴무 카운트에서 자동으로 제외됩니다.<br />
-            · 종료일을 설정하면 그날까지(포함) 휴직으로 처리되고 다음 날부터 자동 복귀합니다.
+            · 종료일을 설정하면 그날까지(포함) 휴직으로 처리되고 다음 날부터 자동 복귀합니다.<br />
+            · 지난 날짜를 바꿔도 됩니다 — 휴직 여부가 달라지는 지난 날짜 기록도 함께 고칩니다.
           </p>
         </div>
         <div className="px-5 py-3 border-t bg-slate-50 flex items-center gap-2">
-          {isOn && (
+          {isOn && canClear && (
             <button
               onClick={clear}
               disabled={saving}
               className="px-3 py-2 border border-red-300 text-red-700 rounded text-sm font-medium hover:bg-red-50 disabled:opacity-50"
             >완전 해제</button>
           )}
-          <button onClick={onClose} className="ml-auto px-3 py-2 border rounded text-sm font-medium hover:bg-gray-100">취소</button>
+          <button onClick={onClose} disabled={saving} className="ml-auto px-3 py-2 border rounded text-sm font-medium hover:bg-gray-100 disabled:opacity-40">취소</button>
           <button
             onClick={apply}
             disabled={saving || !from}

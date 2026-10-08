@@ -9,6 +9,48 @@ export function isOnLeave(m: Member, date: string): boolean {
   return true;
 }
 
+/** 휴직 소급 수정 계획 — 지난 날짜 스냅샷의 이 사람 항목을 고칠지, 인원 문서도 바꿀지 정한다 (순수 함수, 테스트용으로 분리).
+ *
+ *  '같은 휴직' 은 시작일이 똑같은지가 아니라 **기간이 겹치는지**로 본다 (시작일을 한 번 고친 뒤에도 같은 휴직으로 인식되게).
+ *  · base: 지금 고치는 휴직 (화면에 보이는 그 휴직)
+ *  · base 와 안 겹치는 새 기간이면 '새 휴직' — 기존 휴직 기간에 속한 날은 건드리지 않는다 (앞이든 뒤든)
+ *  · 그날이 편집 범위와 안 겹치는 '다른 휴직' 기간이면 보호
+ *  · 휴직 여부가 바뀌는 날 + 같은 휴직인데 기간 표기만 옛날 것인 날을 고친다 (카드에 옛 기간이 남지 않게)
+ *  · 인원 문서(지금 휴직 정보)는 그 사람의 현재 휴직과 관계있을 때만 바꾼다
+ *    — 지난 날짜의 다른(옛) 휴직을 고치거나, 현재 휴직보다 앞선 옛 휴직을 끼워 넣을 때는 지난 기록만 고친다 */
+type Period = { leaveFrom?: string | null; leaveTo?: string | null };
+const hasP = (p?: Period | null): p is Period => !!(p && p.leaveFrom);
+export const periodsOverlap = (a?: Period | null, b?: Period | null) =>
+  hasP(a) && hasP(b) && a.leaveFrom! <= (b.leaveTo || '9999-12-31') && b.leaveFrom! <= (a.leaveTo || '9999-12-31');
+
+export function leaveRetroPlan(
+  base: Period, leaveFrom: string | null, leaveTo: string | null, live?: Period | null,
+): { scanFrom: string | null; writeMembers: boolean; newPeriod: boolean; shouldPatch: (cur: Period, date: string) => boolean } {
+  const N: Period = { leaveFrom: leaveFrom || null, leaveTo: leaveTo || null };
+  const newPeriod = hasP(base) && hasP(N) && !periodsOverlap(base, N);
+  const scope = (newPeriod ? [N] : [base, N]).filter(hasP);
+  const starts = scope.map((x) => x.leaveFrom!).sort();
+  const asM = (p: Period) => ({ leaveFrom: p.leaveFrom || undefined, leaveTo: p.leaveTo || undefined }) as Member;
+  const writeMembers = !hasP(live)
+    || periodsOverlap(live, N)
+    || (periodsOverlap(live, base) && !(newPeriod && !!N.leaveTo && N.leaveTo < live!.leaveFrom!));
+  return {
+    scanFrom: starts[0] || null,
+    writeMembers,
+    newPeriod,
+    shouldPatch: (cur, date) => {
+      const curP: Period = { leaveFrom: cur.leaveFrom || null, leaveTo: cur.leaveTo || null };
+      const curOn = isOnLeave(asM(curP), date);
+      const nextOn = isOnLeave(asM(N), date);
+      const same = scope.some((x) => periodsOverlap(curP, x));
+      if (curOn && !same) return false;                       // 다른 휴직 기간인 날 — 보호
+      if (curOn !== nextOn) return true;                      // 휴직 여부가 바뀌는 날
+      // 같은 휴직으로 휴직 중인 날인데 기간 표기만 옛것 — 카드에 보이는 기간도 맞춘다 (휴직 아닌 날은 표기가 안 보이므로 안 씀)
+      return curOn && same && (curP.leaveFrom !== N.leaveFrom || (curP.leaveTo || null) !== (N.leaveTo || null));
+    },
+  };
+}
+
 /** 레코드에서 statuses 배열로 정규화 (구/신 버전 모두 지원) */
 export function getStatuses(record?: AttendanceRecord): AttendanceStatus[] {
   if (!record) return [];
