@@ -120,7 +120,8 @@ export default function ProductionMonthlyPanel() {
           <div className="flex items-center gap-3 flex-wrap text-sm">
             <span><b>{rowsAgg.length}</b>품목 · 합계 <b>{docPreview.total.toLocaleString()}</b>개</span>
             <span className="text-gray-500">냉장 {Object.keys(docPreview.cold).length} · 실온 {Object.keys(docPreview.ambient).length}</span>
-            {unmatched.length > 0
+            {!coldKeys ? <span className="text-gray-500">레시피 연결 확인 중… (몇 초 걸립니다)</span>
+              : unmatched.length > 0
               ? <span className="text-rose-700 font-bold">레시피 없음 {unmatched.length}품목 ({unmatchedQty.toLocaleString()}개) — 표준소요에서 빠집니다</span>
               : coldKeys && <span className="text-emerald-700 font-bold">✔ 전 품목 레시피 연결됨</span>}
             <button onClick={save} disabled={busy}
