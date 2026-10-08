@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { addDoc, collection, deleteDoc, doc, getDoc, onSnapshot, runTransaction, setDoc, updateDoc } from 'firebase/firestore';
+import { addDoc, collection, deleteDoc, doc, getDoc, onSnapshot, setDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
 import { loadViewDate, saveViewDate } from '../lib/viewDate';
@@ -333,47 +333,55 @@ export default function Attendance() {
    *     고치는 대상은 「지금 고치는 그 휴직」(base) 으로 표시된 날과, 휴직이 없던 날뿐이다.
    *     다른 휴직으로 기록된 날은 절대 건드리지 않는다.
    *   · 끝난 휴직 뒤에 새 휴직을 등록하는 경우(새 시작일 > 예전 종료일)는 예전 휴직을 고치는 게 아니다 → 예전 기간은 그대로.
-   *   · 휴직 여부가 실제로 바뀌는 날만 쓴다. 날짜마다 트랜잭션 — 같은 날 다른 사람 수정과 겹쳐도 덮어쓰지 않는다.
+   *   · 휴직 여부가 실제로 바뀌는 날만 쓴다 (복직일 전 휴직 날은 손대지 않는다). 나머지 날은 읽기만 한다.
    *   · 스냅샷을 먼저 고치고 인원 문서를 마지막에 바꾼다 — 중간에 끊기면 같은 버튼으로 다시 하면 된다. */
   const setLeaveRetro = async (m: Member, base: { leaveFrom?: string | null; leaveTo?: string | null },
-    leaveFrom: string | null, leaveTo: string | null): Promise<{ patched: number; failed: string[]; membersWritten: boolean }> => {
+    leaveFrom: string | null, leaveTo: string | null): Promise<{ patched: number; failed: string[]; membersWritten: boolean; quota: boolean }> => {
     const today = todayKey();
     const live = members.find((x) => x.id === m.id);
     const plan = leaveRetroPlan(base, leaveFrom, leaveTo, live ? { leaveFrom: live.leaveFrom, leaveTo: live.leaveTo } : null);
     const failed: string[] = [];
+    const errors: unknown[] = [];
     let patched = 0;
     if (plan.scanFrom && plan.scanFrom < today) {
       const floor = shiftDate(today, -400);                // 너무 먼 과거까지 읽지 않게
       const dates: string[] = [];
       for (let d = plan.scanFrom < floor ? floor : plan.scanFrom; d < today; d = shiftDate(d, 1)) dates.push(d);
-      for (let i = 0; i < dates.length; i += 30) {
-        const res = await Promise.allSettled(dates.slice(i, i + 30).map((d) =>
-          runTransaction(db, async (tx) => {
-            const ref = doc(db, 'attendanceSnapshot', d);
-            const snap = await tx.get(ref);
-            if (!snap.exists()) return false;              // 스냅샷 없는 날은 지금 인원 정보를 그대로 쓰므로 고칠 필요 없음
-            const data = snap.data() as { members?: Member[] };
-            if (!Array.isArray(data.members)) return false;
-            const idx = data.members.findIndex((x) => x.id === m.id);
-            if (idx < 0) return false;
-            const cur = data.members[idx];
-            if (!plan.shouldPatch(cur, d)) return false;   // 다른 휴직이거나, 그날 휴직 여부가 그대로면 안 고침
-            const ms = data.members.slice();
-            ms[idx] = { ...cur, leaveFrom: (leaveFrom || null) as any, leaveTo: (leaveTo || null) as any };
-            tx.update(ref, { members: ms, leaveFixedAt: new Date().toISOString() });
-            return true;
-          })));
+      // 1) 읽기만 해서 바꿀 날을 고른다 (대부분의 날은 그대로라 쓰지 않는다)
+      const toPatch: { d: string; ms: Member[] }[] = [];
+      for (let i = 0; i < dates.length; i += 40) {
+        const res = await Promise.allSettled(dates.slice(i, i + 40).map(async (d) => {
+          const snap = await getDoc(doc(db, 'attendanceSnapshot', d));
+          if (!snap.exists()) return null;                 // 스냅샷 없는 날은 지금 인원 정보를 그대로 쓰므로 고칠 필요 없음
+          const data = snap.data() as { members?: Member[] };
+          if (!Array.isArray(data.members)) return null;
+          const idx = data.members.findIndex((x) => x.id === m.id);
+          if (idx < 0 || !plan.shouldPatch(data.members[idx], d)) return null;   // 다른 휴직이거나 휴직 여부가 그대로
+          const ms = data.members.slice();
+          ms[idx] = { ...ms[idx], leaveFrom: (leaveFrom || null) as any, leaveTo: (leaveTo || null) as any };
+          return { d, ms };
+        }));
         res.forEach((r, k) => {
-          if (r.status === 'fulfilled') { if (r.value) patched++; }
-          else failed.push(dates[i + k]);
+          if (r.status === 'rejected') { failed.push(dates[i + k]); errors.push(r.reason); }
+          else if (r.value) toPatch.push(r.value);
         });
       }
+      // 2) 바뀌는 날만 쓴다 (트랜잭션은 이 프로젝트에서 한도 오류가 나서 일반 쓰기 — 이 사람 항목만 바꾼 배열)
+      // 연결이 끊기면 쓰기가 응답 없이 기다리므로 20초 넘으면 실패로 본다 (계속 '고치는 중' 으로 멈추지 않게)
+      const within = <T,>(p: Promise<T>) => Promise.race([p, new Promise<T>((_, rej) => setTimeout(() => rej(new Error('응답 없음(20초)')), 20_000))]);
+      const wr = await Promise.allSettled(toPatch.map((x) =>
+        within(updateDoc(doc(db, 'attendanceSnapshot', x.d), { members: x.ms, leaveFixedAt: new Date().toISOString() }))));
+      wr.forEach((r, k) => {
+        if (r.status === 'fulfilled') patched++;
+        else { failed.push(toPatch[k].d); errors.push(r.reason); }
+      });
     }
     // 다 고쳐졌을 때만 인원 문서 확정. 지난 날짜의 옛 휴직을 고치는 경우엔 현재 휴직 정보는 그대로 둔다
     const membersWritten = failed.length === 0 && plan.writeMembers;
     if (membersWritten) await setLeaveForward(m, leaveFrom, leaveTo);
     if (patched > 0) setSnapTick((t) => t + 1);
-    return { patched, failed, membersWritten };
+    const quota = errors.some((e: any) => String(e?.code || e?.message || e).includes('resource-exhausted') || String(e).includes('Quota'));
+    return { patched, failed, membersWritten, quota };
   };
 
   const isToday = date === todayKey();
@@ -651,11 +659,15 @@ export default function Attendance() {
                   `지금 인원 정보에서는 휴직이 이미 해제돼 있습니다.\n`
                   + `종료일이 ${to || '무기한'} 이라 ${t}(오늘)부터 다시 휴직으로 바뀝니다.\n\n`
                   + `지난 날짜만 고치려면 종료일을 ${shiftDate(t, -1)} 이전으로 하거나 「복직 처리」를 쓰세요.\n진행할까요?`)) return;
-                let r: { patched: number; failed: string[]; membersWritten: boolean };
+                let r: { patched: number; failed: string[]; membersWritten: boolean; quota: boolean };
                 try {
                   r = await setLeaveRetro(shown, { leaveFrom: base.leaveFrom, leaveTo: base.leaveTo }, from, to);
                 } catch (e: any) {
                   alert(`저장 실패: ${e?.message || e}\n인터넷 연결을 확인하고 다시 눌러 주세요.`);
+                  return;
+                }
+                if (r.failed.length > 0 && r.quota) {
+                  alert(`⚠ Firestore 하루 사용량 한도에 걸려 지난 날짜 ${r.failed.length}일을 고치지 못했습니다.\n한도는 매일 오후 4시(한국시간)쯤 풀립니다. 그 뒤에 같은 버튼을 다시 눌러 주세요. (인원 정보는 아직 안 바꿨습니다)`);
                   return;
                 }
                 if (r.failed.length > 0) {

@@ -44,9 +44,8 @@ export function leaveRetroPlan(
       const nextOn = isOnLeave(asM(N), date);
       const same = scope.some((x) => periodsOverlap(curP, x));
       if (curOn && !same) return false;                       // 다른 휴직 기간인 날 — 보호
-      if (curOn !== nextOn) return true;                      // 휴직 여부가 바뀌는 날
-      // 같은 휴직으로 휴직 중인 날인데 기간 표기만 옛것 — 카드에 보이는 기간도 맞춘다 (휴직 아닌 날은 표기가 안 보이므로 안 씀)
-      return curOn && same && (curP.leaveFrom !== N.leaveFrom || (curP.leaveTo || null) !== (N.leaveTo || null));
+      // 휴직 여부가 실제로 바뀌는 날만 고친다 (복직일 10-06 이면 10-06 부터만 — 그 전 휴직 날은 손대지 않는다)
+      return curOn !== nextOn;
     },
   };
 }
