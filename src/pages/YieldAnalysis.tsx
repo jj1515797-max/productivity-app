@@ -22,6 +22,8 @@ import { computeMonthlyUsage } from '../lib/materialUsage';
 import type { UsageContrib } from '../lib/materialUsage';
 import { addAuditSheet, addEvidenceSheet, addGuideSheet } from '../lib/yieldWorkbookExtras';
 import { computeMonthlyProduction } from '../lib/monthlyProduction';
+import { PM_COL, toRawMonth } from '../lib/productionMonthly';
+import type { ProductionMonthlyDoc } from '../lib/productionMonthly';
 import { expandAmbientRecipeMap, expandRecipeMap } from '../lib/bomExpansion';
 
 const EXCLUDE_DEFAULT = ['정제수'];
@@ -134,6 +136,12 @@ async function fetchMonth(month: string): Promise<RawMonth> {
     if (!data.machine) return;
     entries.push(data);
   });
+  // 앱 생산 데이터가 하나도 없는 달(앱 도입 전)만 — 설정 › 월별 생산수량에 넣어 둔 마감 수량을 쓴다.
+  // 앱 데이터가 있는 달은 지금과 똑같이 앱 데이터만 쓴다.
+  if (entries.length === 0 && its.empty && amb.empty && Object.keys(log.byDay).length === 0) {
+    const pm = await getDoc(doc(db, PM_COL, month)).catch(() => null);
+    if (pm?.exists()) return toRawMonth(pm.data() as ProductionMonthlyDoc) as RawMonth;
+  }
   return {
     entries,
     items: its.docs.map((d) => d.data() as Item),
@@ -159,7 +167,9 @@ async function stdForMonth(
   force: boolean,
   srcTag: string,
 ): Promise<MonthStd> {
-  const ck = `${srcTag}:${month}`;
+  // 월별 생산수량을 새로 넣거나 고치면 그 달 캐시가 저절로 무효가 되게 (앱 데이터 달은 키가 그대로)
+  const pmVer = await getDoc(doc(db, PM_COL, month)).then((x) => (x.exists() ? String((x.data() as ProductionMonthlyDoc).updatedAt || '') : '')).catch(() => '');
+  const ck = pmVer ? `${srcTag}:${month}:pm${pmVer}` : `${srcTag}:${month}`;
   if (!force) {
     const c = readCache(ck, month);
     if (c) return c;

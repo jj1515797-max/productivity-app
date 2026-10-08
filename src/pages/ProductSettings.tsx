@@ -14,6 +14,7 @@ import { canonicalShort, convertErpCode } from '../lib/codeUtil';
 import { CODE_KEY_PREFIX, normalizeCode, normalizeMaterialName } from '../lib/wasteCompute';
 import type { NotifySettings } from '../lib/productionNotify';
 import ProductBarcodePanel from '../components/ProductBarcodePanel';
+import ProductionMonthlyPanel from '../components/ProductionMonthlyPanel';
 
 type ProdType = '냄비' | '바트';
 
@@ -43,6 +44,7 @@ export default function ProductSettings() {
   const [showBackup, setShowBackup] = useState(false);
   const [showMatInput, setShowMatInput] = useState(false);
   const [showBarcode, setShowBarcode] = useState(false);
+  const [showProdMonthly, setShowProdMonthly] = useState(false);
   const [barcodeCount, setBarcodeCount] = useState<number | null>(null);
   // 원재료분석용 DB (수율 분석 전용 — 배합비 % 기반, 현장 BOM 과 분리)
   const [showYieldRecipe, setShowYieldRecipe] = useState(false);
@@ -510,6 +512,17 @@ export default function ProductSettings() {
         onToggle={() => setShowBackup(!showBackup)}
       >
         {showBackup && <DbBackupPanel />}
+      </Section>
+
+      {/* 월별 생산수량 (원재료수율 분석용) — 맨 아래 */}
+      <Section
+        icon="📅"
+        title="월별 생산수량 (원재료수율 분석용)"
+        badge=""
+        open={showProdMonthly}
+        onToggle={() => setShowProdMonthly(!showProdMonthly)}
+      >
+        {showProdMonthly && <ProductionMonthlyPanel />}
       </Section>
 
       {/* 일괄 입력 모달 */}
