@@ -80,6 +80,8 @@ export interface DecompCtx {
 
 const LO = 0.2;
 const HI = 2.0;
+/** 이만큼(비율) 넘게 수율이 바뀐 원재료는 레시피 변경·입력 오류일 수 있어 따로 표시한다 */
+const SWING = 0.3;
 
 /** 상태 문구 — 시트 수식과 TS 정렬 계산이 같은 문자열을 쓴다 */
 function statusLabels(monthA: string, monthB: string) {
@@ -208,6 +210,7 @@ export function addDecompSheets(wb: ExcelJS.Workbook, ctx: DecompCtx): void {
     { header: `${monthB} 단가 출처`, width: 16 },
     { header: `${monthA} 다른 달 단가분`, width: 12 },
     { header: `${monthB} 다른 달 단가분`, width: 12 },
+    { header: '확인 필요', width: 22 },
   ];
   styleHeader(wsM, 1, 'FF833C0B');
   mats.forEach((m, i) => {
@@ -253,6 +256,8 @@ export function addDecompSheets(wb: ExcelJS.Workbook, ctx: DecompCtx): void {
       { formula: `IFERROR(${priceCol('S', R)},"")` },
       { formula: `IF(RIGHT(${c('Y')},2)="대체",${c('O')},0)` },
       { formula: `IF(RIGHT(${c('AB')},2)="대체",${c('P')},0)` },
+      // 두 달 다 '지금' 레시피로 표준을 잡으므로 배합을 실제로 바꾼 원재료는 그 차이가 수율로 보인다 — 크게 뛴 것은 표시
+      { formula: `IF(AND(ISNUMBER(${c('K')}),ABS(N(${c('K')}))>${SWING}),"수율 ${SWING * 100}%p 넘게 변함 — 레시피 변경·입력 확인","")` },
     ]);
     [5, 6, 7, 8].forEach((x) => { row.getCell(x).numFmt = WON; });
     [7, 8].forEach((x) => { row.getCell(x).fill = INPUT_FILL; });
@@ -264,11 +269,12 @@ export function addDecompSheets(wb: ExcelJS.Workbook, ctx: DecompCtx): void {
     row.getCell(24).numFmt = '+#,##0.0;-#,##0.0;0';
     [12, 25, 26, 27, 28].forEach((x) => { row.getCell(x).alignment = { horizontal: 'center' }; });
     [29, 30].forEach((x) => { row.getCell(x).numFmt = WON; row.getCell(x).font = { size: 9, color: { argb: 'FF808080' } }; });
+    row.getCell(31).font = { size: 9, bold: true, color: { argb: 'FFB45309' } };
     row.getCell(20).font = { bold: true };
     [17, 18, 22, 23, 26, 27].forEach((x) => { row.getCell(x).font = { size: 9, color: { argb: 'FF808080' } }; });
   });
   wsM.views = [{ state: 'frozen', xSplit: 3, ySplit: 1 }];
-  if (mats.length > 0) wsM.autoFilter = { from: 'A1', to: `AD${dLast}` };
+  if (mats.length > 0) wsM.autoFilter = { from: 'A1', to: `AE${dLast}` };
 
   /* ================= 제품별구성 ================= */
   const wsP = wb.addWorksheet(PROD_SHEET);
@@ -470,13 +476,15 @@ export function addDecompSheets(wb: ExcelJS.Workbook, ctx: DecompCtx): void {
   note(30, 6, '원재료가 많이(비싸게) 드는 제품을 생산량 비율보다 더 만들면 +, 덜 드는 제품 위주면 −. 제품별은 「제품별구성」 시트.', 30);
   label(31, '④ 수율');
   f(31, 2, `SUM(${MR('T')})`, SG, true); f(31, 3, sumIf('T', '<0'), SG); f(31, 4, sumIf('T', '>0'), SG); pp(31);
-  note(31, 6, `${monthB} 표준소요를 ${monthA} 수율로 만들었을 때보다 덜 쓰면 −(절감), 더 쓰면 +. 금액은 ${monthB} 단가.`, 30);
+  const swingAmt = `(SUMIFS(${MR('T')},${MR('K')},">${SWING}")+SUMIFS(${MR('T')},${MR('K')},"<-${SWING}"))`;
+  note(31, 6, { formula: `"${monthB} 표준소요를 ${monthA} 수율로 만들었을 때보다 덜 쓰면 −(절감), 더 쓰면 +. 금액은 ${monthB} 단가. "`
+    + `&IF(ABS(N(${swingAmt}))>=1,"그중 수율이 ${SWING * 100}%p 넘게 바뀐 원재료 몫 "&${sTxt(swingAmt, '#,##0')}&"원 — 레시피(개당 g)를 바꿨거나 입력 오류일 수 있으니 원재료별분해 AE열을 확인하세요.","")` }, 42);
   label(32, '⑤ 기타 (수율 비교 불가 원재료)');
   f(32, 2, `SUM(${MR('U')})`, SG, true); f(32, 3, sumIf('U', '<0'), SG); f(32, 4, sumIf('U', '>0'), SG); pp(32);
   note(32, 6, '실투입 없음 · 수율 범위 밖 · 레시피 밖 원재료. 크면 원재료별분해 L열(상태)을 보세요.');
   label(33, '합계 (= B월 − A월 원재료비)', { bold: true });
   f(33, 2, 'N(B28)+N(B29)+B30+B31+B32', SG, true);
-  pp(33);
+  cell(33, 5).value = '→ 45행'; cell(33, 5).font = NOTE; cell(33, 5).alignment = { horizontal: 'center' };
   label(34, '검산 (합계 − 실제 증감)', { indent: true });
   f(34, 2, 'B33-(C19-B19)', '#,##0.00');
   note(34, 3, { formula: 'IF(ABS(B34)<1,"✔ 다섯 몫의 합이 실제 증감과 딱 맞습니다.","⚠ 어긋납니다 — 생산량(12행)이 0 인 달이 있는지 보세요.")' });
@@ -522,7 +530,7 @@ export function addDecompSheets(wb: ExcelJS.Workbook, ctx: DecompCtx): void {
       + `"원재료비율 "&TEXT(B20,"0.00%")&" → "&TEXT(C20,"0.00%")&" ("&${ppT('D20')}&"). "`
       + `&"수율 "&${ppT('B43')}&" · 제품 구성 "&IF(B46="",${ppT('B42')}&"(원재료 쪽)",${ppT('B46')})&" · 원재료 단가 "&${ppT('B41')}&" · "&IF(B39="","개당 생산금액 "&${ppT('B38')},"판가·기타 "&${ppT('B40')})&" · 기타 "&${ppT('B44')})`,
     `"원재료비 "&TEXT(B19,"#,##0")&" → "&TEXT(C19,"#,##0")&" 원 ("&${won('C19-B19')}&"). 물량 "&${won('N(B28)')}&" · 단가 "&${won('N(B29)')}&" · 제품 구성 "&${won('B30')}&" · 수율 "&${won('B31')}&" · 기타 "&${won('B32')}`,
-    `"수율: 좋아진 원재료 "&${won('C31')}&" + 나빠진 원재료 "&${won('D31')}&" = "&${won('B31')}&" 원.  제품 구성: 유리 "&${won('C30')}&" + 불리 "&${won('D30')}&" = "&${won('B30')}&" 원."`,
+    `"수율: 좋아진 원재료 "&${won('C31')}&" + 나빠진 원재료 "&${won('D31')}&" = "&${won('B31')}&" 원"&IF(ABS(N(${swingAmt}))>=1," (그중 수율 ${SWING * 100}%p 넘게 바뀐 원재료 "&${won(swingAmt)}&" — 레시피 변경 확인)","")&".  제품 구성: 유리 "&${won('C30')}&" + 불리 "&${won('D30')}&" = "&${won('B30')}&" 원."`,
     `IF(AND(B8="내 숫자",OR(N(B7)>0,N(C7)>0)),"ℹ 단가 효과(②)는 7행 내 숫자로 역산한 값입니다 — 계산값과 포함 원재료 범위가 다르면 그 차이도 ② 에 들어 있습니다(18행 차이율 확인).",`
       + `IF(N(B16)>=0.5,"⚠ ${monthA} 단가가 없어 원재료비의 "&TEXT(B16,"0%")&"를 다른 달(${monthB}) 단가로 계산했습니다 — 단가 효과는 그만큼 0 으로 잡힙니다.",`
       + `IF(AND(N(C19-B19)<>0,ABS(N(B32))>ABS(N(C19-B19))*0.3),"⚠ 기타(수율 비교 불가)가 큽니다 — 원재료별분해 L열에서 실투입 없음·범위 밖 원재료를 확인하세요.","")))`,
@@ -612,7 +620,7 @@ export function addDecompSheets(wb: ExcelJS.Workbook, ctx: DecompCtx): void {
     '  ⓐ          = A월 원재료비율 × (k × A월 생산금액 − B월 생산금액) ÷ B월 생산금액',
     '■ 읽을 때 주의',
     '  · 원재료 수율은 계절을 많이 타므로 성과를 볼 때는 전년 동월끼리 비교하세요. 단, 추석 위치(2025년 10월 · 2026년 9월)처럼 달력이 다르면 월말 투입 이월이 섞일 수 있습니다.',
-    '  · 표준소요는 두 달 모두 「지금」 레시피로 계산합니다. 레시피를 고친 효과는 수율로 잡히지 않습니다.',
+    '  · 표준소요는 두 달 모두 「지금」 레시피로 계산합니다. 그래서 두 달 사이에 배합(개당 g)을 실제로 바꾼 원재료는 그 차이가 ④ 수율로 나옵니다(일부 제품만 바꿨으면 ③ 제품 구성에도 섞임). 수율이 크게 뛴 원재료(원재료별분해 AE열)는 레시피 변경 이력과 맞춰 보세요.',
     '  · 레시피가 없는 제품(생산량 시트 F열 "없음")은 표준소요 0 이라 그 제품 원재료는 ④ 가 아니라 ⑤ 기타·수율 악화로 보일 수 있습니다.',
     `  · 노란칸(실투입 · 단가 · 생산량)을 고치면 전부 다시 계산됩니다. ${monthA} 단가는 단가 시트 D열에 넣으세요.`,
   ].forEach((g) => {

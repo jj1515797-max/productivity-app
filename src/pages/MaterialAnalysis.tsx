@@ -22,17 +22,33 @@ import type { CategoryDoc } from '../lib/materialCategory';
 const PREFIX = 'matAnalysis:';
 const TTL_PAST = 30 * 24 * 60 * 60 * 1000;
 const TTL_CURRENT = 5 * 60 * 1000;
-function getCache<T>(key: string, ttl: number): T | null {
+/** month 를 주면 '그 달이 끝나기 전에 저장한 캐시'는 버린다 — 진행 중이던 달의 부분 데이터가 달이 바뀐 뒤 30일짜리로 굳지 않게 */
+function getCache<T>(key: string, ttl: number, month?: string): T | null {
   try {
     const raw = localStorage.getItem(PREFIX + key);
     if (!raw) return null;
     const p = JSON.parse(raw) as { ts: number; data: T };
-    if (Date.now() - p.ts > ttl) return null;
+    let stale = Date.now() - p.ts > ttl;
+    if (month) {
+      const [y, m] = month.split('-').map(Number);
+      const end = new Date(y, m, 1).getTime();   // 다음 달 1일 0시
+      if (Date.now() >= end && p.ts < end) stale = true;   // 그 달이 끝났는데 끝나기 전에 저장한 것
+    }
+    if (stale) { localStorage.removeItem(PREFIX + key); return null; }
     return p.data;
   } catch { return null; }
 }
-function setCache<T>(key: string, data: T) {
-  try { localStorage.setItem(PREFIX + key, JSON.stringify({ ts: Date.now(), data })); } catch {}
+function setCache<T>(key: string, data: T, keep: string[] = []) {
+  const v = JSON.stringify({ ts: Date.now(), data });
+  try { localStorage.setItem(PREFIX + key, v); } catch {
+    // 한 달 원자료가 1MB 가 넘어 용량이 차기 쉽다 — 지금 쓰는 달 말고 다른 달 캐시를 지우고 한 번 더
+    try {
+      Object.keys(localStorage)
+        .filter((k) => k.startsWith(PREFIX + 'raw') && !keep.some((x) => k === PREFIX + x))
+        .forEach((k) => localStorage.removeItem(k));
+      localStorage.setItem(PREFIX + key, v);
+    } catch { /* 그래도 안 되면 캐시 없이 */ }
+  }
 }
 function clearAllCache() {
   try { Object.keys(localStorage).forEach((k) => { if (k.startsWith(PREFIX)) localStorage.removeItem(k); }); } catch {}
@@ -171,6 +187,10 @@ export default function MaterialAnalysis() {
     } catch {}
     return unsub;
   }, []);
+  // 캐시 키를 raw3 로 올리면서 더는 안 읽는 옛 raw2 를 지운다 (한 달 1MB 넘어 용량을 막는다)
+  useEffect(() => {
+    try { Object.keys(localStorage).filter((k) => k.startsWith(PREFIX + 'raw2:')).forEach((k) => localStorage.removeItem(k)); } catch {}
+  }, []);
   const [expandStages, setExpandStages] = useState<Record<string, boolean>>({});
   const [err, setErr] = useState<string | null>(null);
 
@@ -278,9 +298,10 @@ export default function MaterialAnalysis() {
     setRunning(true); setErr(null);
     try {
       const fetchOrCache = async (m: string): Promise<RawMonth> => {
-        const ttl = m === tm ? TTL_CURRENT : TTL_PAST;
+        // 지난달도 월초 정정이 잦아 짧게 둔다 (원재료수율 화면과 같은 규칙)
+        const ttl = m >= shiftMonth(tm, -1) ? TTL_CURRENT : TTL_PAST;
         if (!bustCache) {
-          const c = getCache<RawMonth>(`raw3:${m}`, ttl);
+          const c = getCache<RawMonth>(`raw3:${m}`, ttl, m);
           // 월별 생산수량으로 채운 달은 그 문서가 바뀌었으면 다시 읽는다. 빈 달도 나중에 수량을 넣었을 수 있으니 다시 읽는다.
           const empty = c && c.entries.length === 0 && c.items.length === 0 && c.ambient.length === 0 && Object.keys(c.logistics).length === 0;
           let stale = !!empty;
@@ -291,7 +312,7 @@ export default function MaterialAnalysis() {
           if (c && !stale) return c;
         }
         const r = await fetchMonth(m);
-        setCache(`raw3:${m}`, r);
+        setCache(`raw3:${m}`, r, [`raw3:${monthA}`, `raw3:${monthB}`]);
         return r;
       };
       const [aRaw, bRaw] = await Promise.all([fetchOrCache(monthA), fetchOrCache(monthB)]);
@@ -618,7 +639,7 @@ export default function MaterialAnalysis() {
         return { code, name: priceNameByCode.get(CODE_KEY_PREFIX + code) || r.name, matchName: r.name };
       };
       const appTotalA = resA.rows.reduce((s2, r) => s2 + r.grams * (res.lookup(monthA, ref(r)) ?? res.bApplied(ref(r)).price), 0);
-      const appTotalB = resB.rows.reduce((s2, r) => s2 + r.grams * (res.lookup(monthB, ref(r)) ?? 0), 0);
+      const appTotalB = resB.rows.reduce((s2, r) => s2 + r.grams * res.bApplied(ref(r)).price, 0);
       // 그 두 달 생산 데이터에 실제로 찍힌 원본 전체코드 (변형 -01/-51 구분용)
       const producedCodes = Array.from(new Set([
         ...(aRaw?.items || []).map((it) => it.code || ''),

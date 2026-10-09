@@ -501,7 +501,7 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     { header: `${monthA} 사용량(g)`, width: 15 },
     { header: `${monthB} 사용량(g)`, width: 15 },
     { header: `${monthA} 단가(적용)`, width: 11 },
-    { header: `${monthB} 단가`, width: 11 },
+    { header: `${monthB} 단가(적용)`, width: 11 },
     { header: `${monthA} 금액`, width: 15 },
     { header: `${monthB} 금액`, width: 15 },
     { header: '그룹', width: 10 },
@@ -521,7 +521,7 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
         { formula: `$F${R}*$H${R}` },
         // 단가!A:P 를 VLOOKUP 하면 범위에 N·O열(→원재료집계→레시피계산 M→이 칸)이 들어가 순환참조가 된다 — 열 하나씩만 본다
         { formula: `IFERROR(INDEX(단가!$P$2:$P$${priceLast},MATCH($D${R},단가!$A$2:$A$${priceLast},0)),0)` },
-        { formula: `IFERROR(VLOOKUP($D${R},단가!$A$2:$E$${priceLast},5,FALSE),0)` },
+        { formula: `IFERROR(INDEX(단가!$R$2:$R$${priceLast},MATCH($D${R},단가!$A$2:$A$${priceLast},0)),0)` },
         { formula: `$I${R}*$K${R}` },
         { formula: `$J${R}*$L${R}` },
         { formula: `IFERROR(VLOOKUP($D${R},단가!$A$2:$L$${priceLast},12,FALSE),"")` },
@@ -702,7 +702,7 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
       { formula: `IF(ISNUMBER($J${R}),$D${R},0)` },
       { formula: `IF(ISNUMBER($L${R}),$E${R},0)` },
       { formula: `IF(N(IFERROR(INDEX(단가!$P$2:$P$${priceLast},MATCH($A${R},단가!$A$2:$A$${priceLast},0)),0))=0,$D${R},0)` },
-      { formula: `IF(N(IFERROR(VLOOKUP($A${R},단가!$A$2:$E$${priceLast},5,FALSE),0))=0,$E${R},0)` },
+      { formula: `IF(N(IFERROR(INDEX(단가!$R$2:$R$${priceLast},MATCH($A${R},단가!$A$2:$A$${priceLast},0)),0))=0,$E${R},0)` },
       { formula: `IF(RIGHT(IFERROR(INDEX(단가!$Q$2:$Q$${priceLast},MATCH($A${R},단가!$A$2:$A$${priceLast},0)),""),2)="대체",$F${R},0)` },
     ]);
     [17, 18, 19, 20, 21, 22, 23].forEach((c) => { row.getCell(c).numFmt = '#,##0'; });
@@ -1148,7 +1148,7 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     "     · [단가] 두 열에 같은 달 단가를 넣으면 '단가효과 제거(연동예산)' 이 됩니다. D열(A월)이 비어 있으면 B월 단가를 씁니다(P열).",
     "     · [단가] '그룹'열에 고단가 를 넣고 빼서 대상 원재료를 바꿀 수 있습니다.",
     '',
-    '■ 첫 탭 [해석] 을 먼저 보세요 — 이 요약 숫자를 사람 말로 풀어 놓았습니다 (전부 자동, 노란칸 바꾸면 같이 바뀝니다).',
+    '■ 첫 탭 [원가율분해] 에서 수율·제품 구성·단가가 원재료비율을 얼마나 움직였는지, 둘째 탭 [해석] 에서 이 요약 숫자를 사람 말로 볼 수 있습니다 (전부 자동).',
     '',
     '■ 계산식 (전부 엑셀 수식입니다 — 셀을 클릭하면 보입니다)',
     '  사용량(g)   = 개당 투입량(g) × 생산개수(EA)         … 레시피계산 I·J열',
@@ -1306,22 +1306,24 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     const fRateAmt = `IF(${n(A1)}=0,"",-${n(R0)}*(${n(A1)}-${n(A0)}))`;
     const fVolPrice = `IF(${n(A1)}=0,"",(${fVol})+(${fRateAmt}))`;
     sec('원재료비율(%p) 은 왜 그렇게 됐나', 'FFC00000');
-    line('많이·비싸게 팔아서 (물량·판가)', fVolPrice,
+    const rVP = line('많이·비싸게 팔아서 (물량·판가)', fVolPrice,
       `IF(${n(A0)}=0,"「원가율분해」 6행 생산금액을 넣으면 계산됩니다.",`
       + `"생산량 "&TEXT(IF(${n(Q0)}=0,0,${n(Q1)}/${n(Q0)}-1),"+0.0%;-0.0%")&" · 생산금액 "&TEXT(${n(A1)}/${n(A0)}-1,"+0.0%;-0.0%")&". "`
       + `&"많이 만들면 재료비도 늘지만 매출도 같이 늡니다. 둘이 같은 속도로 움직이면 비율은 그대로라 이 몫은 0 에 가깝습니다. "`
       + `&IF(ABS((${fVolPrice})/${n(A1)})<0.003,"지금은 거의 상쇄됐습니다.","여기가 크면 원가가 아니라 제품 구성·판가가 움직인 것입니다."))`);
-    line('고단가를 더 써서 (수량)', fHiQ,
+    const rHQ = line('고단가를 더 써서 (수량)', fHiQ,
       `"위 ② 와 같은 금액입니다. 원가율로 환산하면 이만큼입니다."`);
-    line('고단가를 비싸게 사서 (단가)', fHiP,
+    const rHP = line('고단가를 비싸게 사서 (단가)', fHiP,
       `"위 ③ 과 같은 금액입니다. 원가율로 환산하면 이만큼입니다."`);
-    line('그 외 원재료', fOth,
+    const rOT = line('그 외 원재료', fOth,
       `"위 ④ 와 같은 금액입니다. 원가율로 환산하면 이만큼입니다."`);
+    // 아래 검산·판정은 큰 식을 다시 펼치지 않고 위 네 줄의 금액 칸(B열)을 참조한다 — Excel 수식 길이 한도(8,192자)
+    const fourSum = `(N(B${rVP})+N(B${rHQ})+N(B${rHP})+N(B${rOT}))`;
     const rRc = wsRead.addRow(['검산 (네 몫 합 = 비율 증감)', null,
-      { formula: `IF(${n(A1)}=0,"",((${fVolPrice})+(${fHiQ})+(${fHiP})+(${fOth}))/${n(A1)})` },
+      { formula: `IF(${n(A1)}=0,"",${fourSum}/${n(A1)})` },
       { formula: `IF(${n(A1)}=0,"「원가율분해」 6행 생산금액을 넣으면 계산됩니다.",`
         + `"실제 비율 증감 "&${pp(dRate)}&" 와 같아야 합니다."`
-        + `&IF(ABS(((${fVolPrice})+(${fHiQ})+(${fHiP})+(${fOth}))/${n(A1)}-(${dRate}))<0.00005," ✔"," ⚠"))` }]);
+        + `&IF(ABS(${fourSum}/${n(A1)}-(${dRate}))<0.00005," ✔"," ⚠"))` }]);
     rRc.getCell(3).numFmt = '+0.00%;-0.00%;0.00%';
     rRc.getCell(1).font = { size: 9, color: { argb: 'FF808080' } };
     rRc.getCell(4).font = { size: 9, color: { argb: 'FF808080' } };
@@ -1349,12 +1351,16 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     sec('그래서 큰 문제인가', 'FF203864');
     // 비율을 가장 크게 민 몫. 금액이 아니라 '비율 기여'로 줄을 세워야 물량 착시가 없다.
     const cand: [string, string][] = [
-      ['물량·판가', fVolPrice], ['고단가 수량', fHiQ], ['고단가 단가', fHiP], ['그 외 원재료', fOth],
+      ['물량·판가', `N(B${rVP})`], ['고단가 수량', `N(B${rHQ})`], ['고단가 단가', `N(B${rHP})`], ['그 외 원재료', `N(B${rOT})`],
     ];
-    const biggest = `IF(${noAmt},"",`
+    // 가장 크게 민 몫은 판정 줄 E열(보조 칸)에서 한 번만 계산하고 문장은 그 칸을 참조한다
+    const vrRow = wsRead.rowCount + 1;
+    const BIG = `$E$${vrRow}`;
+    const biggestF = `IF(${noAmt},"",`
       + `IF(AND(ABS(${cand[0][1]})>=ABS(${cand[1][1]}),ABS(${cand[0][1]})>=ABS(${cand[2][1]}),ABS(${cand[0][1]})>=ABS(${cand[3][1]})),"${cand[0][0]}",`
       + `IF(AND(ABS(${cand[1][1]})>=ABS(${cand[2][1]}),ABS(${cand[1][1]})>=ABS(${cand[3][1]})),"${cand[1][0]}",`
       + `IF(ABS(${cand[2][1]})>=ABS(${cand[3][1]}),"${cand[2][0]}","${cand[3][0]}"))))`;
+    const biggest = BIG;
     const biggestPP = `IF(${noAmt},"",`
       + `IF(${biggest}="${cand[0][0]}",(${cand[0][1]})/${n(A1)},`
       + `IF(${biggest}="${cand[1][0]}",(${cand[1][1]})/${n(A1)},`
@@ -1372,6 +1378,9 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
       + `IF(${biggest}="고단가 수량","고단가 원재료가 제품당 더 들어갔습니다. 레시피 변경인지 제품 구성 변화인지 「곁들여 볼 것」 줄에서 갈립니다.",`
       + `IF(${biggest}="고단가 단가","구매 단가가 올랐습니다. 원단위는 그대로일 수 있으니 구매 쪽을 보세요.",`
       + `"고단가가 아닌 일반 원재료에서 움직였습니다. 단가표와 레시피 변경 이력을 보세요.")))))))` }]);
+    if (vr.number !== vrRow) throw new Error('판정 줄 위치가 어긋났습니다');
+    vr.getCell(5).value = { formula: biggestF };
+    vr.getCell(5).font = { size: 8, color: { argb: 'FFFFFFFF' } };   // 보조 칸 (판정문이 참조)
     wsRead.mergeCells(vr.number, 1, vr.number, 4);
     vr.getCell(1).font = { bold: true, size: 11 };
     vr.getCell(1).alignment = { wrapText: true, vertical: 'middle' };
@@ -1428,6 +1437,12 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     });
     if (decompCount !== matLast - 1 && decompCount > 0) throw new Error('원재료별분해 행 수가 어긋났습니다');
   }
+
+  // Excel 은 8,192자를 넘는 수식을 열 때 '복구' 하며 지워 버린다 — 만들 때 막는다
+  wb.eachSheet((sh) => sh.eachRow((row) => row.eachCell((c) => {
+    const fv = (c.value as { formula?: string } | null)?.formula;
+    if (fv && fv.length > 8000) throw new Error(`수식이 너무 깁니다 (${sh.name}!${c.address}, ${fv.length}자)`);
+  })));
 
   const buf = await wb.xlsx.writeBuffer();
   return new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
