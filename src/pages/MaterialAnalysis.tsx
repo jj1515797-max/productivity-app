@@ -796,7 +796,7 @@ export default function MaterialAnalysis() {
       {decompView && decompSrc && (
         <CostDecompPanel monthA={decompSrc.months.a} monthB={decompSrc.months.b}
           view={decompView} alt={decompAlt}
-          recipeSrc={recipeSrc} onRecipeSrc={setRecipeSrc} yieldDbReady={yRecipeMap.size > 0} />
+          recipeSrc={useYieldDb ? 'yield' : 'bom'} onRecipeSrc={setRecipeSrc} yieldDbReady={yRecipeMap.size > 0} />
       )}
 
       {/* ============================================================

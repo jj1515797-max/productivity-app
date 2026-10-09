@@ -151,7 +151,7 @@ export function decompMaterial(m: DecompMatIn, k: number, lo = DECOMP_LO, hi = D
     mix, yld, other,
     factor: mixOK ? (E === 0 ? 0 : (N * G) / E) : isNew ? (F === 0 ? 0 : (N * H) / F) : 0,
     kgDelta: status === 'ok' ? (H - FperE * G) / 1000 : null,
-    swing: dY !== null && Math.abs(dY) > swing,
+    swing: status === 'ok' && dY !== null && Math.abs(dY) > swing,   // ④ 수율로 잡힌 원재료만
   };
 }
 

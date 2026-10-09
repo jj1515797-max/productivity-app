@@ -18,32 +18,28 @@ const sgn = (n: number) => (n > 0.5 ? '+' : n < -0.5 ? '−' : '');
 const man = (n: number, signed = true) => {
   const a = Math.abs(n);
   const s = signed ? sgn(n) : n < -0.5 ? '−' : '';
-  if (a >= 1e8) return `${s}${(a / 1e8).toFixed(2)}억`;
+  if (a >= 1e8 || Math.round(a / 1e4) >= 1e4) return `${s}${(a / 1e8).toFixed(2)}억`;
   if (a >= 1e4) return `${s}${Math.round(a / 1e4).toLocaleString()}만`;
   return `${s}${Math.round(a).toLocaleString()}`;
 };
 const won = (n: number) => `${sgn(n)}${Math.round(Math.abs(n)).toLocaleString()}`;
 const pct = (v: number | null, d = 1) => (v === null ? '—' : `${(v * 100).toFixed(d)}%`);
-const pp = (v: number | null, d = 2) => (v === null ? '—' : `${sgn(v * 1e6)}${Math.abs(v * 100).toFixed(d)}%p`);
-const tone = (n: number) => (n < -0.5 ? 'text-emerald-700' : n > 0.5 ? 'text-rose-700' : 'text-gray-500');
-/** 받침 유무로 조사 고르기 (숫자는 읽는 소리 기준: 영·일·삼·육·칠·팔 = 받침) */
-const josa = (w: string, withB: string, without: string) => {
-  const m = w.match(/[가-힣0-9A-Za-z](?=[^가-힣0-9A-Za-z]*$)/);
-  const ch = m ? m[0] : '';
-  let b = false;
-  if (/[가-힣]/.test(ch)) b = (ch.charCodeAt(0) - 0xac00) % 28 !== 0;
-  else if (/[0-9]/.test(ch)) b = '013678'.includes(ch);
-  else if (/[A-Za-z]/.test(ch)) b = /[lmnr]/i.test(ch);
-  return w + (b ? withB : without);
+const pp = (v: number | null, d = 2) => {
+  if (v === null) return '—';
+  const r = Math.abs(v * 100).toFixed(d);
+  return `${Number(r) === 0 ? '' : v > 0 ? '+' : '−'}${r}%p`;
 };
+const tone = (n: number) => (n < -0.5 ? 'text-emerald-700' : n > 0.5 ? 'text-rose-700' : 'text-gray-500');
+/** %p 값 색 — 표시 자릿수(0.00%p)에서 0 이면 회색 */
+const toneP = (v: number) => tone(Math.abs(v * 100) < 0.005 ? 0 : v);
 
 /** 가운데 0 기준으로 왼쪽(−, 유리)·오른쪽(+, 불리)으로 뻗는 막대 */
-function Diverge({ v, max }: { v: number; max: number }) {
+function Diverge({ v, max, neutral }: { v: number; max: number; neutral?: boolean }) {
   const w = max > 0 ? Math.min(50, (Math.abs(v) / max) * 50) : 0;
   return (
     <div className="relative h-3 w-full bg-gray-100 rounded">
       <div className="absolute inset-y-0 left-1/2 w-px bg-gray-400" />
-      <div className={`absolute inset-y-0 rounded ${v < 0 ? 'bg-emerald-500' : 'bg-rose-500'}`}
+      <div className={`absolute inset-y-0 rounded ${neutral ? 'bg-slate-400' : v < 0 ? 'bg-emerald-500' : 'bg-rose-500'}`}
         style={v < 0 ? { right: '50%', width: `${w}%` } : { left: '50%', width: `${w}%` }} />
     </div>
   );
@@ -84,7 +80,7 @@ export default function CostDecompPanel({
   const dM = t.MB - t.MA;
   const flexGap = t.MB - t.flexed;   // = ③ + ④ + ⑤
   const effects = [
-    { key: 'vol', label: '① 물량', sub: '많이·적게 만들어서', v: t.vol, gain: null as number | null, loss: null as number | null, ratio: null as number | null },
+    { key: 'vol', label: '① 물량', sub: '많이·적게 만들어서 (원가율엔 영향 없음)', v: t.vol, gain: null as number | null, loss: null as number | null, ratio: null as number | null },
     { key: 'price', label: '② 단가', sub: '원재료를 비싸게·싸게 사서', v: t.price, gain: t.gain.price, loss: t.loss.price, ratio: ratio?.price ?? null },
     { key: 'mix', label: '③ 제품 구성', sub: '원재료가 많이·적게 드는 제품을 더 만들어서', v: t.mix, gain: t.gain.mix, loss: t.loss.mix, ratio: ratio?.mix ?? null },
     { key: 'yld', label: '④ 수율', sub: '같은 제품을 더 적게·많이 투입해서', v: t.yld, gain: t.gain.yld, loss: t.loss.yld, ratio: ratio?.yld ?? null },
@@ -94,37 +90,62 @@ export default function CostDecompPanel({
 
   /* ===== 결론 문장 ===== */
   const conclusion = useMemo(() => {
+    const zero = (v: number) => Math.abs(v) < 0.5;
     const byYld = rows.filter((r) => r.status === 'ok').sort((a, b) => a.yld - b.yld);
-    const bestY = byYld.filter((r) => r.yld < 0).slice(0, 3);
-    const worstY = byYld.filter((r) => r.yld > 0).slice(-3).reverse();
-    const prodSorted = [...products].sort((a, b) => a.effect - b.effect);
-    const prodGain = prodSorted.filter((p) => p.effect < 0).slice(0, 2);
-    const prodLoss = prodSorted.filter((p) => p.effect > 0).slice(-2).reverse();
+    const bestY = byYld.filter((r) => r.yld < -0.5).slice(0, 3);
+    const worstY = byYld.filter((r) => r.yld > 0.5).slice(-3).reverse();
+    // 레시피 없는 제품은 개당 원재료비를 알 수 없어(0 으로 계산) '싼 제품'처럼 보이므로 결론 문장에서 뺀다
+    const prodSorted = products.filter((p) => p.hasRecipe && p.ings.length > 0).sort((a, b) => a.effect - b.effect);
+    const prodGain = prodSorted.filter((p) => p.effect < -0.5).slice(0, 2);
+    const prodLoss = prodSorted.filter((p) => p.effect > 0.5).slice(-2).reverse();
     const parts = [
       { name: '수율', v: t.yld }, { name: '제품 구성', v: t.mix }, { name: '기타(비교 불가 원재료)', v: t.other },
     ].sort((a, b) => Math.abs(b.v) - Math.abs(a.v));
+    // '가장 큰 이유'는 증감과 같은 방향인 몫 중에서 고른다. 반대로 작용한 더 큰 몫이 있으면 따로 적는다
+    const same = parts.filter((x) => !zero(x.v) && Math.sign(x.v) === Math.sign(flexGap));
+    const against = parts.filter((x) => !zero(x.v) && Math.sign(x.v) !== Math.sign(flexGap));
     const growth = t.QA > 0 ? t.QB / t.QA - 1 : 0;
+    // 전체 생산이 k 배가 됐을 때보다 더/덜 — 실제 수량이 늘었어도 비중은 줄었을 수 있어 '비중'으로 쓴다
     const prodPhrase = (p: DecompProdRow) =>
-      `${p.name}(평균보다 ${p.vsBase > 0 ? '비싼' : '싼'} 제품)을 ${p.delta > 0 ? '더' : '덜'} 만들어 ${man(p.effect)}`;
-    const swingNames = rows.filter((r) => r.swing && r.status === 'ok').sort((a, b) => Math.abs(b.yld) - Math.abs(a.yld)).slice(0, 3).map((r) => r.name);
+      `${p.name}(원재료비가 평균보다 ${p.vsBase > 0 ? '많이' : '적게'} 드는 제품)의 생산 비중이 ${p.delta > 0 ? '늘어' : '줄어'} ${man(p.effect)}`;
+    const swingRows = rows.filter((r) => r.swing).sort((a, b) => Math.abs(b.yld) - Math.abs(a.yld));
+    const swingNames = swingRows.slice(0, 3).map((r) => r.name);
+    const headline = zero(flexGap)
+      ? '같은 생산량 · 같은 단가로 놓고 보면 원재료비 차이가 없습니다.'
+      : `같은 생산량 · 같은 단가로 놓고 보면 원재료비가 ${man(Math.abs(flexGap), false)}원 ${flexGap < 0 ? '줄었습니다' : '늘었습니다'}.`
+        + (same.length ? ` 가장 큰 이유는 「${same[0].name}」(${man(same[0].v)}원)입니다.` : '')
+        + (against.length && same.length && Math.abs(against[0].v) > Math.abs(same[0].v) * 0.5
+          ? ` 다만 「${against[0].name}」은 반대로 ${man(against[0].v)}원 작용했습니다.` : '');
+    const volPart = zero(t.vol) ? '' : `생산량이 ${Math.abs(growth * 100).toFixed(1)}% ${growth >= 0 ? '늘어' : '줄어'} 생긴 ① 물량(${man(t.vol)})`;
+    const pricePart = zero(t.price) ? '' : `② 단가(${man(t.price)})`;
+    const minus = [volPart, pricePart].filter(Boolean);
     return {
-      headline: `같은 생산량 · 같은 단가로 놓고 보면 원재료비가 ${man(Math.abs(flexGap), false)}원 ${flexGap < 0 ? '줄었습니다' : '늘었습니다'}. 가장 큰 이유는 「${parts[0].name}」(${man(parts[0].v)}원)입니다.`,
+      headline,
       lines: [
-        `${monthB} 원재료비는 ${man(t.MB, false)}원으로 ${monthA}보다 ${man(dM)}원(${t.MA > 0 ? `${sgn(dM)}${Math.abs((dM / t.MA) * 100).toFixed(1)}%` : '—'}) 변했습니다. 생산량이 ${Math.abs(growth * 100).toFixed(1)}% ${growth >= 0 ? '늘어' : '줄어'} 생긴 ① 물량(${man(t.vol)})${Math.abs(t.price) >= 1 ? `과 ② 단가(${man(t.price)})를` : '을'} 빼면, 같은 생산량·같은 단가 기준 차이는 ${man(flexGap)}원입니다.`,
-        `수율 ${man(t.yld)}원 — 좋아진 원재료 ${man(t.gain.yld)} · 나빠진 원재료 ${man(t.loss.yld)}.${bestY.length ? ` 많이 아낀 원재료: ${bestY.map((r) => `${r.name} ${man(r.yld)}`).join(', ')}.` : ''}${worstY.length ? ` 더 쓴 원재료: ${worstY.map((r) => `${r.name} ${man(r.yld)}`).join(', ')}.` : ''}`,
-        `제품 구성 ${man(t.mix)}원 — 만드는 제품이 원재료가 ${t.mix > 0 ? '더' : '덜'} 드는 쪽으로 바뀌었습니다.${prodLoss.length ? ` 원재료비를 늘린 제품: ${prodLoss.map(prodPhrase).join(', ')}.` : ''}${prodGain.length ? ` 줄인 제품: ${prodGain.map(prodPhrase).join(', ')}.` : ''}`,
+        `${monthB} 원재료비는 ${man(t.MB, false)}원으로 ${monthA}보다 ${zero(dM) ? '변함없습니다' : `${man(dM)}원(${t.MA > 0 ? `${sgn(dM)}${Math.abs((dM / t.MA) * 100).toFixed(1)}%` : '—'}) 변했습니다`}.`
+          + (minus.length ? ` ${minus.length === 2 ? `${volPart}과 ${pricePart}를` : volPart ? `${volPart}을` : `${pricePart}를`} 빼면, 같은 생산량·같은 단가 기준 차이는 ${man(flexGap)}원입니다.` : ''),
+        zero(t.yld) && !bestY.length && !worstY.length
+          ? '수율 변화로 생긴 차이는 없습니다.'
+          : `수율 ${man(t.yld)}원 — 좋아진 원재료 ${man(t.gain.yld)} · 나빠진 원재료 ${man(t.loss.yld)}.${bestY.length ? ` 많이 아낀 원재료: ${bestY.map((r) => `${r.name} ${man(r.yld)}`).join(', ')}.` : ''}${worstY.length ? ` 더 쓴 원재료: ${worstY.map((r) => `${r.name} ${man(r.yld)}`).join(', ')}.` : ''}`,
+        zero(t.mix)
+          ? '제품 구성 변화로 생긴 차이는 없습니다.'
+          : `제품 구성 ${man(t.mix)}원 — 생산 비중이 원재료가 ${t.mix > 0 ? '더' : '덜'} 드는 제품 쪽으로 옮겨 갔습니다.${prodLoss.length ? ` 원재료비를 늘린 제품: ${prodLoss.map(prodPhrase).join(', ')}.` : ''}${prodGain.length ? ` 줄인 제품: ${prodGain.map(prodPhrase).join(', ')}.` : ''}`,
         ratio
           ? `원재료비율 ${pct(ratio.rA, 2)} → ${pct(ratio.rB, 2)} (${pp(ratio.dr)}) — 수율 ${pp(ratio.yld)} · 제품 구성 ${pp(ratio.mix)} · 단가 ${pp(ratio.price)} · 개당 생산금액 ${pp(ratio.rev)} · 기타 ${pp(ratio.other)}.`
           : '아래 「원가율로 보기」에 두 달 생산금액을 넣으면 원재료비율(%p)로도 나눠 드립니다.',
       ],
       warns: [
-        !view.hasActualA || !view.hasActualB ? `실투입(설정 › 실제 투입중량)이 ${!view.hasActualA ? monthA : ''}${!view.hasActualA && !view.hasActualB ? ', ' : ''}${!view.hasActualB ? monthB : ''}에 없어 수율·제품 구성을 나눌 수 없습니다.` : '',
-        t.aSubShare >= 0.5 ? `${monthA} 단가가 없어 원재료비의 ${Math.round(t.aSubShare * 100)}%를 다른 달(${monthB}) 단가로 계산했습니다 — 그래서 ② 단가 효과는 0 으로 잡히고, 나머지는 '같은 단가' 기준의 순수한 차이입니다.` : '',
-        t.swingCount > 0 && Math.abs(t.swingYld) >= Math.max(1, Math.abs(t.yld) * 0.15)
-          ? `수율 효과 ${man(t.yld)} 중 ${josa(man(t.swingYld), '은', '는')} 수율이 ${DECOMP_SWING * 100}%p 넘게 바뀐 원재료 ${t.swingCount}종(${swingNames.join('·')} 등)에서 나왔습니다. 두 달 모두 지금 레시피로 계산하므로, 그사이 배합(개당 g)을 바꿨거나 입력이 틀렸으면 그 차이가 수율로 보입니다 — 확인 후 성과로 쓰세요.`
+        t.aSubShare >= 0.999
+          ? `${monthA} 단가가 없어 그달 원재료비를 모두 ${monthB} 단가로 계산했습니다 — 그래서 ② 단가 효과는 0 이고, 나머지는 '같은 단가' 기준의 순수한 차이입니다.`
+          : t.aSubShare >= 0.1
+            ? `${monthA} 원재료비의 ${Math.round(t.aSubShare * 100)}%는 그달 단가가 없어 다른 달 단가로 계산했습니다 — 그 원재료들은 단가 효과가 0 으로 잡혀 ② 가 실제보다 작게 보일 수 있습니다.`
+            : '',
+        t.swingCount > 0 && !zero(t.swingYld)
+          ? `수율 효과 ${man(t.yld)}에는 수율이 ${DECOMP_SWING * 100}%p 넘게 바뀐 원재료 ${t.swingCount}종(${swingNames.join('·')} 등)의 ${man(t.swingYld)}이 들어 있습니다. 두 달 모두 지금 레시피로 계산하므로, 그사이 배합(개당 g)을 바꿨거나 입력이 틀렸으면 그 차이가 수율로 보입니다 — 확인 후 성과로 쓰세요.`
           : '',
         Math.abs(t.other) > Math.abs(flexGap) * 0.3 && Math.abs(t.other) >= 1e5 ? `⑤ 기타(${man(t.other)})가 큽니다 — 아래 원재료별 표에서 '비교 불가'를 눌러 실투입 없음·범위 밖 원재료를 확인하세요.` : '',
         view.coverage.missingA + view.coverage.missingB > 0 ? `레시피가 없는 제품이 있습니다 (${monthA} ${Math.round(view.coverage.missingA).toLocaleString()} EA · ${monthB} ${Math.round(view.coverage.missingB).toLocaleString()} EA) — 그 제품 원재료는 표준소요 0 이라 수율·구성이 왜곡될 수 있습니다.` : '',
+        ratio && (ratio.rA > 2 || ratio.rB > 2 || ratio.rA < 0.01 || ratio.rB < 0.01) ? '원재료비율이 1~200% 범위를 벗어납니다 — 생산금액 단위(원)를 확인하세요.' : '',
       ].filter(Boolean),
     };
   }, [rows, products, t, flexGap, dM, ratio, monthA, monthB, view]);
@@ -132,13 +153,16 @@ export default function CostDecompPanel({
   const [tab, setTab] = useState<'mat' | 'prod' | 'cat'>('mat');
 
   // 실투입이 없는 달이 있으면 원재료비가 0 으로 계산돼 '100% 감소' 같은 엉뚱한 결론이 나온다 — 안내만 보여준다
-  if (!view.hasActualA || !view.hasActualB) {
+  if (!view.hasActualA || !view.hasActualB || !(t.QA > 0)) {
     const miss = [!view.hasActualA ? monthA : '', !view.hasActualB ? monthB : ''].filter(Boolean).join(', ');
+    const msg = miss
+      ? `${miss} 실투입(설정 › 실제 투입중량)이 없어 원재료비를 계산할 수 없습니다. 실투입을 넣은 뒤 다시 분석하세요.`
+      : `${monthA} 생산량이 없어 분해할 수 없습니다 (앱 도입 전 달이면 설정 › 월별 생산수량을 넣으세요).`;
     return (
       <div className="bg-white border-2 border-amber-300 rounded-lg p-4">
         <div className="font-bold text-gray-800">💰 원가율 분해 <span className="text-sm font-normal text-gray-500">{monthA} → {monthB}</span></div>
         <div className="mt-2 text-sm text-amber-900 bg-amber-50 border border-amber-200 rounded px-3 py-2">
-          ⚠ {miss} 실투입(설정 › 실제 투입중량)이 없어 원재료비를 계산할 수 없습니다. 실투입을 넣은 뒤 다시 분석하세요.
+          ⚠ {msg}
         </div>
       </div>
     );
@@ -157,7 +181,7 @@ export default function CostDecompPanel({
               className={`px-2.5 py-1 font-semibold ${recipeSrc === v ? 'bg-white text-slate-800' : 'text-slate-200 hover:bg-slate-700'} disabled:opacity-40`}>{label}</button>
           ))}
         </div>
-        <span className="text-[11px] text-slate-400 ml-auto">원재료비 = ERP 실투입 × {monthB} 재고평가 단가 · {view.recipeLabel}</span>
+        <span className="text-[11px] text-slate-400 ml-auto">원재료비 = ERP 실투입 × 그달 재고평가 단가 (없으면 {monthB} 단가) · 연동은 {monthB} 단가 · {view.recipeLabel}</span>
       </div>
 
       {/* 결론 */}
@@ -196,8 +220,8 @@ export default function CostDecompPanel({
                 <div className="text-sm font-bold text-gray-800">{e.label}</div>
                 <div className="text-[10px] text-gray-500 leading-tight">{e.sub}</div>
               </div>
-              <Diverge v={e.v} max={effMax} />
-              <div className={`text-right font-bold tabular-nums ${tone(e.v)}`}>{man(e.v)}</div>
+              <Diverge v={e.v} max={effMax} neutral={e.key === 'vol'} />
+              <div className={`text-right font-bold tabular-nums ${e.key === 'vol' ? 'text-gray-700' : tone(e.v)}`}>{man(e.v)}</div>
               <div className="hidden sm:block text-[11px] text-gray-500 tabular-nums">
                 {e.gain !== null && e.loss !== null ? <>유리 <span className="text-emerald-700">{man(e.gain)}</span> · 불리 <span className="text-rose-700">{man(e.loss)}</span></> : '원가율엔 영향 없음'}
               </div>
@@ -225,7 +249,7 @@ export default function CostDecompPanel({
             <div className="bg-white border rounded p-3">
               <div className="text-xs text-gray-500">원재료비율</div>
               <div className="text-xl font-bold tabular-nums">{pct(ratio.rA, 2)} → {pct(ratio.rB, 2)}</div>
-              <div className={`text-sm font-bold ${tone(ratio.dr * 1e8)}`}>{pp(ratio.dr)}</div>
+              <div className={`text-sm font-bold ${toneP(ratio.dr)}`}>{pp(ratio.dr)}</div>
             </div>
             <div className="space-y-1.5">
               {[
@@ -237,10 +261,10 @@ export default function CostDecompPanel({
               ].map((x, _i, arr) => {
                 const mx = Math.max(1e-9, ...arr.map((y) => Math.abs(y.v)));
                 return (
-                  <div key={x.label} className="grid grid-cols-[11rem_1fr_5rem] gap-2 items-center">
-                    <span className="text-xs text-gray-700">{x.label}</span>
+                  <div key={x.label} className="grid grid-cols-[7rem_1fr_4.5rem] sm:grid-cols-[11rem_1fr_5rem] gap-2 items-center">
+                    <span className="text-xs text-gray-700 leading-tight">{x.label}</span>
                     <Diverge v={x.v * 1e8} max={mx * 1e8} />
-                    <span className={`text-right text-sm font-bold tabular-nums ${tone(x.v * 1e8)}`}>{pp(x.v)}</span>
+                    <span className={`text-right text-sm font-bold tabular-nums ${toneP(x.v)}`}>{pp(x.v)}</span>
                   </div>
                 );
               })}
@@ -311,11 +335,28 @@ function Kpi({ title, value, note, accent }: { title: string; value: string; not
 function Arrow({ label, v }: { label: string; v: number }) {
   return (
     <div className="flex sm:flex-col items-center justify-center gap-1 px-1 text-center">
-      <span className="text-gray-400 text-lg leading-none">→</span>
+      <span className="text-gray-400 text-lg leading-none"><span className="sm:hidden">↓</span><span className="hidden sm:inline">→</span></span>
       <span className={`text-sm font-bold tabular-nums ${tone(v)}`}>{man(v)}</span>
       <span className="text-[10px] text-gray-500 leading-tight max-w-[7rem]">{label}</span>
     </div>
   );
+}
+/** '35억' · '3,512,000,000' · '1.5억' · '3억5천만' 을 원으로. 못 읽으면 null (기존 값 유지) */
+function parseWon(text: string): number | null {
+  const t = text.replace(/[\s,원]/g, '');
+  if (!t) return 0;
+  if (/^\d+(\.\d+)?$/.test(t)) return Math.round(Number(t));
+  const units: Record<string, number> = { 억: 1e8, 천만: 1e7, 백만: 1e6, 만: 1e4, 천: 1e3 };
+  let rest = t, total = 0;
+  const re = /^(\d+(?:\.\d+)?)(억|천만|백만|만|천)?/;
+  while (rest) {
+    const m = rest.match(re);
+    if (!m) return null;
+    total += Number(m[1]) * (m[2] ? units[m[2]] : 1);
+    rest = rest.slice(m[0].length);
+    if (!m[2] && rest) return null;
+  }
+  return Math.round(total);
 }
 function AmtInput({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
   const [text, setText] = useState(value ? value.toLocaleString() : '');
@@ -323,9 +364,9 @@ function AmtInput({ label, value, onChange }: { label: string; value: number; on
   return (
     <label className="flex items-center gap-1 text-xs">
       <span className="text-gray-600">{label}</span>
-      <input inputMode="numeric" value={text} placeholder="생산금액"
+      <input value={text} placeholder="예: 35억"
         onChange={(e) => setText(e.target.value)}
-        onBlur={() => { const n = Number(text.replace(/[^\d.]/g, '')) || 0; onChange(n); setText(n ? n.toLocaleString() : ''); }}
+        onBlur={() => { const n = parseWon(text); if (n === null) { setText(value ? value.toLocaleString() : ''); return; } onChange(n); setText(n ? n.toLocaleString() : ''); }}
         onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
         className="w-36 border rounded px-2 py-1 text-right tabular-nums bg-yellow-50" />
     </label>
@@ -487,8 +528,8 @@ function ProductTable({ products, cbar, monthA, monthB }: { products: DecompProd
                 </td>
                 <td className="px-2 py-1.5 text-right tabular-nums">{Math.round(p.qtyA).toLocaleString()}</td>
                 <td className="px-2 py-1.5 text-right tabular-nums">{Math.round(p.qtyB).toLocaleString()}</td>
-                <td className={`px-2 py-1.5 text-right tabular-nums ${p.delta > 0 ? 'text-indigo-700' : 'text-gray-600'}`}>{p.delta > 0 ? '+' : '−'}{Math.round(Math.abs(p.delta)).toLocaleString()}</td>
-                <td className="px-2 py-1.5 text-right tabular-nums">{Math.round(p.costPerEa).toLocaleString()}</td>
+                <td className={`px-2 py-1.5 text-right tabular-nums ${p.delta > 0 ? 'text-indigo-700' : 'text-gray-600'}`}>{won(p.delta) || '0'}</td>
+                <td className="px-2 py-1.5 text-right tabular-nums">{p.hasRecipe ? Math.round(p.costPerEa).toLocaleString() : <span className="text-rose-600">미상</span>}</td>
                 <td className={`px-2 py-1.5 text-right tabular-nums ${p.vsBase > 0 ? 'text-rose-700' : 'text-emerald-700'}`}>{won(p.vsBase)}</td>
                 <td className={`px-2 py-1.5 text-right tabular-nums font-bold ${tone(p.effect)}`}>{won(p.effect)}</td>
               </tr>

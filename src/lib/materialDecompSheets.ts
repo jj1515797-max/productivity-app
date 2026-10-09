@@ -238,7 +238,7 @@ export function addDecompSheets(wb: ExcelJS.Workbook, ctx: DecompCtx): void {
       { formula: `IF(RIGHT(${c('Y')},2)="대체",${c('O')},0)` },
       { formula: `IF(RIGHT(${c('AB')},2)="대체",${c('P')},0)` },
       // 두 달 다 '지금' 레시피로 표준을 잡으므로 배합을 실제로 바꾼 원재료는 그 차이가 수율로 보인다 — 크게 뛴 것은 표시
-      { formula: `IF(AND(ISNUMBER(${c('K')}),ABS(N(${c('K')}))>${SWING}),"수율 ${SWING * 100}%p 넘게 변함 — 레시피 변경·입력 확인","")` },
+      { formula: `IF(AND(${c('L')}="${ST.ok}",ISNUMBER(${c('K')}),ABS(N(${c('K')}))>${SWING}),"수율 ${SWING * 100}%p 넘게 변함 — 레시피 변경·입력 확인","")` },
     ]);
     [5, 6, 7, 8].forEach((x) => { row.getCell(x).numFmt = WON; });
     [7, 8].forEach((x) => { row.getCell(x).fill = INPUT_FILL; });
