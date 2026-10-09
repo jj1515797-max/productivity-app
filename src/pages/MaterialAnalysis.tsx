@@ -11,7 +11,7 @@ import type { DiffRow, FlexedRow, UsageResult } from '../lib/materialUsage';
 import { computeMonthlyProduction, filterProduction, STAGE_COLOR, STAGE_LETTERS } from '../lib/monthlyProduction';
 import type { MonthlyProduction } from '../lib/monthlyProduction';
 import { expandAmbientRecipeMap, expandRecipeMap } from '../lib/bomExpansion';
-import { buildMaterialWorkbook } from '../lib/materialWorkbook';
+import { buildMaterialWorkbook, makePriceResolver } from '../lib/materialWorkbook';
 import { PM_COL, toRawMonth } from '../lib/productionMonthly';
 import type { ProductionMonthlyDoc } from '../lib/productionMonthly';
 import { remapInputs } from '../lib/materialInputMap';
@@ -594,7 +594,14 @@ export default function MaterialAnalysis() {
           .then((snap) => snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<CategoryDoc, 'id'>) })))
           .catch(() => [] as CategoryDoc[]),
       ]);
-      const unionRows = [...aResult.rows, ...bResult.rows].map((r) => ({ key: r.key, name: r.name }));
+      // 수식 엑셀은 반제품 펼침 체크와 무관하게 항상 원물로 펼친다 — 실투입(ERP)은 원물만 있어 원가율분해·수율이
+      // 원재료수율 화면과 같은 기준이어야 한다. 체크를 끈 상태면 엑셀용으로 다시 계산한다.
+      const wbRecipe = expandSub ? effRecipeMap : expandRecipeMap(srcRecipe, srcSub);
+      const wbAmbient = expandSub ? effAmbientRecipeMap : expandAmbientRecipeMap(srcAmbient, srcSub);
+      const usage = (m: string, raw: RawMonth) => computeMonthlyUsage(m, raw.entries, raw.items, raw.ambient, raw.logistics, wbRecipe, wbAmbient, priceMap, undefined, raw.logisticsByCode);
+      const resA = expandSub || !aRaw ? aResult : usage(monthA, aRaw);
+      const resB = expandSub || !bRaw ? bResult : usage(monthB, bRaw);
+      const unionRows = [...resA.rows, ...resB.rows].map((r) => ({ key: r.key, name: r.name }));
       const wbKey = (k: string) => (k.startsWith(CODE_KEY_PREFIX) ? k.slice(CODE_KEY_PREFIX.length) : k);
       const toWb = (m: Record<string, number>) => {
         const o: Record<string, number> = {};
@@ -604,9 +611,14 @@ export default function MaterialAnalysis() {
       const actualNames: Record<string, string> = {};
       [inA.names, inB.names].forEach((nm) => Object.entries(nm).forEach(([k, v]) => { if (v && !actualNames[wbKey(k)]) actualNames[wbKey(k)] = v; }));
       const catIdx = buildCategoryIndex(catDocs);
-      // A월 단가가 없는 원재료는 B월 단가로 본다 (워크북과 같은 규칙) — 검증 행이 같은 기준으로 비교되게
-      const bPriced = new Map((aResultBPrice?.rows || []).map((r) => [r.key, r.cost]));
-      const appTotalA = aResult.rows.reduce((s2, r) => s2 + (r.hasPrice ? r.cost : (bPriced.get(r.key) || 0)), 0);
+      // 검증 행(앱 vs 엑셀 ③)도 워크북과 같은 단가 규칙으로 — A월은 단가가 없으면 B월(없으면 가까운 달) 단가
+      const res = makePriceResolver(priceMap, monthB);
+      const ref = (r: { name: string; code?: string }) => {
+        const code = r.code ? normalizeCode(r.code) : '';
+        return { code, name: priceNameByCode.get(CODE_KEY_PREFIX + code) || r.name, matchName: r.name };
+      };
+      const appTotalA = resA.rows.reduce((s2, r) => s2 + r.grams * (res.lookup(monthA, ref(r)) ?? res.bApplied(ref(r)).price), 0);
+      const appTotalB = resB.rows.reduce((s2, r) => s2 + r.grams * (res.lookup(monthB, ref(r)) ?? 0), 0);
       // 그 두 달 생산 데이터에 실제로 찍힌 원본 전체코드 (변형 -01/-51 구분용)
       const producedCodes = Array.from(new Set([
         ...(aRaw?.items || []).map((it) => it.code || ''),
@@ -614,12 +626,11 @@ export default function MaterialAnalysis() {
         ...(aRaw?.entries || []).map((e) => e.code || ''),
         ...(bRaw?.entries || []).map((e) => e.code || ''),
       ].filter(Boolean)));
-      const sum = (rows: { cost: number }[]) => rows.reduce((s2, x) => s2 + x.cost, 0);
       const blob = await buildMaterialWorkbook({
         monthA, monthB, aProd, bProd, productNameByCode,
-        recipeMap: effRecipeMap, ambientRecipeMap: effAmbientRecipeMap,
+        recipeMap: wbRecipe, ambientRecipeMap: wbAmbient,
         priceMap, priceNameByCode,
-        appTotalA, appTotalB: sum(bResult.rows),
+        appTotalA, appTotalB,
         productCodes, producedCodes,
         outflowA: outA, outflowB: outB,
         recipeLabel,

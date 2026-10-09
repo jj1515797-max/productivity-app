@@ -113,12 +113,14 @@ function tsEffects(m: DecompMaterial, k: number, ST: ReturnType<typeof statusLab
   else if (aOK) st = bOK ? ST.ok : (F === 0 && H === 0 ? ST.bUnused : H === 0 ? ST.bNoAct : F === 0 ? ST.bNoStd : ST.bOut);
   else if (E === 0 && G === 0) st = bOK ? ST.aUnused : (H === 0 ? ST.bNoAct : ST.bOut);
   else st = G === 0 ? ST.aNoAct : E === 0 ? ST.aNoStd : ST.aOut;
-  const okL = st === ST.ok || st === ST.bUnused;
-  const mix = okL ? G * (F / E - k) * N : st === ST.aUnused ? H * N : 0;
+  // A월 수율이 정상이면 ③ 제품구성은 B월 상태와 무관하게 계산된다. B월이 이상하면 수율 몫만 ⑤ 기타로 간다.
+  const mixOK = aOK && !m.excluded && [ST.ok, ST.bUnused, ST.bNoAct, ST.bNoStd, ST.bOut].includes(st);
+  const isNew = st === ST.aUnused;
+  const mix = mixOK ? G * (F / E - k) * N : isNew ? H * N : 0;
   const yld = st === ST.ok ? (H - (F * G) / E) * N : 0;
-  const other = okL || st === ST.aUnused ? 0 : (H - k * G) * N;
+  const other = mixOK ? (st === ST.ok ? 0 : (H - (F * G) / E) * N) : isNew ? 0 : (H - k * G) * N;
   const price = k * G * (N - M);
-  const factor = okL ? (N * G) / E : st === ST.aUnused ? (F > 0 ? (N * H) / F : 0) : 0;
+  const factor = mixOK ? (N * G) / E : isNew ? (F > 0 ? (N * H) / F : 0) : 0;
   return { st, mix, yld, other, price, factor };
 }
 
@@ -188,8 +190,8 @@ export function addDecompSheets(wb: ExcelJS.Workbook, ctx: DecompCtx): void {
     { header: `${monthB} 수율`, width: 10 },
     { header: '수율 증감', width: 10 },
     { header: '상태', width: 16 },
-    { header: `${monthA} 단가(원/g)`, width: 11 },
-    { header: `${monthB} 단가(원/g)`, width: 11 },
+    { header: `${monthA} 단가 적용(원/g)`, width: 11 },
+    { header: `${monthB} 단가 적용(원/g)`, width: 11 },
     { header: `${monthA} 원재료비`, width: 14 },
     { header: `${monthB} 원재료비`, width: 14 },
     { header: '① 물량', width: 13 },
@@ -203,6 +205,9 @@ export function addDecompSheets(wb: ExcelJS.Workbook, ctx: DecompCtx): void {
     { header: `${monthA} 단가 출처`, width: 16 },
     { header: '수율 유리 순위', width: 9 },
     { header: '수율 불리 순위', width: 9 },
+    { header: `${monthB} 단가 출처`, width: 16 },
+    { header: `${monthA} 다른 달 단가분`, width: 12 },
+    { header: `${monthB} 다른 달 단가분`, width: 12 },
   ];
   styleHeader(wsM, 1, 'FF833C0B');
   mats.forEach((m, i) => {
@@ -217,7 +222,8 @@ export function addDecompSheets(wb: ExcelJS.Workbook, ctx: DecompCtx): void {
         + `IF(${aOK},IF(${bOK},"${ST.ok}",IF(AND(${F}=0,${H}=0),"${ST.bUnused}",IF(${H}=0,"${ST.bNoAct}",IF(${F}=0,"${ST.bNoStd}","${ST.bOut}")))),`
         + `IF(AND(${E}=0,${G}=0),IF(${bOK},"${ST.aUnused}",IF(${H}=0,"${ST.bNoAct}","${ST.bOut}")),`
         + `IF(${G}=0,"${ST.aNoAct}",IF(${E}=0,"${ST.aNoStd}","${ST.aOut}")))))` };
-    const okL = `OR(${c('L')}="${ST.ok}",${c('L')}="${ST.bUnused}")`;
+    // A월 수율이 정상이면(상태가 정상·B월엔 안 씀·B월 쪽 문제) ③ 제품구성을 계산한다. B월 쪽이 이상하면 수율 몫만 ⑤ 기타로.
+    const mixOK = `AND(${E}>0,${G}>0,OR(${c('L')}="${ST.ok}",${c('L')}="${ST.bUnused}",${c('L')}="${ST.bNoAct}",${c('L')}="${ST.bNoStd}",${c('L')}="${ST.bOut}"))`;
     const isNew = `${c('L')}="${ST.aUnused}"`;
     const FperE = `IF(${E}=0,0,${F}/${c('E')})`;
     const row = wsM.addRow([
@@ -230,20 +236,23 @@ export function addDecompSheets(wb: ExcelJS.Workbook, ctx: DecompCtx): void {
       { formula: `IF(AND(ISNUMBER(${c('I')}),ISNUMBER(${c('J')})),${c('J')}-${c('I')},"")` },
       status,
       { formula: `IFERROR(${priceCol('P', R)},0)` },
-      { formula: `N(IFERROR(${priceCol('E', R)},0))` },
+      { formula: `N(IFERROR(${priceCol('R', R)},0))` },
       { formula: `${G}*${c('M')}` },
       { formula: `${H}*${c('N')}` },
       { formula: `(${kk}-1)*${c('O')}` },
       { formula: `${kk}*${G}*(${c('N')}-${c('M')})` },
-      { formula: `IF(${okL},${G}*(${FperE}-${kk})*${c('N')},IF(${isNew},${H}*${c('N')},0))` },
+      { formula: `IF(${mixOK},${G}*(${FperE}-${kk})*${c('N')},IF(${isNew},${H}*${c('N')},0))` },
       { formula: `IF(${c('L')}="${ST.ok}",(${H}-${FperE}*${G})*${c('N')},0)` },
-      { formula: `IF(OR(${okL},${isNew}),0,(${H}-${kk}*${G})*${c('N')})` },
+      { formula: `IF(${mixOK},IF(${c('L')}="${ST.ok}",0,(${H}-${FperE}*${G})*${c('N')}),IF(${isNew},0,(${H}-${kk}*${G})*${c('N')}))` },
       { formula: `(${c('P')}-${c('O')})-(${c('Q')}+${c('R')}+${c('S')}+${c('T')}+${c('U')})` },
-      { formula: `IF(${okL},IF(${E}=0,0,${c('N')}*${G}/${c('E')}),IF(${isNew},IF(${F}=0,0,${c('N')}*${H}/${c('F')}),0))` },
+      { formula: `IF(${mixOK},IF(${E}=0,0,${c('N')}*${G}/${c('E')}),IF(${isNew},IF(${F}=0,0,${c('N')}*${H}/${c('F')}),0))` },
       { formula: `IF(${c('L')}="${ST.ok}",(${H}-${FperE}*${G})/1000,"")` },
       { formula: `IFERROR(${priceCol('Q', R)},"")` },
       { formula: `IF(N(${c('T')})<0,RANK(${c('T')},$T$2:$T$${dLast},1)+COUNTIF($T$2:$T${R},${c('T')})-1,"")` },
       { formula: `IF(N(${c('T')})>0,RANK(${c('T')},$T$2:$T$${dLast},0)+COUNTIF($T$2:$T${R},${c('T')})-1,"")` },
+      { formula: `IFERROR(${priceCol('S', R)},"")` },
+      { formula: `IF(RIGHT(${c('Y')},2)="대체",${c('O')},0)` },
+      { formula: `IF(RIGHT(${c('AB')},2)="대체",${c('P')},0)` },
     ]);
     [5, 6, 7, 8].forEach((x) => { row.getCell(x).numFmt = WON; });
     [7, 8].forEach((x) => { row.getCell(x).fill = INPUT_FILL; });
@@ -253,12 +262,13 @@ export function addDecompSheets(wb: ExcelJS.Workbook, ctx: DecompCtx): void {
     [15, 16, 17, 18, 19, 20, 21, 22].forEach((x) => { row.getCell(x).numFmt = WON; });
     row.getCell(23).numFmt = '#,##0.000';
     row.getCell(24).numFmt = '+#,##0.0;-#,##0.0;0';
-    [12, 25, 26, 27].forEach((x) => { row.getCell(x).alignment = { horizontal: 'center' }; });
+    [12, 25, 26, 27, 28].forEach((x) => { row.getCell(x).alignment = { horizontal: 'center' }; });
+    [29, 30].forEach((x) => { row.getCell(x).numFmt = WON; row.getCell(x).font = { size: 9, color: { argb: 'FF808080' } }; });
     row.getCell(20).font = { bold: true };
     [17, 18, 22, 23, 26, 27].forEach((x) => { row.getCell(x).font = { size: 9, color: { argb: 'FF808080' } }; });
   });
   wsM.views = [{ state: 'frozen', xSplit: 3, ySplit: 1 }];
-  if (mats.length > 0) wsM.autoFilter = { from: 'A1', to: `AA${dLast}` };
+  if (mats.length > 0) wsM.autoFilter = { from: 'A1', to: `AD${dLast}` };
 
   /* ================= 제품별구성 ================= */
   const wsP = wb.addWorksheet(PROD_SHEET);
@@ -406,19 +416,23 @@ export function addDecompSheets(wb: ExcelJS.Workbook, ctx: DecompCtx): void {
   label(15, `   └ ${monthA} 실투입 × ${monthB} 단가`, { indent: true });
   f(15, 2, `SUMPRODUCT(${MR('G')},${MR('N')})`, WON);
   note(15, 5, '단가를 같게 놓고 본 A월 원재료비 — 단가 효과의 기준');
-  label(16, `   └ ${monthA} 단가가 없어 ${monthB} 단가로 계산한 비중`, { indent: true });
-  f(16, 2, `IF(N(B14)=0,"",SUMIF(${MR('Y')},"${monthB} 단가로 대체",${MR('O')})/B14)`, PCT);
-  note(16, 5, '100% 면 단가 효과(②)는 0 으로 잡힙니다. 단가 시트 D열에 작년 단가를 넣거나 8행에서 「내 숫자」를 고르면 나옵니다.');
+  label(16, '   └ 그 달 단가가 없어 다른 달 단가로 계산한 비중', { indent: true });
+  f(16, 2, `IF(N(B14)=0,"",SUM(${MR('AC')})/B14)`, PCT);
+  f(16, 3, `IF(N(C14)=0,"",SUM(${MR('AD')})/C14)`, PCT);
+  note(16, 5, `${monthA} 이 100% 면 단가 효과(②)는 0 으로 잡힙니다 — 단가 시트 D열에 그 달 단가를 넣거나 8행에서 「내 숫자」를 고르세요. ${monthB} 쪽은 그 달 출고가 없던 원재료(단종 등)를 가까운 달 단가로 채운 몫입니다.`, 30);
   label(17, '원재료비 — 내 숫자');
   f(17, 2, 'IF(B7="","",B7)', WON); f(17, 3, 'IF(C7="","",C7)', WON); dRow(17, '+#,##0;-#,##0;0');
   label(18, '   └ 차이 (내 숫자 − 계산)', { indent: true });
   f(18, 2, 'IF(B17="","",B17-B14)', '+#,##0;-#,##0;0'); f(18, 3, 'IF(C17="","",C17-C14)', '+#,##0;-#,##0;0');
   note(18, 5, { formula: 'IF(AND(B17="",C17=""),"7행에 내 원재료비를 넣으면 계산값과 비교됩니다.",'
     + `"차이율 "&IF(OR(B17="",N(B14)=0),"-",${sTxt('B18/B14', '0.0%')})&" / "&IF(OR(C17="",N(C14)=0),"-",${sTxt('C18/C14', '0.0%')})`
-    + '&IF(OR(AND(B17<>"",N(B14)<>0,ABS(N(B18)/N(B14))>0.02),AND(C17<>"",N(C14)<>0,ABS(N(C18)/N(C14))>0.02))," ⚠ 2% 넘게 차이 — 포함 원재료 범위나 단가 기준이 다른지 보세요"," ✔ 거의 같습니다"))' }, 30);
+    + '&IF(OR(AND(B17<>"",ABS(N(B18))>0.02*ABS(N(B14))),AND(C17<>"",ABS(N(C18))>0.02*ABS(N(C14))))," ⚠ 2% 넘게 차이 — 포함 원재료 범위나 단가 기준이 다른지 보세요"," ✔ 거의 같습니다"))' }, 30);
   label(19, '★ 분해에 쓰는 원재료비');
-  f(19, 2, 'IF(AND(B8="내 숫자",N(B7)>0),B7,B14)', WON, true); f(19, 3, 'C14', WON, true); dRow(19, '+#,##0;-#,##0;0');
-  note(19, 5, { formula: `IF(AND(B8="내 숫자",N(B7)>0),"${monthA} 은 내 숫자, ${monthB} 은 계산값을 씁니다.","두 달 모두 계산값(실투입 × 단가)을 씁니다.")` });
+  f(19, 2, 'IF(AND(B8="내 숫자",N(B7)>0),B7,B14)', WON, true);
+  f(19, 3, 'IF(AND(B8="내 숫자",N(C7)>0),C7,C14)', WON, true); dRow(19, '+#,##0;-#,##0;0');
+  note(19, 5, { formula: 'IF(B8<>"내 숫자","두 달 모두 계산값(실투입 × 단가)을 씁니다.",'
+    + 'IF(AND(N(B7)>0,N(C7)>0),"두 달 모두 내 숫자를 씁니다 — 계산값과의 범위 차이는 ② 단가에 섞입니다(두 달 비슷하면 상쇄).",'
+    + 'IF(N(B7)>0,"⚠ A월만 내 숫자입니다. 7행 B월에도 내 숫자를 넣어야 범위 차이가 상쇄됩니다.","⚠ 7행에 내 숫자를 넣어야 적용됩니다.")))' }, 30);
   label(20, '원재료비율 (원재료비 ÷ 생산금액)');
   f(20, 2, 'IF(N(B6)=0,"",B19/B6)', '0.00%', true); f(20, 3, 'IF(N(C6)=0,"",C19/C6)', '0.00%', true); dRow(20, PP);
   [2, 3].forEach((x) => { cell(20, x).font = { bold: true, size: 12, color: { argb: 'FFC00000' } }; });
@@ -448,9 +462,9 @@ export function addDecompSheets(wb: ExcelJS.Workbook, ctx: DecompCtx): void {
   note(28, 6, '많이 만들면 원재료비도 느는 게 정상. 생산금액도 같이 늘어 원가율에는 영향이 없습니다.', 30);
   const pp = (r: number) => f(r, 5, `IF(OR(B${r}="",N($C$6)=0),"",B${r}/$C$6)`, PP);
   label(29, '② 원재료 단가');
-  f(29, 2, 'IF(C13="","",C13*(B15-B19))', SG, true);
-  f(29, 3, `IF(B8="내 숫자","",${sumIf('R', '<0')})`, SG); f(29, 4, `IF(B8="내 숫자","",${sumIf('R', '>0')})`, SG); pp(29);
-  note(29, 6, { formula: `IF(N(B16)>=0.999,"${monthA} 단가가 없어 0 으로 잡혔습니다 (모든 원재료를 ${monthB} 단가로 계산).",IF(B8="내 숫자","${monthA} 원재료비(내 숫자) 로 역산한 값 — 원재료별로는 안 나뉩니다.","원재료를 더 비싸게(+) / 싸게(−) 산 몫. 원재료별분해 R열."))` }, 30);
+  f(29, 2, 'IF(C13="","",C13*(B15-B19)+(C19-C14))', SG, true);
+  f(29, 3, `IF(AND(B8="내 숫자",OR(N(B7)>0,N(C7)>0)),"",${sumIf('R', '<0')})`, SG); f(29, 4, `IF(AND(B8="내 숫자",OR(N(B7)>0,N(C7)>0)),"",${sumIf('R', '>0')})`, SG); pp(29);
+  note(29, 6, { formula: `IF(AND(B8="내 숫자",OR(N(B7)>0,N(C7)>0)),"내 숫자로 역산한 값 — 원재료별로는 안 나뉘고, 계산값과의 범위 차이가 섞여 있습니다.",IF(N(B16)>=0.999,"${monthA} 단가가 없어 0 으로 잡혔습니다 (모든 원재료를 ${monthB} 단가로 계산).","원재료를 더 비싸게(+) / 싸게(−) 산 몫. 원재료별분해 R열."))` }, 30);
   label(30, '③ 제품 구성 (원재료 쪽)');
   f(30, 2, `SUM(${MR('S')})`, SG, true); f(30, 3, sumIf('S', '<0'), SG); f(30, 4, sumIf('S', '>0'), SG); pp(30);
   note(30, 6, '원재료가 많이(비싸게) 드는 제품을 생산량 비율보다 더 만들면 +, 덜 드는 제품 위주면 −. 제품별은 「제품별구성」 시트.', 30);
@@ -482,8 +496,9 @@ export function addDecompSheets(wb: ExcelJS.Workbook, ctx: DecompCtx): void {
   };
   ratioRow(38, 'ⓐ 개당 생산금액 (판가 · 매출 구성)', 'IF(OR(N(B6)=0,N(C6)=0,C13=""),"",B20*(C13*B6-C6)/C6)',
     '제품 1개당 생산금액이 오르면 −(원가율 내려감). ① 물량은 여기서 생산금액 증가와 상쇄됩니다.');
-  ratioRow(39, '   ⓐ-1 그중 제품 구성 (매출 쪽)', 'IF(OR(B38="",N(B24)=0,N(C24)=0),"",B20*(C13*B6-B6*C24/B24)/C6)',
-    '비싼 제품을 더 만들어 매출이 오른 몫. 제품수익성 E열에 공급가를 넣어야 나옵니다.', { indent: true });
+  ratioRow(39, '   ⓐ-1 그중 제품 구성 (매출 쪽)',
+    'IF(OR(B38="",N(B24)=0,N(C24)=0,N(B25)<0.5,N(C25)<0.5),"",B20*C13*B6*(1-(C24/B24)/((C12*C25)/(B12*B25)))/C6)',
+    '비싼 제품을 더 만들어 개당 매출이 오른 몫 (공급가는 두 달 같다고 보고, 공급가를 넣은 제품끼리 비교). 제품수익성 E열에 공급가를 넣어야 나오고, 넣은 제품이 생산량의 50% 미만이면 비웁니다.', { indent: true });
   ratioRow(40, '   ⓐ-2 그중 판가 · 기타', 'IF(B39="","",B38-B39)', '공급가는 그대로인데 생산금액이 달라진 몫 (판가 인상 · 할인 · 생산금액 기준 차이).', { indent: true });
   ratioRow(41, '② 원재료 단가', 'IF(OR(N(C6)=0,B29=""),"",B29/C6)', '위 ② 금액 ÷ B월 생산금액');
   ratioRow(42, '③ 제품 구성 (원재료 쪽)', 'IF(N(C6)=0,"",B30/C6)', '위 ③ 금액 ÷ B월 생산금액');
@@ -508,8 +523,9 @@ export function addDecompSheets(wb: ExcelJS.Workbook, ctx: DecompCtx): void {
       + `&"수율 "&${ppT('B43')}&" · 제품 구성 "&IF(B46="",${ppT('B42')}&"(원재료 쪽)",${ppT('B46')})&" · 원재료 단가 "&${ppT('B41')}&" · "&IF(B39="","개당 생산금액 "&${ppT('B38')},"판가·기타 "&${ppT('B40')})&" · 기타 "&${ppT('B44')})`,
     `"원재료비 "&TEXT(B19,"#,##0")&" → "&TEXT(C19,"#,##0")&" 원 ("&${won('C19-B19')}&"). 물량 "&${won('N(B28)')}&" · 단가 "&${won('N(B29)')}&" · 제품 구성 "&${won('B30')}&" · 수율 "&${won('B31')}&" · 기타 "&${won('B32')}`,
     `"수율: 좋아진 원재료 "&${won('C31')}&" + 나빠진 원재료 "&${won('D31')}&" = "&${won('B31')}&" 원.  제품 구성: 유리 "&${won('C30')}&" + 불리 "&${won('D30')}&" = "&${won('B30')}&" 원."`,
-    `IF(N(B16)>=0.5,"⚠ ${monthA} 단가가 없어 원재료비의 "&TEXT(B16,"0%")&"를 ${monthB} 단가로 계산했습니다 — 단가 효과는 그만큼 0 으로 잡힙니다.",`
-      + `IF(AND(N(C19-B19)<>0,ABS(N(B32))>ABS(N(C19-B19))*0.3),"⚠ 기타(수율 비교 불가)가 큽니다 — 원재료별분해 L열에서 실투입 없음·범위 밖 원재료를 확인하세요.",""))`,
+    `IF(AND(B8="내 숫자",OR(N(B7)>0,N(C7)>0)),"ℹ 단가 효과(②)는 7행 내 숫자로 역산한 값입니다 — 계산값과 포함 원재료 범위가 다르면 그 차이도 ② 에 들어 있습니다(18행 차이율 확인).",`
+      + `IF(N(B16)>=0.5,"⚠ ${monthA} 단가가 없어 원재료비의 "&TEXT(B16,"0%")&"를 다른 달(${monthB}) 단가로 계산했습니다 — 단가 효과는 그만큼 0 으로 잡힙니다.",`
+      + `IF(AND(N(C19-B19)<>0,ABS(N(B32))>ABS(N(C19-B19))*0.3),"⚠ 기타(수율 비교 불가)가 큽니다 — 원재료별분해 L열에서 실투입 없음·범위 밖 원재료를 확인하세요.","")))`,
   ];
   if (!ctx.hasActualA || !ctx.hasActualB) {
     sentences.unshift(`"⚠ 실투입(설정 › 실제 투입중량)이 ${!ctx.hasActualA ? monthA : ''}${!ctx.hasActualA && !ctx.hasActualB ? ', ' : ''}${!ctx.hasActualB ? monthB : ''} 에 없습니다 — 수율·제품 구성을 나눌 수 없어 대부분 ⑤ 기타로 갑니다."`);
@@ -528,7 +544,7 @@ export function addDecompSheets(wb: ExcelJS.Workbook, ctx: DecompCtx): void {
   const cats = [...ctx.categoryOrder.filter((c) => present.has(c)), ...[...present].filter((c) => !ctx.categoryOrder.includes(c)).sort((a, b) => (a === '미분류' ? 1 : b === '미분류' ? -1 : a.localeCompare(b)))];
   if (cats.length > 0) {
     r += 2;
-    header(r, ['분류별', '④ 수율 (원)', '③ 제품 구성 (원)', '② 단가 (원)', '⑤ 기타 (원)', `${monthA} 수율`, `${monthB} 수율`, `${monthB} 원재료비`], 'FF833C0B', 9);
+    header(r, ['분류별', '④ 수율 (원)', '③ 제품 구성 (원)', '② 단가 (원, 계산값 기준)', '⑤ 기타 (원)', `${monthA} 수율`, `${monthB} 수율`, `${monthB} 원재료비`], 'FF833C0B', 9);
     const top = r + 1;
     cats.forEach((cat) => {
       r += 1;

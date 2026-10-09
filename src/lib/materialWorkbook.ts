@@ -232,6 +232,40 @@ function buildProducts(inp: WorkbookInput): ProductRow[] {
   return out;
 }
 
+export interface PriceKeyRef { code: string; name: string; matchName: string }
+
+/** 수식 엑셀의 단가 규칙 — 워크북과 앱 검증값이 같은 규칙을 쓰도록 공용으로 둔다.
+ *  lookup   : 코드 → 레시피명 → 단가표 정식명. 그 달 단가표에 없으면 undefined (0원과 '없음'을 구분)
+ *  bApplied : B월 단가. 없으면 가장 가까운 달(이전 달 우선, 없으면 이후 달) 단가 — 단종 원재료처럼
+ *             B월에 출고가 없어 단가가 안 생긴 원재료가 원가에서 통째로 빠지지 않게 한다. */
+export function makePriceResolver(priceMap: Map<string, number>, monthB: string) {
+  const lookup = (month: string, m: PriceKeyRef): number | undefined => {
+    if (m.code) {
+      const v = priceMap.get(monthPriceKey(month, CODE_KEY_PREFIX + normalizeCode(m.code)));
+      if (v !== undefined) return v;
+    }
+    // 레시피명 우선(앱과 동일) → 그래도 없으면 단가표 정식명으로 2차 시도
+    const byRecipe = priceMap.get(monthPriceKey(month, normalizeMaterialName(m.matchName)));
+    if (byRecipe !== undefined) return byRecipe;
+    return priceMap.get(monthPriceKey(month, normalizeMaterialName(m.name)));
+  };
+  const months = Array.from(new Set(Array.from(priceMap.keys()).map((k) => k.split('|')[0]).filter(Boolean)));
+  const order = [
+    ...months.filter((x) => x < monthB).sort().reverse(),
+    ...months.filter((x) => x > monthB).sort(),
+  ];
+  const bApplied = (m: PriceKeyRef): { price: number; month: string | null } => {
+    const v = lookup(monthB, m);
+    if (v !== undefined) return { price: v, month: null };
+    for (const mo of order) {
+      const x = lookup(mo, m);
+      if (x !== undefined) return { price: x, month: mo };
+    }
+    return { price: 0, month: null };
+  };
+  return { lookup, bApplied };
+}
+
 export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
   const { monthA, monthB, priceMap, priceNameByCode } = inp;
   const products = buildProducts(inp);
@@ -252,18 +286,9 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     });
   }));
 
-  /** 그 달 단가가 단가표에 없으면 undefined (0 원과 '없음'을 구분) */
-  const priceLookup = (month: string, m: { code: string; name: string; matchName: string }): number | undefined => {
-    if (m.code) {
-      const v = priceMap.get(monthPriceKey(month, CODE_KEY_PREFIX + normalizeCode(m.code)));
-      if (v !== undefined) return v;
-    }
-    // 레시피명 우선(앱과 동일) → 그래도 없으면 단가표 정식명으로 2차 시도
-    const byRecipe = priceMap.get(monthPriceKey(month, normalizeMaterialName(m.matchName)));
-    if (byRecipe !== undefined) return byRecipe;
-    return priceMap.get(monthPriceKey(month, normalizeMaterialName(m.name)));
-  };
-  const priceOf = (month: string, m: { code: string; name: string; matchName: string }): number => priceLookup(month, m) ?? 0;
+  const priceRes = makePriceResolver(priceMap, monthB);
+  const priceLookup = priceRes.lookup;
+  const priceOf = (month: string, m: PriceKeyRef): number => priceLookup(month, m) ?? 0;
 
   const terms = inp.highCostTerms.map(normalizeMaterialName).filter(Boolean);
   const excl = inp.highCostExcludes.map(normalizeMaterialName).filter(Boolean);
@@ -380,12 +405,23 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     { header: `${monthB} 실제출고`, width: 12 },
     { header: `★ ${monthA} 단가 적용(원/g)`, width: 15 },
     { header: `${monthA} 단가 출처`, width: 16 },
+    { header: `★ ${monthB} 단가 적용(원/g)`, width: 15 },
+    { header: `${monthB} 단가 출처`, width: 16 },
   ];
   styleHeader(wsPrice, 1, 'FF7030A0');
-  // A월 단가가 비어 있으면(단가표에 없음) B월 단가로 본다 — 작년처럼 단가가 아예 없는 달도 '같은 단가' 비교가 되게.
-  // D열에 값을 넣으면 그 값이 우선한다.
-  const priceApplied = (R: number) => `IF(ISNUMBER($D${R}),$D${R},N($E${R}))`;
-  const priceSource = (R: number) => `IF(ISNUMBER($D${R}),"실측",IF(N($E${R})>0,"${monthB} 단가로 대체","단가 없음"))`;
+  // A월 단가가 비어 있으면(단가표에 없음) B월 단가(R열)로 본다 — 작년처럼 단가가 아예 없는 달도 '같은 단가' 비교가 되게.
+  // B월 단가도 없으면(그 달 출고가 없던 단종 원재료 등) 가장 가까운 달 단가를 R열에 넣는다.
+  // D·E열에 값을 넣으면 그 값이 우선한다.
+  const bFallback = (m: PriceKeyRef) => {
+    const b = priceRes.bApplied(m);
+    return b.month ? { price: b.price, month: b.month } : { price: 0, month: '' };
+  };
+  const priceApplied = (R: number) => `IF(ISNUMBER($D${R}),$D${R},N($R${R}))`;
+  const priceSource = (R: number, fbMonth: string) =>
+    `IF(ISNUMBER($D${R}),"실측",IF(N($E${R})>0,"${monthB} 단가로 대체",IF(N($R${R})>0,"${fbMonth || monthB} 단가로 대체","단가 없음")))`;
+  const bApplied = (R: number, fbPrice: number) => `IF(N($E${R})>0,$E${R},${fbPrice})`;
+  const bSource = (R: number, fbMonth: string, hasReal: boolean) =>
+    `IF(N($E${R})>0,"실측",IF(N($R${R})>0,"${fbMonth || monthB} 단가로 대체","${hasReal ? '실측(0원)' : '단가 없음'}"))`;
   ingList.forEach((m, i) => {
     const R = i + 2;
     const pa = priceLookup(monthA, m);
@@ -402,9 +438,14 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
       { formula: `IF(N(IFERROR(VLOOKUP($A${R},원재료집계!$A$2:$L$${aggLast},10,FALSE),0))>0,"있음","없음")` },
       { formula: `IF(N(IFERROR(VLOOKUP($A${R},원재료집계!$A$2:$L$${aggLast},12,FALSE),0))>0,"있음","없음")` },
       { formula: priceApplied(R) },
-      { formula: priceSource(R) },
+      { formula: priceSource(R, bFallback(m).month) },
+      { formula: bApplied(R, bFallback(m).price) },
+      { formula: bSource(R, bFallback(m).month, priceLookup(monthB, m) !== undefined) },
     ]);
     r.getCell(16).numFmt = '#,##0.000'; r.getCell(16).font = { bold: true };
+    r.getCell(18).numFmt = '#,##0.000'; r.getCell(18).font = { bold: true };
+    r.getCell(19).alignment = { horizontal: 'center' };
+    if (priceLookup(monthB, m) === undefined) r.getCell(19).font = { size: 9, color: { argb: 'FFB45309' } };
     r.getCell(17).alignment = { horizontal: 'center' };
     if (pa === undefined) r.getCell(17).font = { size: 9, color: { argb: 'FFB45309' } };
     r.getCell(4).fill = INPUT_FILL; r.getCell(4).numFmt = '#,##0.000';
@@ -432,7 +473,11 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
       row.getCell(4).value = pa ?? null;
       row.getCell(5).value = pb;
       row.getCell(16).value = { formula: priceApplied(R) };
-      row.getCell(17).value = { formula: priceSource(R) };
+      row.getCell(17).value = { formula: priceSource(R, bFallback(m).month) };
+      row.getCell(18).value = { formula: bApplied(R, bFallback(m).price) };
+      row.getCell(19).value = { formula: bSource(R, bFallback(m).month, priceLookup(monthB, m) !== undefined) };
+      row.getCell(18).numFmt = '#,##0.000'; row.getCell(18).font = { bold: true };
+      row.getCell(19).alignment = { horizontal: 'center' };
       [4, 5].forEach((c) => { row.getCell(c).fill = INPUT_FILL; row.getCell(c).numFmt = '#,##0.000'; });
       row.getCell(16).numFmt = '#,##0.000'; row.getCell(16).font = { bold: true };
       row.getCell(17).alignment = { horizontal: 'center' };
@@ -440,7 +485,7 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     });
   }
   wsPrice.views = [{ state: 'frozen', ySplit: 1 }];
-  if (ingList.length > 0) wsPrice.autoFilter = { from: 'A1', to: `Q${priceLast}` };
+  if (ingList.length > 0) wsPrice.autoFilter = { from: 'A1', to: `S${priceLast}` };
 
   /* ================= 레시피계산 ================= */
   const wsCalc = wb.addWorksheet('레시피계산');
@@ -455,7 +500,7 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     { header: `${monthB} 생산EA`, width: 13 },
     { header: `${monthA} 사용량(g)`, width: 15 },
     { header: `${monthB} 사용량(g)`, width: 15 },
-    { header: `${monthA} 단가`, width: 11 },
+    { header: `${monthA} 단가(적용)`, width: 11 },
     { header: `${monthB} 단가`, width: 11 },
     { header: `${monthA} 금액`, width: 15 },
     { header: `${monthB} 금액`, width: 15 },
@@ -631,6 +676,7 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     { header: `${monthB} 매칭분 이론량`, width: 17 },
     { header: `${monthA} 단가없음 사용량`, width: 18 },
     { header: `${monthB} 단가없음 사용량`, width: 18 },
+    { header: `${monthA} 다른 달 단가로 계산한 이론금액`, width: 18 },
   ];
   styleHeader(wsAgg, 1, 'FF548235');
   ingList.forEach((m, i) => {
@@ -657,15 +703,16 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
       { formula: `IF(ISNUMBER($L${R}),$E${R},0)` },
       { formula: `IF(N(IFERROR(INDEX(단가!$P$2:$P$${priceLast},MATCH($A${R},단가!$A$2:$A$${priceLast},0)),0))=0,$D${R},0)` },
       { formula: `IF(N(IFERROR(VLOOKUP($A${R},단가!$A$2:$E$${priceLast},5,FALSE),0))=0,$E${R},0)` },
+      { formula: `IF(RIGHT(IFERROR(INDEX(단가!$Q$2:$Q$${priceLast},MATCH($A${R},단가!$A$2:$A$${priceLast},0)),""),2)="대체",$F${R},0)` },
     ]);
-    [17, 18, 19, 20, 21, 22].forEach((c) => { row.getCell(c).numFmt = '#,##0'; });
+    [17, 18, 19, 20, 21, 22, 23].forEach((c) => { row.getCell(c).numFmt = '#,##0'; });
     [4, 5, 6, 7, 8, 10, 11, 12, 13, 16].forEach((c) => { row.getCell(c).numFmt = '#,##0'; });
     row.getCell(9).numFmt = '0.0%';
     [10, 11, 12, 13].forEach((c) => { row.getCell(c).fill = INPUT_FILL; });
     [14, 15].forEach((c) => { row.getCell(c).numFmt = '0.0%'; });
   });
   wsAgg.views = [{ state: 'frozen', ySplit: 1 }];
-  if (ingList.length > 0) wsAgg.autoFilter = { from: 'A1', to: `V${aggLast}` };
+  if (ingList.length > 0) wsAgg.autoFilter = { from: 'A1', to: `W${aggLast}` };
 
   /* ================= 요약 ================= */
   const ws = wb.getWorksheet('요약')!;
@@ -794,6 +841,10 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     () => ({ formula: `IF(N(B${rGram})=0,"",SUM(원재료집계!$U$2:$U$${aggLast})/B${rGram})` }),
     () => ({ formula: `IF(N(C${rGram})=0,"",SUM(원재료집계!$V$2:$V$${aggLast})/C${rGram})` }),
     dBC, '단가가 0인 원재료가 전체 사용량에서 차지하는 비중 — 그만큼 ③이 과소계상입니다', '0.0%');
+  const rSubst = put(`⑨-2 ${monthA} 단가를 다른 달 단가로 계산한 비중`,
+    () => ({ formula: `IF(N(B${rMat})=0,"",SUM(원재료집계!$W$2:$W$${aggLast})/B${rMat})` }),
+    () => null,
+    null, `${monthA} 단가표에 없어 ${monthB}(또는 가까운 달) 단가로 계산한 이론금액 비중. 높으면 ${monthA} 숫자는 '${monthB} 단가 기준'이라 단가 변화가 안 보입니다`, '0.0%');
 
   ws.addRow([]);
   section(`고단가 원재료 (${inp.highCostTerms.join('·')})`, 'FF7030A0');
@@ -1213,7 +1264,12 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     cr.getCell(1).alignment = { wrapText: true, vertical: 'middle' };
     cr.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF2CC' } };
     cr.height = 30;
-    wsRead.addRow([]);
+    // A월 단가가 없어 다른 달 단가로 계산한 경우 — 이 시트 숫자는 단가 변화가 빠진 '같은 단가' 비교다
+    const subst = `요약!B${rSubst}`;
+    const wr = wsRead.addRow([{ formula: `IF(N(${subst})>=0.5,"⚠ ${monthA} 단가가 없어 이론 원재료비의 "&TEXT(N(${subst}),"0%")&"를 다른 달(${monthB}) 단가로 계산했습니다 — 아래 ③ 고단가 단가 몫은 0 에 가깝고, 단가 변화는 이 시트에 나오지 않습니다.","")` }]);
+    wsRead.mergeCells(wr.number, 1, wr.number, 4);
+    wr.getCell(1).font = { bold: true, size: 10, color: { argb: 'FF9C4221' } };
+    wr.getCell(1).alignment = { wrapText: true, vertical: 'middle' };
 
     /* ── 무엇이 얼마나 밀었나 ── */
     sec('무엇이 원재료비를 밀었나', 'FF1F4E79');
@@ -1347,7 +1403,7 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
       stdB.set(ing.key, (stdB.get(ing.key) || 0) + ing.gPerPiece * p.qtyB);
     }));
     const toDecomp = (m: { key: string; code: string; name: string; matchName: string }): DecompMaterial => {
-      const pB = priceOf(monthB, m);
+      const pB = priceRes.bApplied(m).price;
       const nn = [normalizeMaterialName(m.name), normalizeMaterialName(m.matchName)];
       return {
         key: m.key, code: m.code, name: m.name,
