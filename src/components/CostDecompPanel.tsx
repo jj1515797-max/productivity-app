@@ -49,8 +49,14 @@ function Diverge({ v, max }: { v: number; max: number }) {
   );
 }
 
-const AMT_KEY = (m: string) => `matAnalysis:amt:${m}`;
-const readAmt = (m: string) => { try { return Number(localStorage.getItem(AMT_KEY(m))) || 0; } catch { return 0; } };
+// 캐시 접두사(matAnalysis:) 밖에 둔다 — 「분석결과 삭제」가 사용자가 넣은 생산금액까지 지우지 않게
+const AMT_KEY = (m: string) => `matDecompAmt:${m}`;
+const readAmt = (m: string) => {
+  try {
+    const v = localStorage.getItem(AMT_KEY(m)) ?? localStorage.getItem(`matAnalysis:amt:${m}`);
+    return Number(v) || 0;
+  } catch { return 0; }
+};
 
 export default function CostDecompPanel({
   monthA, monthB, view, alt, recipeSrc, onRecipeSrc, yieldDbReady,
@@ -124,6 +130,19 @@ export default function CostDecompPanel({
   }, [rows, products, t, flexGap, dM, ratio, monthA, monthB, view]);
 
   const [tab, setTab] = useState<'mat' | 'prod' | 'cat'>('mat');
+
+  // 실투입이 없는 달이 있으면 원재료비가 0 으로 계산돼 '100% 감소' 같은 엉뚱한 결론이 나온다 — 안내만 보여준다
+  if (!view.hasActualA || !view.hasActualB) {
+    const miss = [!view.hasActualA ? monthA : '', !view.hasActualB ? monthB : ''].filter(Boolean).join(', ');
+    return (
+      <div className="bg-white border-2 border-amber-300 rounded-lg p-4">
+        <div className="font-bold text-gray-800">💰 원가율 분해 <span className="text-sm font-normal text-gray-500">{monthA} → {monthB}</span></div>
+        <div className="mt-2 text-sm text-amber-900 bg-amber-50 border border-amber-200 rounded px-3 py-2">
+          ⚠ {miss} 실투입(설정 › 실제 투입중량)이 없어 원재료비를 계산할 수 없습니다. 실투입을 넣은 뒤 다시 분석하세요.
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="bg-white border-2 border-slate-300 rounded-lg overflow-hidden">
