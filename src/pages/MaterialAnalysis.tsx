@@ -17,6 +17,9 @@ import type { ProductionMonthlyDoc } from '../lib/productionMonthly';
 import { remapInputs } from '../lib/materialInputMap';
 import { buildCategoryIndex, categoryOf } from '../lib/materialCategory';
 import type { CategoryDoc } from '../lib/materialCategory';
+import { buildDecompMaterials, buildDecompProducts, computeCostDecomp } from '../lib/costDecomp';
+import CostDecompPanel from '../components/CostDecompPanel';
+import type { DecompView } from '../components/CostDecompPanel';
 
 /* ===== 캐시 ===== */
 const PREFIX = 'matAnalysis:';
@@ -193,6 +196,13 @@ export default function MaterialAnalysis() {
   }, []);
   const [expandStages, setExpandStages] = useState<Record<string, boolean>>({});
   const [err, setErr] = useState<string | null>(null);
+  // 원가율 분해(화면) — 분석을 돌린 두 달의 실투입·원재료 분류
+  const [decompSrc, setDecompSrc] = useState<{
+    months: { a: string; b: string };
+    a: { inputs: Record<string, number>; names: Record<string, string> };
+    b: { inputs: Record<string, number>; names: Record<string, string> };
+    cats: CategoryDoc[];
+  } | null>(null);
 
   // 마스터 DB 구독
   const [recipeMap, setRecipeMap] = useState<Map<string, Recipe>>(new Map());
@@ -315,7 +325,13 @@ export default function MaterialAnalysis() {
         setCache(`raw3:${m}`, r, [`raw3:${monthA}`, `raw3:${monthB}`]);
         return r;
       };
-      const [aRaw, bRaw] = await Promise.all([fetchOrCache(monthA), fetchOrCache(monthB)]);
+      const [aRaw, bRaw, inA, inB, cats] = await Promise.all([
+        fetchOrCache(monthA), fetchOrCache(monthB), fetchInputs(monthA), fetchInputs(monthB),
+        getDocs(collection(db, 'materialCategories'))
+          .then((snap) => snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<CategoryDoc, 'id'>) })))
+          .catch(() => [] as CategoryDoc[]),
+      ]);
+      setDecompSrc({ months: { a: monthA, b: monthB }, a: inA, b: inB, cats });
       // 분석 1 — 월별 생산 분해 (단계·품목·실온)
       const aProd_ = computeMonthlyProduction(aRaw.entries, aRaw.items, aRaw.ambient, aRaw.logistics, aRaw.logisticsByCode);
       const bProd_ = computeMonthlyProduction(bRaw.entries, bRaw.items, bRaw.ambient, bRaw.logistics, bRaw.logisticsByCode);
@@ -366,7 +382,7 @@ export default function MaterialAnalysis() {
     setAProd(null); setBProd(null); setARaw(null); setBRaw(null);
     setDiff([]); setFlexed([]);
     setAQty(0); setBQty(0);
-    setProdSearch(''); setExcludedIng([]); setErr(null);
+    setProdSearch(''); setExcludedIng([]); setErr(null); setDecompSrc(null);
   };
 
 
@@ -421,6 +437,47 @@ export default function MaterialAnalysis() {
     () => (bProd && prodFilter ? filterProduction(bProd, prodFilter.coldCodes, prodFilter.ambientNames) : bProd),
     [bProd, prodFilter],
   );
+
+  // ===== 원가율 분해 (화면) =====
+  // 반제품은 항상 원물로 펼친다 — 실투입(ERP)이 원물 기준이라 원재료수율 화면·수식 엑셀과 같은 기준이어야 한다
+  const productNameByCode = useMemo(() => {
+    const m = new Map<string, string>();
+    [aRaw, bRaw].forEach((r) => r?.items.forEach((it) => {
+      const k = canonicalShort(it.code || '');
+      if (k && it.name && it.name !== it.code) m.set(k, it.name);
+    }));
+    return m;
+  }, [aRaw, bRaw]);
+  const decompOf = (useYield: boolean): DecompView | null => {
+    if (!aRaw || !bRaw || !aProd || !bProd || !decompSrc) return null;
+    const R = useYield ? yRecipeMap : recipeMap;
+    const S = useYield && ySubMap.size > 0 ? ySubMap : subRecipeMap;
+    const Am = useYield && yAmbientMap.size > 0 ? yAmbientMap : ambientRecipeMap;
+    const eff = expandRecipeMap(R, S);
+    const effA = expandAmbientRecipeMap(Am, S);
+    const { a: mA, b: mB } = decompSrc.months;
+    const ua = computeMonthlyUsage(mA, aRaw.entries, aRaw.items, aRaw.ambient, aRaw.logistics, eff, effA, priceMap, undefined, aRaw.logisticsByCode);
+    const ub = computeMonthlyUsage(mB, bRaw.entries, bRaw.items, bRaw.ambient, bRaw.logistics, eff, effA, priceMap, undefined, bRaw.logisticsByCode);
+    const catIdx = buildCategoryIndex(decompSrc.cats);
+    const mats = buildDecompMaterials({
+      monthA: mA, stdA: ua.rows, stdB: ub.rows, inputA: decompSrc.a, inputB: decompSrc.b,
+      priceRes: makePriceResolver(priceMap, mB), priceNameByCode,
+      categoryOf: (c, n) => categoryOf(catIdx, c, n), excludeTerms: ['정제수'],
+    });
+    const prods = buildDecompProducts({ aProd, bProd, recipeMap: eff, ambientRecipeMap: effA, productNameByCode });
+    return {
+      result: computeCostDecomp(mats, prods),
+      recipeLabel: useYield ? '분석용 레시피' : '현장 BOM 레시피',
+      coverage: { a: ua.coverage.coveredPct, b: ub.coverage.coveredPct, missingA: ua.coverage.missingQty, missingB: ub.coverage.missingQty },
+      hasActualA: Object.values(decompSrc.a.inputs).some((g) => Number(g) > 0),
+      hasActualB: Object.values(decompSrc.b.inputs).some((g) => Number(g) > 0),
+    };
+  };
+  const decompDeps = [aRaw, bRaw, aProd, bProd, decompSrc, recipeMap, subRecipeMap, ambientRecipeMap, yRecipeMap, ySubMap, yAmbientMap, priceMap, priceNameByCode, productNameByCode];
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const decompView = useMemo(() => decompOf(useYieldDb), [...decompDeps, useYieldDb]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  const decompAlt = useMemo(() => (yRecipeMap.size > 0 ? decompOf(!useYieldDb) : null), [...decompDeps, useYieldDb]);
 
   // 각 월 자체 단가 합계 (기존 비교용)
   const aTotal = aResult?.rows.reduce((s, r) => s + r.cost, 0) || 0;
@@ -734,6 +791,12 @@ export default function MaterialAnalysis() {
         <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
           ⚠️ 설정 페이지에서 레시피·실온이유식레시피·원재료단가를 먼저 입력해야 분석 가능합니다.
         </div>
+      )}
+
+      {decompView && decompSrc && (
+        <CostDecompPanel monthA={decompSrc.months.a} monthB={decompSrc.months.b}
+          view={decompView} alt={decompAlt}
+          recipeSrc={recipeSrc} onRecipeSrc={setRecipeSrc} yieldDbReady={yRecipeMap.size > 0} />
       )}
 
       {/* ============================================================

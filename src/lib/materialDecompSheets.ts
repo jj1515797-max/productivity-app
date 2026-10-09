@@ -17,6 +17,7 @@
  *  ⚠ 수식을 고치면 원재료별 '검산' 열과 원가율분해의 검산 줄이 0 / ✔ 인지 꼭 확인할 것.
  */
 import ExcelJS from 'exceljs';
+import { decompMaterial } from './costDecomp';
 
 export const DECOMP_SHEET = '원가율분해';
 export const MAT_SHEET = '원재료별분해';
@@ -101,29 +102,9 @@ function statusLabels(monthA: string, monthB: string) {
   };
 }
 
-/** 시트 수식과 같은 규칙의 TS 계산 — 행 정렬(큰 것부터)에만 쓴다 */
-function tsEffects(m: DecompMaterial, k: number, ST: ReturnType<typeof statusLabels>) {
-  const { stdA: E, stdB: F, actA: G, actB: H, pA: M, pB: N } = m;
-  const inR = (v: number) => v >= LO && v <= HI;
-  const yA = E > 0 && G > 0 ? E / G : null;
-  const yB = F > 0 && H > 0 ? F / H : null;
-  const aOK = yA !== null && inR(yA);
-  const bOK = yB !== null && inR(yB);
-  let st: string;
-  if (m.excluded) st = ST.excl;
-  else if (E === 0 && F === 0) st = G === 0 && H === 0 ? ST.noUse : ST.outside;
-  else if (aOK) st = bOK ? ST.ok : (F === 0 && H === 0 ? ST.bUnused : H === 0 ? ST.bNoAct : F === 0 ? ST.bNoStd : ST.bOut);
-  else if (E === 0 && G === 0) st = bOK ? ST.aUnused : (H === 0 ? ST.bNoAct : ST.bOut);
-  else st = G === 0 ? ST.aNoAct : E === 0 ? ST.aNoStd : ST.aOut;
-  // A월 수율이 정상이면 ③ 제품구성은 B월 상태와 무관하게 계산된다. B월이 이상하면 수율 몫만 ⑤ 기타로 간다.
-  const mixOK = aOK && !m.excluded && [ST.ok, ST.bUnused, ST.bNoAct, ST.bNoStd, ST.bOut].includes(st);
-  const isNew = st === ST.aUnused;
-  const mix = mixOK ? G * (F / E - k) * N : isNew ? H * N : 0;
-  const yld = st === ST.ok ? (H - (F * G) / E) * N : 0;
-  const other = mixOK ? (st === ST.ok ? 0 : (H - (F * G) / E) * N) : isNew ? 0 : (H - k * G) * N;
-  const price = k * G * (N - M);
-  const factor = mixOK ? (N * G) / E : isNew ? (F > 0 ? (N * H) / F : 0) : 0;
-  return { st, mix, yld, other, price, factor };
+/** 시트 수식과 같은 규칙의 TS 계산(costDecomp.ts) — 행 정렬(큰 것부터)에만 쓴다 */
+function tsEffects(m: DecompMaterial, k: number) {
+  return decompMaterial({ ...m, pASub: false, pBSub: false }, k, LO, HI, SWING);
 }
 
 export function addDecompSheets(wb: ExcelJS.Workbook, ctx: DecompCtx): void {
@@ -151,7 +132,7 @@ export function addDecompSheets(wb: ExcelJS.Workbook, ctx: DecompCtx): void {
   const QA = ctx.products.reduce((s, p) => s + p.qtyA, 0);
   const QB = ctx.products.reduce((s, p) => s + p.qtyB, 0);
   const kTs = QA > 0 ? QB / QA : 0;
-  const eff = new Map(ctx.materials.map((m) => [m.key, tsEffects(m, kTs, ST)]));
+  const eff = new Map(ctx.materials.map((m) => [m.key, tsEffects(m, kTs)]));
   const mats = [...ctx.materials].sort((a, b) => {
     const x = eff.get(a.key)!, y = eff.get(b.key)!;
     const w = (e: typeof x) => Math.abs(e.mix) + Math.abs(e.yld) + Math.abs(e.other) + Math.abs(e.price);
