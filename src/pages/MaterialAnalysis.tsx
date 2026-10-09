@@ -12,6 +12,11 @@ import { computeMonthlyProduction, filterProduction, STAGE_COLOR, STAGE_LETTERS 
 import type { MonthlyProduction } from '../lib/monthlyProduction';
 import { expandAmbientRecipeMap, expandRecipeMap } from '../lib/bomExpansion';
 import { buildMaterialWorkbook } from '../lib/materialWorkbook';
+import { PM_COL, toRawMonth } from '../lib/productionMonthly';
+import type { ProductionMonthlyDoc } from '../lib/productionMonthly';
+import { remapInputs } from '../lib/materialInputMap';
+import { buildCategoryIndex, categoryOf } from '../lib/materialCategory';
+import type { CategoryDoc } from '../lib/materialCategory';
 
 /* ===== 캐시 ===== */
 const PREFIX = 'matAnalysis:';
@@ -78,6 +83,8 @@ interface RawMonth {
   ambient: AmbientEntry[];
   logistics: Record<string, number>;
   logisticsByCode: Record<string, Record<string, number>>;
+  /** 월별 생산수량(productionMonthly)으로 채운 달이면 그 문서의 updatedAt — 고치면 캐시를 버린다 */
+  pmVer?: string;
 }
 
 async function fetchMonth(month: string): Promise<RawMonth> {
@@ -96,9 +103,24 @@ async function fetchMonth(month: string): Promise<RawMonth> {
     if (!data.machine) return; // ambient 등 다른 entries 제외
     entries.push(data);
   });
+  // 앱 생산 데이터가 하나도 없는 달(앱 도입 전)만 — 설정 › 월별 생산수량에 넣어 둔 마감 수량을 쓴다 (원재료수율과 같은 규칙)
+  if (entries.length === 0 && its.empty && amb.empty && Object.keys(log.byDay).length === 0) {
+    const pm = await getDoc(doc(db, PM_COL, month)).catch(() => null);
+    if (pm?.exists()) {
+      const d = pm.data() as ProductionMonthlyDoc;
+      return { ...(toRawMonth(d) as RawMonth), pmVer: String(d.updatedAt || '') };
+    }
+  }
   const items: Item[] = its.docs.map((d) => d.data() as Item);
   const ambient: AmbientEntry[] = amb.docs.map((d) => d.data() as AmbientEntry);
   return { entries, items, ambient, logistics: log.byDay, logisticsByCode: log.byDayCode };
+}
+
+/** ERP 실투입 (설정 › 실제 투입중량) — 원재료수율 분석과 같은 문서 */
+async function fetchInputs(month: string): Promise<{ inputs: Record<string, number>; names: Record<string, string> }> {
+  const snap = await getDoc(doc(db, 'materialInput', month)).catch(() => null);
+  const d = snap?.exists() ? (snap.data() as { inputs?: Record<string, number>; names?: Record<string, string> }) : {};
+  return { inputs: d.inputs || {}, names: d.names || {} };
 }
 
 export default function MaterialAnalysis() {
@@ -162,6 +184,35 @@ export default function MaterialAnalysis() {
   useEffect(() => { try { localStorage.setItem('matAnalysis:expandSub', JSON.stringify(expandSub)); } catch {} }, [expandSub]);
   const [priceMap, setPriceMap] = useState<Map<string, number>>(new Map());
   const [priceNameByCode, setPriceNameByCode] = useState<Map<string, string>>(new Map());
+  // 분석용(수율 전용) 레시피 — 원재료수율 분석과 같은 DB. 비어 있으면 현장 BOM 으로 폴백한다
+  const [yRecipeMap, setYRecipeMap] = useState<Map<string, Recipe>>(new Map());
+  const [ySubMap, setYSubMap] = useState<Map<string, Recipe>>(new Map());
+  const [yAmbientMap, setYAmbientMap] = useState<Map<string, AmbientRecipe>>(new Map());
+  const [recipeSrc, setRecipeSrc] = useState<'yield' | 'bom'>(() => {
+    try { return localStorage.getItem(PREFIX + 'recipeSrc') === 'bom' ? 'bom' : 'yield'; } catch { return 'yield'; }
+  });
+  useEffect(() => { try { localStorage.setItem(PREFIX + 'recipeSrc', recipeSrc); } catch {} }, [recipeSrc]);
+  useEffect(() => onSnapshot(collection(db, 'recipesYield'), (snap) => {
+    const m = new Map<string, Recipe>();
+    snap.forEach((d) => { const v = d.data() as Recipe; m.set(d.id, { ...v, code: d.id }); m.set(d.id.toLowerCase(), { ...v, code: d.id }); });
+    setYRecipeMap(m);
+  }, () => {}), []);
+  useEffect(() => onSnapshot(collection(db, 'subRecipesYield'), (snap) => {
+    const m = new Map<string, Recipe>();
+    snap.forEach((d) => { const v = d.data() as Recipe; m.set(d.id, { ...v, code: d.id }); m.set(d.id.toLowerCase(), { ...v, code: d.id }); });
+    setYSubMap(m);
+  }, () => {}), []);
+  useEffect(() => onSnapshot(collection(db, 'ambientRecipesYield'), (snap) => {
+    const m = new Map<string, AmbientRecipe>();
+    snap.forEach((d) => { const v = d.data() as AmbientRecipe; m.set(d.id, { ...v, batchPieces: Number(v.batchPieces) || 1 }); });
+    setYAmbientMap(m);
+  }, () => {}), []);
+  // 실제로 쓸 레시피 — 원재료수율 분석과 같은 폴백 규칙
+  const useYieldDb = recipeSrc === 'yield' && yRecipeMap.size > 0;
+  const srcRecipe = useYieldDb ? yRecipeMap : recipeMap;
+  const srcSub = useYieldDb && ySubMap.size > 0 ? ySubMap : subRecipeMap;
+  const srcAmbient = useYieldDb && yAmbientMap.size > 0 ? yAmbientMap : ambientRecipeMap;
+  const recipeLabel = useYieldDb ? '분석용 레시피 (원재료수율과 같음)' : '현장 BOM 레시피';
 
   useEffect(() => {
     return onSnapshot(collection(db, 'recipes'), (snap) => {
@@ -219,8 +270,8 @@ export default function MaterialAnalysis() {
   }, []);
 
   // 반제품 펼침 옵션 적용된 effective 레시피 맵
-  const effRecipeMap = useMemo(() => (expandSub ? expandRecipeMap(recipeMap, subRecipeMap) : recipeMap), [recipeMap, subRecipeMap, expandSub]);
-  const effAmbientRecipeMap = useMemo(() => (expandSub ? expandAmbientRecipeMap(ambientRecipeMap, subRecipeMap) : ambientRecipeMap), [ambientRecipeMap, subRecipeMap, expandSub]);
+  const effRecipeMap = useMemo(() => (expandSub ? expandRecipeMap(srcRecipe, srcSub) : srcRecipe), [srcRecipe, srcSub, expandSub]);
+  const effAmbientRecipeMap = useMemo(() => (expandSub ? expandAmbientRecipeMap(srcAmbient, srcSub) : srcAmbient), [srcAmbient, srcSub, expandSub]);
 
   const runAnalysis = async (bustCache = false) => {
     if (monthA === monthB) { setErr('A·B 월이 같습니다. 다른 월을 선택해주세요.'); return; }
@@ -229,11 +280,18 @@ export default function MaterialAnalysis() {
       const fetchOrCache = async (m: string): Promise<RawMonth> => {
         const ttl = m === tm ? TTL_CURRENT : TTL_PAST;
         if (!bustCache) {
-          const c = getCache<RawMonth>(`raw2:${m}`, ttl);
-          if (c) return c;
+          const c = getCache<RawMonth>(`raw3:${m}`, ttl);
+          // 월별 생산수량으로 채운 달은 그 문서가 바뀌었으면 다시 읽는다. 빈 달도 나중에 수량을 넣었을 수 있으니 다시 읽는다.
+          const empty = c && c.entries.length === 0 && c.items.length === 0 && c.ambient.length === 0 && Object.keys(c.logistics).length === 0;
+          let stale = !!empty;
+          if (c && c.pmVer !== undefined) {
+            const now = await getDoc(doc(db, PM_COL, m)).then((x) => (x.exists() ? String((x.data() as ProductionMonthlyDoc).updatedAt || '') : '')).catch(() => c.pmVer);
+            stale = now !== c.pmVer;
+          }
+          if (c && !stale) return c;
         }
         const r = await fetchMonth(m);
-        setCache(`raw2:${m}`, r);
+        setCache(`raw3:${m}`, r);
         return r;
       };
       const [aRaw, bRaw] = await Promise.all([fetchOrCache(monthA), fetchOrCache(monthB)]);
@@ -309,10 +367,10 @@ export default function MaterialAnalysis() {
         }
       });
     };
-    recipeMap.forEach((r) => scan(r.ingredients));
-    ambientRecipeMap.forEach((r) => scan(r.ingredients));
+    srcRecipe.forEach((r) => scan(r.ingredients));
+    srcAmbient.forEach((r) => scan(r.ingredients));
     return Array.from(seen.values()).sort((a, b) => a.name.localeCompare(b.name));
-  }, [prodSearch, recipeMap, ambientRecipeMap, nameOverrides]);
+  }, [prodSearch, srcRecipe, srcAmbient, nameOverrides]);
 
   // 포함(미제외) 원재료를 쓰는 제품 집합
   const prodFilter = useMemo(() => {
@@ -320,19 +378,19 @@ export default function MaterialAnalysis() {
     if (included.size === 0) return null;
     const coldCodes = new Set<string>();
     const ambientNames = new Set<string>();
-    recipeMap.forEach((r) => {
+    srcRecipe.forEach((r) => {
       if (r.ingredients.some((ing) => included.has(ingKeyOf(ing.name, ing.code)))) {
         const k = canonicalShort(r.code || '');
         if (k) coldCodes.add(k);
       }
     });
-    ambientRecipeMap.forEach((r, id) => {
+    srcAmbient.forEach((r, id) => {
       if (r.ingredients.some((ing) => included.has(ingKeyOf(ing.name, ing.code)))) {
         ambientNames.add(normalizeMaterialName(r.name || id));
       }
     });
     return { coldCodes, ambientNames };
-  }, [prodIngMatches, excludedIng, recipeMap, ambientRecipeMap]);
+  }, [prodIngMatches, excludedIng, srcRecipe, srcAmbient]);
 
   const aProdView = useMemo(
     () => (aProd && prodFilter ? filterProduction(aProd, prodFilter.coldCodes, prodFilter.ambientNames) : aProd),
@@ -528,6 +586,27 @@ export default function MaterialAnalysis() {
         })
         .catch((e) => { console.warn('[materialOutflow]', m, e); return { grams: {}, amounts: {} }; });
       const [outA, outB] = await Promise.all([fetchOutflow(monthA), fetchOutflow(monthB)]);
+      // ERP 실투입 — 원가율 분해(수율·제품구성)에 쓴다. 키는 원재료수율 분석과 같은 규칙으로 표준소요 키에 맞춘 뒤
+      // 워크북 원재료키(코드는 접두사 없는 ERP 코드)로 바꾼다.
+      const [inA, inB, catDocs] = await Promise.all([
+        fetchInputs(monthA), fetchInputs(monthB),
+        getDocs(collection(db, 'materialCategories'))
+          .then((snap) => snap.docs.map((d) => ({ id: d.id, ...(d.data() as Omit<CategoryDoc, 'id'>) })))
+          .catch(() => [] as CategoryDoc[]),
+      ]);
+      const unionRows = [...aResult.rows, ...bResult.rows].map((r) => ({ key: r.key, name: r.name }));
+      const wbKey = (k: string) => (k.startsWith(CODE_KEY_PREFIX) ? k.slice(CODE_KEY_PREFIX.length) : k);
+      const toWb = (m: Record<string, number>) => {
+        const o: Record<string, number> = {};
+        Object.entries(m).forEach(([k, g]) => { const w = wbKey(k); o[w] = (o[w] || 0) + (Number(g) || 0); });
+        return o;
+      };
+      const actualNames: Record<string, string> = {};
+      [inA.names, inB.names].forEach((nm) => Object.entries(nm).forEach(([k, v]) => { if (v && !actualNames[wbKey(k)]) actualNames[wbKey(k)] = v; }));
+      const catIdx = buildCategoryIndex(catDocs);
+      // A월 단가가 없는 원재료는 B월 단가로 본다 (워크북과 같은 규칙) — 검증 행이 같은 기준으로 비교되게
+      const bPriced = new Map((aResultBPrice?.rows || []).map((r) => [r.key, r.cost]));
+      const appTotalA = aResult.rows.reduce((s2, r) => s2 + (r.hasPrice ? r.cost : (bPriced.get(r.key) || 0)), 0);
       // 그 두 달 생산 데이터에 실제로 찍힌 원본 전체코드 (변형 -01/-51 구분용)
       const producedCodes = Array.from(new Set([
         ...(aRaw?.items || []).map((it) => it.code || ''),
@@ -540,15 +619,22 @@ export default function MaterialAnalysis() {
         monthA, monthB, aProd, bProd, productNameByCode,
         recipeMap: effRecipeMap, ambientRecipeMap: effAmbientRecipeMap,
         priceMap, priceNameByCode,
-        appTotalA: sum(aResult.rows), appTotalB: sum(bResult.rows),
+        appTotalA, appTotalB: sum(bResult.rows),
         productCodes, producedCodes,
         outflowA: outA, outflowB: outB,
+        recipeLabel,
+        actualA: toWb(remapInputs(unionRows, inA.inputs, inA.names).byStdKey),
+        actualB: toWb(remapInputs(unionRows, inB.inputs, inB.names).byStdKey),
+        actualNames,
+        categoryOf: (code, name) => categoryOf(catIdx, code, name),
+        categoryOrder: catIdx.categories,
+        excludeTerms: ['정제수'],
         highCostTerms: ['한우', '전복', '게살', '관자'],
         highCostExcludes: ['사골육수'],
       });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = url; a.download = `원재료비_계산서_${monthA}_vs_${monthB}.xlsx`; a.click();
+      a.href = url; a.download = `원재료비_계산서_${monthA}_vs_${monthB}${useYieldDb ? '_분석용레시피' : ''}.xlsx`; a.click();
       URL.revokeObjectURL(url);
     } catch (e: any) {
       console.error('[formula xlsx]', e);
@@ -576,7 +662,17 @@ export default function MaterialAnalysis() {
         <span className="text-gray-400">vs</span>
         <span className="text-xs font-semibold text-rose-700">B</span>
         <input type="month" value={monthB} onChange={(e) => e.target.value && setMonthB(e.target.value)} className="border rounded px-2 py-1 text-sm font-bold" />
-        {subRecipeMap.size > 0 && (
+        <div className="flex items-center text-xs rounded border overflow-hidden" title="원재료 계산에 쓸 레시피. 분석용 = 원재료수율 분석과 같은 레시피(설정 › 분석용 레시피)">
+          <span className="px-2 py-1 bg-gray-50 text-gray-500">레시피</span>
+          {([['yield', '분석용'], ['bom', '현장 BOM']] as const).map(([v, label]) => (
+            <button key={v} onClick={() => setRecipeSrc(v)}
+              className={`px-2 py-1 font-semibold ${recipeSrc === v ? 'bg-indigo-600 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>{label}</button>
+          ))}
+        </div>
+        {recipeSrc === 'yield' && yRecipeMap.size === 0 && (
+          <span className="text-[11px] text-amber-700">분석용 레시피가 비어 있어 현장 BOM 으로 계산합니다</span>
+        )}
+        {(srcSub.size > 0) && (
           <label className="flex items-center gap-1.5 text-xs px-2 py-1 rounded border bg-emerald-50 cursor-pointer hover:bg-emerald-100" title="반제품(순수본베이스/디포리육수 등)을 원물 단위로 자동 분해해 계산. 끄면 반제품을 그대로 한 원재료로 봄">
             <input type="checkbox" checked={expandSub} onChange={(e) => setExpandSub(e.target.checked)} />
             <span className="font-semibold text-emerald-700">🧪 반제품 펼침</span>
@@ -587,7 +683,7 @@ export default function MaterialAnalysis() {
           <button onClick={() => runAnalysis(true)} disabled={running} title="캐시 무시" className="px-2.5 py-1 text-xs rounded border hover:bg-gray-50 disabled:opacity-50">🔄</button>
           <button onClick={downloadXlsx} disabled={!aResult || !bResult} className="px-3 py-1.5 text-xs rounded bg-emerald-600 text-white font-semibold hover:bg-emerald-700 disabled:bg-gray-300">📥 엑셀</button>
           <button onClick={downloadFormulaXlsx} disabled={!aResult || !bResult || !aProd || !bProd || wbBusy}
-            title="레시피·단가·생산량 DB가 수식으로 연결된 엑셀. 생산개수/단가를 바꾸면 자동 재계산됩니다"
+            title="레시피·단가·생산량·실투입 DB가 수식으로 연결된 엑셀. 첫 탭 「원가율분해」에서 생산금액만 넣으면 수율·제품구성·단가가 원재료비율을 얼마나 움직였는지 나옵니다"
             className="px-3 py-1.5 text-xs rounded bg-indigo-600 text-white font-semibold hover:bg-indigo-700 disabled:bg-gray-300">
             {wbBusy ? '만드는 중...' : '🧮 수식 엑셀'}
           </button>
@@ -742,7 +838,7 @@ export default function MaterialAnalysis() {
       {/* 계산 신뢰도 확인 — 레시피 커버리지 / 미매칭 */}
         {aResult && bResult && (
           <div className={`border-2 rounded-lg p-3 text-sm ${aResult.coverage.missingQty === 0 && bResult.coverage.missingQty === 0 ? 'bg-emerald-50 border-emerald-200' : 'bg-red-50 border-red-300'}`}>
-            <div className="font-bold text-gray-800 mb-1">🧾 레시피 커버리지</div>
+            <div className="font-bold text-gray-800 mb-1">🧾 레시피 커버리지 <span className="text-xs font-normal text-gray-500">· {recipeLabel}</span></div>
             <div className="text-xs text-gray-700 flex flex-wrap gap-x-5 gap-y-1">
               {[{ m: monthA, c: aResult.coverage }, { m: monthB, c: bResult.coverage }].map(({ m, c }) => (
                 <span key={m}>

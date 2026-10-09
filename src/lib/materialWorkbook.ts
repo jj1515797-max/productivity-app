@@ -4,6 +4,7 @@
  *  엑셀 수식으로 다시 계산되게 만든다. 생산개수·단가·공급가를 바꾸면 즉시 재계산된다.
  *
  *  시트
+ *   원가율분해  : 실투입 × 단가 원재료비를 물량·단가·제품구성·수율·기타로 나누고 원재료비율(÷생산금액)로 환산 (materialDecompSheets.ts)
  *   해석        : 요약 숫자를 사람 말로 — 무엇이 원재료비를 얼마나 밀었는지, 그게 큰 변화인지
  *   요약        : 입력(노란칸) + 원재료비율/개당재료비/고단가/믹스분해
  *   생산량      : 품목별 생산개수
@@ -11,6 +12,7 @@
  *   레시피계산  : 레시피 1줄 = 품목×원재료. 사용량/금액을 수식으로 산출
  *   단가        : 원재료별 월 단가(원/g) + 그룹(고단가 등)
  *   원재료집계  : 원재료별 SUMIF 집계
+ *   원재료별분해 · 제품별구성 : 원가율분해의 근거 (원재료별 / 제품별)
  */
 import ExcelJS from 'exceljs';
 import type { AmbientRecipe, Recipe } from './wasteCompute';
@@ -18,6 +20,8 @@ import { CODE_KEY_PREFIX, monthPriceKey, normalizeCode, normalizeMaterialName } 
 import { canonicalShort } from './codeUtil';
 import { findAmbientErp } from './ambientProducts';
 import type { MonthlyProduction } from './monthlyProduction';
+import { DC, DECOMP_SHEET, MAT_FACTOR_LETTER, MAT_SHEET, addDecompSheets, decompMatLast } from './materialDecompSheets';
+import type { DecompMaterial } from './materialDecompSheets';
 
 export interface WorkbookInput {
   monthA: string;
@@ -50,6 +54,19 @@ export interface WorkbookInput {
   /** ERP 마감 실제 출고 (materialOutflow/{month}) — 원재료별 실제 사용량·금액 */
   outflowA?: { grams: Record<string, number>; amounts: Record<string, number> };
   outflowB?: { grams: Record<string, number>; amounts: Record<string, number> };
+  /** 레시피 기준 표시 (분석용 / 현장 BOM) */
+  recipeLabel?: string;
+  /** ERP 실투입 (materialInput) — 워크북 원재료키 → g. 원가율분해(수율·제품구성)에 쓴다 */
+  actualA?: Record<string, number>;
+  actualB?: Record<string, number>;
+  /** 실투입에만 있는 원재료의 이름 (워크북 원재료키 → 이름) */
+  actualNames?: Record<string, string>;
+  /** 원재료 분류 (ERP코드, 이름) → 분류명 */
+  categoryOf?: (code: string, name: string) => string;
+  /** 분류 표시 순서 */
+  categoryOrder?: string[];
+  /** 수율 비교에서 뺄 원재료 이름 (정제수 등) */
+  excludeTerms?: string[];
 }
 
 interface ProductRow {
@@ -235,7 +252,8 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     });
   }));
 
-  const priceOf = (month: string, m: { code: string; name: string; matchName: string }): number => {
+  /** 그 달 단가가 단가표에 없으면 undefined (0 원과 '없음'을 구분) */
+  const priceLookup = (month: string, m: { code: string; name: string; matchName: string }): number | undefined => {
     if (m.code) {
       const v = priceMap.get(monthPriceKey(month, CODE_KEY_PREFIX + normalizeCode(m.code)));
       if (v !== undefined) return v;
@@ -243,8 +261,9 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     // 레시피명 우선(앱과 동일) → 그래도 없으면 단가표 정식명으로 2차 시도
     const byRecipe = priceMap.get(monthPriceKey(month, normalizeMaterialName(m.matchName)));
     if (byRecipe !== undefined) return byRecipe;
-    return priceMap.get(monthPriceKey(month, normalizeMaterialName(m.name))) ?? 0;
+    return priceMap.get(monthPriceKey(month, normalizeMaterialName(m.name)));
   };
+  const priceOf = (month: string, m: { code: string; name: string; matchName: string }): number => priceLookup(month, m) ?? 0;
 
   const terms = inp.highCostTerms.map(normalizeMaterialName).filter(Boolean);
   const excl = inp.highCostExcludes.map(normalizeMaterialName).filter(Boolean);
@@ -259,7 +278,8 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
   wb.created = new Date();
   wb.calcProperties.fullCalcOnLoad = true;
 
-  wb.addWorksheet('해석');   // 첫 탭 선점 (내용은 요약을 다 만든 뒤 채운다)
+  wb.addWorksheet(DECOMP_SHEET);   // 첫 탭 선점 (내용은 맨 마지막에 채운다)
+  wb.addWorksheet('해석');   // 둘째 탭 (내용은 요약을 다 만든 뒤 채운다)
   wb.addWorksheet('요약');
 
   const HEAD = { bold: true, color: { argb: 'FFFFFFFF' }, size: 10 };
@@ -278,6 +298,24 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
   const qtyLast = Math.max(2, products.length + 1);
   const ingList = Array.from(ingMaster.values()).sort((a, b) => a.name.localeCompare(b.name));
   const priceLast = Math.max(2, ingList.length + 1);
+
+  // ===== 원가율분해용: 실투입에만 있는 원재료 (레시피 밖) =====
+  // 단가 시트 아래쪽 별도 블록에 둔다 — 기존 시트의 범위(priceLast)에는 들어가지 않아 기존 숫자가 그대로다.
+  const actMapA = inp.actualA || {};
+  const actMapB = inp.actualB || {};
+  const extraList = Array.from(new Set([...Object.keys(actMapA), ...Object.keys(actMapB)]))
+    .filter((k) => !ingMaster.has(k) && ((actMapA[k] || 0) > 0 || (actMapB[k] || 0) > 0))
+    .map((k) => {
+      const official = priceNameByCode.get(CODE_KEY_PREFIX + k);
+      const looksLikeCode = official !== undefined || /^[0-9A-Z\-]{4,}$/.test(k);
+      const nm = inp.actualNames?.[k] || official || k;
+      return { key: k, name: official || nm, matchName: nm, code: looksLikeCode ? k : '' };
+    })
+    .sort((a, b) => a.name.localeCompare(b.name));
+  const extraStart = priceLast + 3;   // priceLast+1 빈 줄, +2 안내 줄
+  const priceLastExt = extraList.length > 0 ? extraStart + extraList.length - 1 : priceLast;
+  const decompCount = ingList.length + extraList.length;
+  const matLast = decompMatLast(decompCount);
   const aggLast = Math.max(2, ingList.length + 1);
   // 레시피계산 행수 미리 계산 (다른 시트 수식이 참조)
   const calcLast = Math.max(2, 1 + products.reduce((s, p) => s + p.ings.length, 0));
@@ -340,14 +378,20 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     { header: '고단가 순번', width: 11 },
     { header: `${monthA} 실제출고`, width: 12 },
     { header: `${monthB} 실제출고`, width: 12 },
+    { header: `★ ${monthA} 단가 적용(원/g)`, width: 15 },
+    { header: `${monthA} 단가 출처`, width: 16 },
   ];
   styleHeader(wsPrice, 1, 'FF7030A0');
+  // A월 단가가 비어 있으면(단가표에 없음) B월 단가로 본다 — 작년처럼 단가가 아예 없는 달도 '같은 단가' 비교가 되게.
+  // D열에 값을 넣으면 그 값이 우선한다.
+  const priceApplied = (R: number) => `IF(ISNUMBER($D${R}),$D${R},N($E${R}))`;
+  const priceSource = (R: number) => `IF(ISNUMBER($D${R}),"실측",IF(N($E${R})>0,"${monthB} 단가로 대체","단가 없음"))`;
   ingList.forEach((m, i) => {
     const R = i + 2;
-    const pa = priceOf(monthA, m);
+    const pa = priceLookup(monthA, m);
     const pb = priceOf(monthB, m);
     const r = wsPrice.addRow([
-      m.key, m.code, m.name, pa, pb, isHigh(m.name) ? '고단가' : '',
+      m.key, m.code, m.name, pa ?? null, pb, isHigh(m.name) ? '고단가' : '',
       { formula: `SUMIF(레시피계산!$D$2:$D$${calcLast},$A${R},레시피계산!$J$2:$J$${calcLast})` },
       { formula: `SUMIF(레시피계산!$D$2:$D$${calcLast},$A${R},레시피계산!$N$2:$N$${calcLast})` },
       { formula: `IF($E${R}=0,"",RANK($E${R},$E$2:$E$${priceLast},0)+COUNTIF($E$2:$E${R},$E${R})-1)` },
@@ -357,7 +401,12 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
       { formula: `IF($L${R}="고단가",COUNTIF($L$2:$L${R},"고단가"),"")` },
       { formula: `IF(N(IFERROR(VLOOKUP($A${R},원재료집계!$A$2:$L$${aggLast},10,FALSE),0))>0,"있음","없음")` },
       { formula: `IF(N(IFERROR(VLOOKUP($A${R},원재료집계!$A$2:$L$${aggLast},12,FALSE),0))>0,"있음","없음")` },
+      { formula: priceApplied(R) },
+      { formula: priceSource(R) },
     ]);
+    r.getCell(16).numFmt = '#,##0.000'; r.getCell(16).font = { bold: true };
+    r.getCell(17).alignment = { horizontal: 'center' };
+    if (pa === undefined) r.getCell(17).font = { size: 9, color: { argb: 'FFB45309' } };
     r.getCell(4).fill = INPUT_FILL; r.getCell(4).numFmt = '#,##0.000';
     r.getCell(5).fill = INPUT_FILL; r.getCell(5).numFmt = '#,##0.000';
     r.getCell(6).fill = INPUT_FILL; r.getCell(6).alignment = { horizontal: 'center' };
@@ -366,10 +415,32 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     [9, 10, 11].forEach((c) => { r.getCell(c).numFmt = '#,##0'; r.getCell(c).alignment = { horizontal: 'center' }; });
     r.getCell(12).alignment = { horizontal: 'center' };
     r.getCell(12).font = { bold: true, color: { argb: 'FF7030A0' } };
-    if (pa === 0 || pb === 0) r.getCell(3).font = { color: { argb: 'FFC00000' } };
+    if (pb === 0) r.getCell(3).font = { color: { argb: 'FFC00000' } };
   });
+  if (extraList.length > 0) {
+    const lr = wsPrice.getRow(priceLast + 2);
+    lr.getCell(1).value = '▼ 레시피 밖 원재료 — 실투입에는 있는데 레시피에는 없는 원재료입니다. 「원가율분해」 시트에서만 씁니다 (단가를 고치면 그쪽만 바뀝니다).';
+    lr.getCell(1).font = { bold: true, size: 10, color: { argb: 'FF833C0B' } };
+    extraList.forEach((m, i) => {
+      const R = extraStart + i;
+      const pa = priceLookup(monthA, m);
+      const pb = priceOf(monthB, m);
+      const row = wsPrice.getRow(R);
+      row.getCell(1).value = m.key;
+      row.getCell(2).value = m.code;
+      row.getCell(3).value = m.name;
+      row.getCell(4).value = pa ?? null;
+      row.getCell(5).value = pb;
+      row.getCell(16).value = { formula: priceApplied(R) };
+      row.getCell(17).value = { formula: priceSource(R) };
+      [4, 5].forEach((c) => { row.getCell(c).fill = INPUT_FILL; row.getCell(c).numFmt = '#,##0.000'; });
+      row.getCell(16).numFmt = '#,##0.000'; row.getCell(16).font = { bold: true };
+      row.getCell(17).alignment = { horizontal: 'center' };
+      if (pb === 0) row.getCell(3).font = { color: { argb: 'FFC00000' } };
+    });
+  }
   wsPrice.views = [{ state: 'frozen', ySplit: 1 }];
-  if (ingList.length > 0) wsPrice.autoFilter = { from: 'A1', to: `O${priceLast}` };
+  if (ingList.length > 0) wsPrice.autoFilter = { from: 'A1', to: `Q${priceLast}` };
 
   /* ================= 레시피계산 ================= */
   const wsCalc = wb.addWorksheet('레시피계산');
@@ -389,6 +460,7 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     { header: `${monthA} 금액`, width: 15 },
     { header: `${monthB} 금액`, width: 15 },
     { header: '그룹', width: 10 },
+    { header: '개당 원가 (구성효과용)', width: 13 },
   ];
   styleHeader(wsCalc, 1, 'FF2E75B6');
   let cRow = 1;
@@ -402,19 +474,23 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
         { formula: `IFERROR(VLOOKUP($A${R},생산량!$A$2:$E$${qtyLast},5,FALSE),0)` },
         { formula: `$F${R}*$G${R}` },
         { formula: `$F${R}*$H${R}` },
-        { formula: `IFERROR(VLOOKUP($D${R},단가!$A$2:$E$${priceLast},4,FALSE),0)` },
+        // 단가!A:P 를 VLOOKUP 하면 범위에 N·O열(→원재료집계→레시피계산 M→이 칸)이 들어가 순환참조가 된다 — 열 하나씩만 본다
+        { formula: `IFERROR(INDEX(단가!$P$2:$P$${priceLast},MATCH($D${R},단가!$A$2:$A$${priceLast},0)),0)` },
         { formula: `IFERROR(VLOOKUP($D${R},단가!$A$2:$E$${priceLast},5,FALSE),0)` },
         { formula: `$I${R}*$K${R}` },
         { formula: `$J${R}*$L${R}` },
         { formula: `IFERROR(VLOOKUP($D${R},단가!$A$2:$L$${priceLast},12,FALSE),"")` },
+        // 원가율분해 ③ 제품구성을 제품별로 나누는 데 쓴다 (개당 g × 원재료의 '표준 1g 당 원가')
+        { formula: `$F${R}*IFERROR(INDEX(${MAT_SHEET}!$${MAT_FACTOR_LETTER}$2:$${MAT_FACTOR_LETTER}$${matLast},MATCH($D${R},${MAT_SHEET}!$A$2:$A$${matLast},0)),0)` },
       ]);
       row.getCell(6).numFmt = '#,##0.0000';
       [7, 8, 9, 10, 13, 14].forEach((c) => { row.getCell(c).numFmt = '#,##0'; });
       [11, 12].forEach((c) => { row.getCell(c).numFmt = '#,##0.000'; });
+      row.getCell(16).numFmt = '#,##0.00'; row.getCell(16).font = { size: 9, color: { argb: 'FF808080' } };
     });
   });
   wsCalc.views = [{ state: 'frozen', ySplit: 1 }];
-  if (calcLast > 1) wsCalc.autoFilter = { from: 'A1', to: `O${calcLast}` };
+  if (calcLast > 1) wsCalc.autoFilter = { from: 'A1', to: `P${calcLast}` };
 
   /* ================= 제품수익성 ================= */
   const wsPro = wb.addWorksheet('제품수익성');
@@ -579,7 +655,7 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
       { formula: `IF(ISNUMBER($M${R}),$G${R},0)` },
       { formula: `IF(ISNUMBER($J${R}),$D${R},0)` },
       { formula: `IF(ISNUMBER($L${R}),$E${R},0)` },
-      { formula: `IF(N(IFERROR(VLOOKUP($A${R},단가!$A$2:$E$${priceLast},4,FALSE),0))=0,$D${R},0)` },
+      { formula: `IF(N(IFERROR(INDEX(단가!$P$2:$P$${priceLast},MATCH($A${R},단가!$A$2:$A$${priceLast},0)),0))=0,$D${R},0)` },
       { formula: `IF(N(IFERROR(VLOOKUP($A${R},단가!$A$2:$E$${priceLast},5,FALSE),0))=0,$E${R},0)` },
     ]);
     [17, 18, 19, 20, 21, 22].forEach((c) => { row.getCell(c).numFmt = '#,##0'; });
@@ -596,7 +672,7 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
   ws.columns = [{ width: 32 }, { width: 20 }, { width: 20 }, { width: 18 }, { width: 50 }];
 
   ws.addRow(['원재료비 분석 (수식 연동)']).getCell(1).font = { bold: true, size: 16, color: { argb: 'FF1F4E79' } };
-  ws.addRow([`비교월: ${monthA} vs ${monthB}   ·   노란칸만 입력하면 아래가 전부 자동 계산됩니다`]).getCell(1).font = NOTE;
+  ws.addRow([`비교월: ${monthA} vs ${monthB}   ·   레시피: ${inp.recipeLabel || '현장 BOM 레시피'}   ·   노란칸만 입력하면 아래가 전부 자동 계산됩니다`]).getCell(1).font = NOTE;
   const warnRow = ws.addRow(['⚠ 값이 0 이나 빈칸으로 보이면 상단의 [편집 사용]을 누르세요. 보호된 보기에서는 수식이 계산되지 않습니다.']);
   warnRow.getCell(1).font = { bold: true, size: 10, color: { argb: 'FF9C4221' } };
   warnRow.getCell(1).fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFFFF3CD' } };
@@ -628,10 +704,11 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
   const dBC = (R: number) => `IF(OR(B${R}="",C${R}=""),"",C${R}-B${R})`;
 
   section('기본', 'FF1F4E79');
-  const rAmt = put('① 생산금액 (원)  ← 입력',
-    () => (inp.aAmount && inp.aAmount > 0 ? inp.aAmount : null),
-    () => (inp.bAmount && inp.bAmount > 0 ? inp.bAmount : null),
-    dBC, 'ERP 월 생산금액. 제품수익성에 공급가를 넣으면 ⑰로 자동 검증됩니다', '#,##0', true);
+  // 생산금액은 「원가율분해」 맨 위 노란칸 한 곳에서만 입력받는다
+  const rAmt = put('① 생산금액 (원)',
+    () => ({ formula: `IF(${DC.amtA}="","",${DC.amtA})` }),
+    () => ({ formula: `IF(${DC.amtB}="","",${DC.amtB})` }),
+    dBC, '「원가율분해」 시트 6행 노란칸에 넣으면 여기로 들어옵니다. 제품수익성에 공급가를 넣으면 ⑰로 자동 검증됩니다', '#,##0');
   const rQty = put('② 총 생산량 (EA)',
     () => ({ formula: `SUM(생산량!D2:D${qtyLast})` }),
     () => ({ formula: `SUM(생산량!E2:E${qtyLast})` }),
@@ -682,9 +759,10 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     () => ({ formula: `IF(COUNTA(원재료집계!$A$2:$A$${aggLast})=0,"",COUNT(원재료집계!$K$2:$K$${aggLast})/COUNTA(원재료집계!$A$2:$A$${aggLast}))` }),
     () => ({ formula: `IF(COUNTA(원재료집계!$A$2:$A$${aggLast})=0,"",COUNT(원재료집계!$M$2:$M$${aggLast})/COUNTA(원재료집계!$A$2:$A$${aggLast}))` }),
     dBC, '몇 개 원재료에 실제 출고가 들어왔는지 (참고용)', '0.0%');
-  const rAct = put('⑦ ERP 실제 원재료비 (원)  ← 직접 넣을 때만',
-    () => null, () => null, dBC,
-    '비워두면 ⑦-0 을 그대로 사용합니다. ERP 총액이 따로 있으면 여기에 넣으세요', '#,##0', true);
+  const rAct = put('⑦ ERP 실제 원재료비 (원)',
+    () => ({ formula: `IF(${DC.myA}="","",${DC.myA})` }),
+    () => ({ formula: `IF(${DC.myB}="","",${DC.myB})` }), dBC,
+    '「원가율분해」 시트 7행(내 원재료비)에 넣으면 여기로 들어옵니다. 비워두면 ⑦-0 을 그대로 사용합니다', '#,##0');
   const actB = `IF(N(B${rAct})>0,B${rAct},B${rActAuto})`;
   const actC = `IF(N(C${rAct})>0,C${rAct},C${rActAuto})`;
   // 분자가 부분합(⑦-0)이면 분모도 '그 원재료들의 이론값'으로 맞춘다.
@@ -1010,13 +1088,13 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
   ws.addRow([]);
   const guide = [
     '■ 쓰는 법 (노란칸만 입력하면 됩니다)',
-    '  1) [요약] ① 생산금액 — 두 달치 ERP 생산금액. 넣으면 ⑤ 원재료비율이 나옵니다.',
-    '  2) [요약] ⑦ ERP 실제 원재료비 — 넣으면 ⑧ 실제÷이론 이 나와서 "레시피 대비 실제로 얼마나 썼나"가 보입니다.',
+    '  1) [원가율분해] 6행 생산금액 — 두 달치 ERP 생산금액. 넣으면 ① 로 들어와 ⑤ 원재료비율과 원가율 분해가 나옵니다.',
+    '  2) [원가율분해] 7행 내 원재료비 — 넣으면 ⑦ 로 들어와 ⑧ 실제÷이론 이 나와서 "레시피 대비 실제로 얼마나 썼나"가 보입니다.',
     '  3) [제품수익성] E열 공급가(원/EA)·F열 권장소비자가 — 직접 입력하거나 VLOOKUP 으로 채우세요.',
     '     넣으면 제품별 원가율, 믹스효과/원가율효과 분해,',
     '     한계이익, 그리고 ㉔~㉝ "고단가를 덜 썼나 / 비싼 제품을 만들었나" 지표가 전부 나옵니다.',
     '  4) [생산량]·[단가] 노란칸을 고치면 위 숫자가 전부 자동으로 다시 계산됩니다.',
-    "     · [단가] 두 열에 같은 달 단가를 넣으면 '단가효과 제거(연동예산)' 이 됩니다.",
+    "     · [단가] 두 열에 같은 달 단가를 넣으면 '단가효과 제거(연동예산)' 이 됩니다. D열(A월)이 비어 있으면 B월 단가를 씁니다(P열).",
     "     · [단가] '그룹'열에 고단가 를 넣고 빼서 대상 원재료를 바꿀 수 있습니다.",
     '',
     '■ 첫 탭 [해석] 을 먼저 보세요 — 이 요약 숫자를 사람 말로 풀어 놓았습니다 (전부 자동, 노란칸 바꾸면 같이 바뀝니다).',
@@ -1079,7 +1157,7 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     wsRead.columns = [{ width: 30 }, { width: 17 }, { width: 13 }, { width: 96 }];
     const t = wsRead.addRow(['📖 자동 해석 — 이 시트는 전부 자동입니다']);
     t.getCell(1).font = { bold: true, size: 16, color: { argb: 'FF1F4E79' } };
-    wsRead.addRow([`${monthA} → ${monthB}   ·   요약 시트의 노란칸(생산금액·공급가)을 바꾸면 아래 문장도 같이 바뀝니다`])
+    wsRead.addRow([`${monthA} → ${monthB}   ·   「원가율분해」 생산금액 · 제품수익성 공급가를 바꾸면 아래 문장도 같이 바뀝니다`])
       .getCell(1).font = NOTE;
     wsRead.addRow([]);
 
@@ -1126,7 +1204,7 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     const noAmt = `OR(${n(A0)}=0,${n(A1)}=0)`;
     const dRate = `(${n(R1)}-${n(R0)})`;
     const concl = `IF(${noAmt},`
-      + `"요약 시트 ① 생산금액에 두 달 값을 넣으면 여기에 결론이 나옵니다.",`
+      + `"「원가율분해」 시트 6행에 두 달 생산금액을 넣으면 여기에 결론이 나옵니다.",`
       + `"${monthB} 원재료비율은 "&${pct(n(R1))}&" 입니다. ${monthA}(" &${pct(n(R0))}&") 보다 "`
       + `&${pp(dRate)}&" "&${sign(dRate)}&"습니다 — "&${grade(dRate)}&"입니다.")`;
     const cr = wsRead.addRow([{ formula: concl }]);
@@ -1173,7 +1251,7 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
     const fVolPrice = `IF(${n(A1)}=0,"",(${fVol})+(${fRateAmt}))`;
     sec('원재료비율(%p) 은 왜 그렇게 됐나', 'FFC00000');
     line('많이·비싸게 팔아서 (물량·판가)', fVolPrice,
-      `IF(${n(A0)}=0,"요약 ① 생산금액을 넣으면 계산됩니다.",`
+      `IF(${n(A0)}=0,"「원가율분해」 6행 생산금액을 넣으면 계산됩니다.",`
       + `"생산량 "&TEXT(IF(${n(Q0)}=0,0,${n(Q1)}/${n(Q0)}-1),"+0.0%;-0.0%")&" · 생산금액 "&TEXT(${n(A1)}/${n(A0)}-1,"+0.0%;-0.0%")&". "`
       + `&"많이 만들면 재료비도 늘지만 매출도 같이 늡니다. 둘이 같은 속도로 움직이면 비율은 그대로라 이 몫은 0 에 가깝습니다. "`
       + `&IF(ABS((${fVolPrice})/${n(A1)})<0.003,"지금은 거의 상쇄됐습니다.","여기가 크면 원가가 아니라 제품 구성·판가가 움직인 것입니다."))`);
@@ -1185,7 +1263,7 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
       `"위 ④ 와 같은 금액입니다. 원가율로 환산하면 이만큼입니다."`);
     const rRc = wsRead.addRow(['검산 (네 몫 합 = 비율 증감)', null,
       { formula: `IF(${n(A1)}=0,"",((${fVolPrice})+(${fHiQ})+(${fHiP})+(${fOth}))/${n(A1)})` },
-      { formula: `IF(${n(A1)}=0,"요약 ① 생산금액을 넣으면 계산됩니다.",`
+      { formula: `IF(${n(A1)}=0,"「원가율분해」 6행 생산금액을 넣으면 계산됩니다.",`
         + `"실제 비율 증감 "&${pp(dRate)}&" 와 같아야 합니다."`
         + `&IF(ABS(((${fVolPrice})+(${fHiQ})+(${fHiP})+(${fOth}))/${n(A1)}-(${dRate}))<0.00005," ✔"," ⚠"))` }]);
     rRc.getCell(3).numFmt = '+0.00%;-0.00%;0.00%';
@@ -1226,7 +1304,7 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
       + `IF(${biggest}="${cand[1][0]}",(${cand[1][1]})/${n(A1)},`
       + `IF(${biggest}="${cand[2][0]}",(${cand[2][1]})/${n(A1)},(${cand[3][1]})/${n(A1)}))))`;
     const vr = wsRead.addRow([{ formula:
-      `IF(${noAmt},"요약 ① 생산금액을 두 달 다 넣어야 판정이 나옵니다.",`
+      `IF(${noAmt},"「원가율분해」 6행 생산금액을 두 달 다 넣어야 판정이 나옵니다.",`
       + `IF(ABS(${dRate})<0.003,`
       + `"원재료비율이 "&${pp(dRate)}&" 움직였습니다. 이 정도는 달마다 늘 있는 흔들림이라 따로 손댈 것이 없습니다. 굳이 꼽자면 "&${biggest}&" 쪽이 컸습니다.",`
       + `IF(ABS(${dRate})<0.008,`
@@ -1237,7 +1315,7 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
       + `&IF(${biggest}="물량·판가","원가가 아니라 무엇을 얼마나 팔았는지가 바뀐 것입니다. 제품 구성부터 보세요.",`
       + `IF(${biggest}="고단가 수량","고단가 원재료가 제품당 더 들어갔습니다. 레시피 변경인지 제품 구성 변화인지 「곁들여 볼 것」 줄에서 갈립니다.",`
       + `IF(${biggest}="고단가 단가","구매 단가가 올랐습니다. 원단위는 그대로일 수 있으니 구매 쪽을 보세요.",`
-      + `"고단가가 아닌 일반 원재료에서 움직였습니다. 단가표와 레시피 변경 이력을 보세요."))))))) ` }]);
+      + `"고단가가 아닌 일반 원재료에서 움직였습니다. 단가표와 레시피 변경 이력을 보세요.")))))))` }]);
     wsRead.mergeCells(vr.number, 1, vr.number, 4);
     vr.getCell(1).font = { bold: true, size: 11 };
     vr.getCell(1).alignment = { wrapText: true, vertical: 'middle' };
@@ -1258,6 +1336,42 @@ export async function buildMaterialWorkbook(inp: WorkbookInput): Promise<Blob> {
   }
 
   ws.views = [{ state: 'frozen', ySplit: 4 }];
+
+  /* ================= 원가율분해 · 원재료별분해 · 제품별구성 ================= */
+  {
+    const exclTerms = (inp.excludeTerms || []).map(normalizeMaterialName).filter(Boolean);
+    const stdA = new Map<string, number>();
+    const stdB = new Map<string, number>();
+    products.forEach((p) => p.ings.forEach((ing) => {
+      stdA.set(ing.key, (stdA.get(ing.key) || 0) + ing.gPerPiece * p.qtyA);
+      stdB.set(ing.key, (stdB.get(ing.key) || 0) + ing.gPerPiece * p.qtyB);
+    }));
+    const toDecomp = (m: { key: string; code: string; name: string; matchName: string }): DecompMaterial => {
+      const pB = priceOf(monthB, m);
+      const nn = [normalizeMaterialName(m.name), normalizeMaterialName(m.matchName)];
+      return {
+        key: m.key, code: m.code, name: m.name,
+        category: inp.categoryOf ? inp.categoryOf(m.code, m.matchName) : '',
+        excluded: exclTerms.some((t) => nn.some((x) => x.includes(t))),
+        actA: actMapA[m.key] || 0, actB: actMapB[m.key] || 0,
+        stdA: stdA.get(m.key) || 0, stdB: stdB.get(m.key) || 0,
+        pA: priceLookup(monthA, m) ?? pB, pB,
+      };
+    };
+    addDecompSheets(wb, {
+      monthA, monthB,
+      recipeLabel: inp.recipeLabel || '현장 BOM 레시피',
+      materials: [...ingList, ...extraList].map(toDecomp),
+      products: products.map((p) => ({ key: p.key, name: p.name, kind: p.kind, qtyA: p.qtyA, qtyB: p.qtyB, ings: p.ings })),
+      categoryOrder: inp.categoryOrder || [],
+      qtyLast, calcLast, profitLast, priceLastExt,
+      sumQtyRow: rQty,
+      aAmount: inp.aAmount, bAmount: inp.bAmount,
+      hasActualA: Object.values(actMapA).some((g) => g > 0),
+      hasActualB: Object.values(actMapB).some((g) => g > 0),
+    });
+    if (decompCount !== matLast - 1 && decompCount > 0) throw new Error('원재료별분해 행 수가 어긋났습니다');
+  }
 
   const buf = await wb.xlsx.writeBuffer();
   return new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
