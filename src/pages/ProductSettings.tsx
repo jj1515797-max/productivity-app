@@ -15,6 +15,7 @@ import { CODE_KEY_PREFIX, normalizeCode, normalizeMaterialName } from '../lib/wa
 import type { NotifySettings } from '../lib/productionNotify';
 import ProductBarcodePanel from '../components/ProductBarcodePanel';
 import ProductionMonthlyPanel from '../components/ProductionMonthlyPanel';
+import AmbientCodePanel from '../components/AmbientCodePanel';
 
 type ProdType = '냄비' | '바트';
 
@@ -45,6 +46,7 @@ export default function ProductSettings() {
   const [showMatInput, setShowMatInput] = useState(false);
   const [showBarcode, setShowBarcode] = useState(false);
   const [showProdMonthly, setShowProdMonthly] = useState(false);
+  const [showAmbCode, setShowAmbCode] = useState(false);
   const [barcodeCount, setBarcodeCount] = useState<number | null>(null);
   // 원재료분석용 DB (수율 분석 전용 — 배합비 % 기반, 현장 BOM 과 분리)
   const [showYieldRecipe, setShowYieldRecipe] = useState(false);
@@ -457,6 +459,16 @@ export default function ProductSettings() {
               <AmbientRecipeDB onCountChange={setYieldAmbientCount} collectionName="ambientRecipesYield" />
             </div>
           )}
+        </Section>
+
+        <Section
+          icon="🏷️"
+          title="실온이유식 품목코드 연결 (현장·분석용 레시피 공통)"
+          badge=""
+          open={showAmbCode}
+          onToggle={() => setShowAmbCode(!showAmbCode)}
+        >
+          {showAmbCode && <AmbientCodePanel />}
         </Section>
 
         <Section
@@ -2604,6 +2616,8 @@ function PriceImportModal({ month, onClose, collectionName = 'materialPricesMont
 interface AmbientRecipeDoc {
   id: string;
   name: string;
+  /** ERP 품목코드 (SSB…) — 설정 › 실온이유식 품목코드 연결 에서 넣는다 */
+  code?: string;
   batchPieces: number;
   ingredients: { seq: number; name: string; gPerBatch: number; code?: string }[];
   updatedAt?: string;
@@ -2629,6 +2643,7 @@ function AmbientRecipeDB({ onCountChange, collectionName = 'ambientRecipes' }: {
         list.push({
           id: d.id,
           name: data.name || d.id,
+          code: data.code || '',
           batchPieces: Number(data.batchPieces) || 1,   // 개당 기준 (분석 페이지와 동일 기본값)
           ingredients: data.ingredients || [],
           updatedAt: data.updatedAt,
@@ -2730,7 +2745,10 @@ function AmbientRecipeDB({ onCountChange, collectionName = 'ambientRecipes' }: {
                 {filtered.map((r) => (
                   <Fragment key={r.id}>
                     <tr className="border-t hover:bg-slate-50">
-                      <td className="px-3 py-1.5">{r.name}</td>
+                      <td className="px-3 py-1.5">
+                        {r.name}
+                        {r.code && <span className="ml-2 font-mono text-[11px] text-teal-700 bg-teal-50 border border-teal-200 rounded px-1">{r.code}</span>}
+                      </td>
                       <td className="px-3 py-1.5 text-right">{r.ingredients.length}</td>
                       <td className="px-3 py-1.5 text-right">
                         <button onClick={() => setExpanded(expanded === r.id ? null : r.id)}

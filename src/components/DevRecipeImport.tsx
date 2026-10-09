@@ -344,7 +344,7 @@ export default function DevRecipeImport({ mode = 'cold' }: { mode?: 'cold' | 'am
                 return { seq: k + 1, name: e.name || r.rawName, code: e.code, gPerBatch: r.gPerPiece ?? 0, pct: r.pct, devName: r.rawName };
               }),
               updatedAt: new Date().toISOString(),
-            }, { merge: false });
+            }, { merge: true });   // 품목코드(code) 처럼 따로 넣은 값은 남긴다 (원재료 목록은 통째로 새 값)
             return;
           }
           // 전체코드로 먼저 찾는다. 단축코드로만 찾으면 F-003-01 이 F-003-51 문서를 덮어쓸 수 있다.

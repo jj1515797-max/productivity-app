@@ -24,6 +24,8 @@ export default function ProductionMonthlyPanel() {
   const [saved, setSaved] = useState<ProductionMonthlyDoc[]>([]);
   const [coldKeys, setColdKeys] = useState<Set<string> | null>(null);
   const [ambKeys, setAmbKeys] = useState<Set<string> | null>(null);
+  // 실온 ERP 품목코드(SSB…) → 실온 레시피 제품명 (설정 › 실온이유식 품목코드 연결에서 넣은 것)
+  const [ambCode, setAmbCode] = useState<Map<string, string>>(new Map());
   const [appHasData, setAppHasData] = useState<boolean | null>(null);
   const [busy, setBusy] = useState(false);
   const [msg, setMsg] = useState<string | null>(null);
@@ -45,6 +47,12 @@ export default function ProductionMonthlyPanel() {
       (ry.size > 0 ? ry : r).forEach((d) => { const v = d.data() as { code?: string }; const k = canonicalShort(v.code || d.id); if (k) cold.add(k); });
       const amb = new Set<string>();
       (ay.size > 0 ? ay : a).forEach((d) => { const v = d.data() as { name?: string }; amb.add(d.id); if (v.name) amb.add(ambientKey(v.name)); });
+      const codes = new Map<string, string>();
+      [a, ay].forEach((col) => col.forEach((d) => {
+        const v = d.data() as { name?: string; code?: string };
+        if (v.code && !codes.has(v.code.trim().toUpperCase())) codes.set(v.code.trim().toUpperCase(), v.name || d.id);
+      }));
+      setAmbCode(codes);
       setColdKeys(cold); setAmbKeys(amb);
     })().catch(() => { setColdKeys(new Set()); setAmbKeys(new Set()); });
   }, []);
@@ -56,7 +64,14 @@ export default function ProductionMonthlyPanel() {
       .then((s) => setAppHasData(!s.empty)).catch(() => setAppHasData(false));
   }, [month]);
 
-  const parsed = useMemo(() => parseProductionPaste(text), [text]);
+  const parsed = useMemo(() => {
+    const p0 = parseProductionPaste(text);
+    // SSB… 처럼 실온 품목코드로 붙여넣은 줄 → 그 코드가 연결된 실온 레시피 제품명으로 바꾼다
+    return { ...p0, rows: p0.rows.map((r) => {
+      const nm = r.kind === 'ambient' ? ambCode.get(r.raw.trim().toUpperCase()) : undefined;
+      return nm ? { ...r, raw: nm, name: nm, key: ambientKey(nm) } : r;
+    }) };
+  }, [text, ambCode]);
   const docPreview = useMemo(() => (parsed.rows.length ? toDoc(month, parsed.rows) : null), [parsed, month]);
   const matchOf = (kind: 'cold' | 'ambient', key: string) =>
     kind === 'cold' ? (coldKeys ? coldKeys.has(key) : null) : (ambKeys ? ambKeys.has(key) : null);
@@ -94,7 +109,7 @@ export default function ProductionMonthlyPanel() {
         앱을 쓰기 전 달(작년 등)의 <b>마감 기준 품목별 생산수량</b>을 월 단위로 넣습니다. <b>원재료수율 분석 전용</b>입니다.<br />
         · 원재료수율 분석은 <b>앱 생산 데이터가 없는 달에만</b> 이 값을 씁니다 (앱 데이터가 있는 달은 지금과 똑같이 앱 데이터).<br />
         · 형식: <b>코드 / (품목명) / 생산수량</b> — 엑셀에서 복사해 붙여넣기. 머리글은 자동으로 건너뜁니다. A-001-01 같은 ERP 코드도 됩니다.<br />
-        · 실온이유식은 코드 대신 <b>제품명</b>(예: TOGO_한우야채진밥)을 첫 칸에 넣으세요. 같은 코드가 여러 줄이면 합칩니다.
+        · 실온이유식은 <b>SSB 품목코드</b>(설정 › 실온이유식 품목코드 연결에 넣어 둔 것) 또는 <b>제품명</b>(예: TOGO_한우야채진밥)을 첫 칸에 넣으세요. 같은 코드가 여러 줄이면 합칩니다.
       </div>
 
       <div className="flex items-center gap-2 flex-wrap">
