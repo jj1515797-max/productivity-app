@@ -28,6 +28,7 @@ import CoolingBoard from './pages/CoolingBoard';
 import Inbound from './pages/Inbound';
 import PurchaseChat from './pages/PurchaseChat';
 import ChatSetupModal from './components/ChatSetupModal';
+import ChatAlarm from './components/ChatAlarm';
 import { useChatRole, useChatWatcher } from './lib/purchaseChat';
 import InboundHistory from './pages/InboundHistory';
 import Logo from './components/Logo';
@@ -223,7 +224,8 @@ function Header() {
   const dateLabel = `${today.getMonth() + 1}/${today.getDate()}(${days[today.getDay()]})`;
   const location = useLocation();
   const section = getSection(location.pathname);
-  const unread = useChatWatcher(location.pathname.startsWith('/inventory/chat'));
+  const unreadMsgs = useChatWatcher(location.pathname.startsWith('/inventory/chat'));
+  const unread = unreadMsgs.length;
   const pressOf = (sec: Section) => (sec === 'dashboard' ? longPress : sec === 'inventory' ? chatPress : null);
   const chatMark = (sec: Section) => (sec === 'inventory' && chatRole
     ? <span title={unread ? `구매팀 채팅 새 메시지 ${unread}건` : '구매팀 채팅 등록됨'} className={unread ? 'ml-0.5 px-1.5 rounded-full bg-rose-500 text-white text-[10px] font-bold leading-4' : ''}>{unread ? `💬${unread}` : '💬'}</span>
@@ -325,13 +327,16 @@ function Header() {
         )}
       </nav>
       {chatSetup && <ChatSetupModal onClose={() => setChatSetup(false)} />}
+      {chatRole && !location.pathname.startsWith('/inventory/chat') && <ChatAlarm unread={unreadMsgs} />}
     </header>
   );
 }
 
 function SubNav() {
   const location = useLocation();
-  const tabs = SUB_TABS[getSection(location.pathname)];
+  const chatRole = useChatRole();
+  // 「구매팀」 채팅 탭은 상단 재고관리를 꾹 눌러 등록한 기기에서만 보인다
+  const tabs = SUB_TABS[getSection(location.pathname)].filter((t) => t.to !== '/inventory/chat' || !!chatRole);
   if (tabs.length === 0) return null;
 
   return (

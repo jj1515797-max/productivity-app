@@ -34,7 +34,7 @@ export default function ChatSetupModal({ onClose }: { onClose: () => void }) {
         </div>
         <div className="grid grid-cols-2 gap-2">
           <button onClick={onClose} className="py-3 rounded-lg border text-lg">취소</button>
-          <button disabled={!ok} onClick={async () => { await askNotifyPermission(); setChatRole(role, name); onClose(); }}
+          <button disabled={!ok} onClick={() => { setChatRole(role, name); onClose(); void askNotifyPermission(); }}
             className="py-3 rounded-lg bg-blue-600 text-white text-lg font-bold disabled:bg-gray-300">{cur ? '저장' : '등록'}</button>
         </div>
         {cur && (

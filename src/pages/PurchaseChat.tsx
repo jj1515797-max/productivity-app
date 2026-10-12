@@ -1,5 +1,6 @@
 /** 재고관리 › 구매팀 — 자재관리자 ↔ 구매팀 관리자 채팅 (카톡처럼). 등록한 기기에서만 보인다 */
 import { Fragment, useEffect, useRef, useState } from 'react';
+import { Navigate } from 'react-router-dom';
 import ChatSetupModal from '../components/ChatSetupModal';
 import { deviceId, getChatName, markSeen, roleLabel, sendChat, useChatMessages, useChatRole } from '../lib/purchaseChat';
 
@@ -26,20 +27,8 @@ export default function PurchaseChat() {
     if (document.visibilityState === 'visible') markSeen(msgs[msgs.length - 1].at);
   }, [msgs.length]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  if (!role) {
-    return (
-      <div className="max-w-xl mx-auto bg-white border rounded-2xl p-6 text-center space-y-3">
-        <div className="text-4xl">🔒</div>
-        <div className="text-lg font-bold">구매팀 채팅은 등록한 기기에서만 볼 수 있어요</div>
-        <div className="text-sm text-gray-600 leading-relaxed">
-          상단 <b>「📦 재고관리」</b> 버튼을 <b>5초 꾹</b> 누르거나 아래 버튼으로 이 기기를 등록하세요.<br />
-          이름과 역할(자재관리자 / 구매팀)을 적으면 대화가 보이고 새 메시지 알림이 옵니다.
-        </div>
-        <button onClick={() => setSetup(true)} className="px-5 py-3 rounded-lg bg-blue-600 text-white font-bold">이 기기 등록</button>
-        {setup && <ChatSetupModal onClose={() => setSetup(false)} />}
-      </div>
-    );
-  }
+  // 등록 안 한 기기는 채팅이 있는지도 모르게 재고관리로 돌려보낸다 (등록은 상단 재고관리 5초 꾹)
+  if (!role) return <Navigate to="/inventory" replace />;
 
   const send = () => {
     const t = text.trim();

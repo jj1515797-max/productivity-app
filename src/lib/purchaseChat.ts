@@ -99,7 +99,7 @@ export function useChatMessages(on: boolean, max = 300): ChatMsg[] {
   const [list, setList] = useState<ChatMsg[]>([]);
   useEffect(() => {
     if (!on) { setList([]); return; }
-    return onSnapshot(query(collection(db, CHAT_COL), orderBy('at', 'desc'), limit(max)), (s) => {
+    return onSnapshot(query(collection(db, CHAT_COL), orderBy('at', 'desc'), limit(max)), { includeMetadataChanges: true }, (s) => {
       const a: ChatMsg[] = [];
       s.forEach((d) => a.push({ ...(d.data() as Omit<ChatMsg, 'id'>), id: d.id, pending: d.metadata.hasPendingWrites }));
       a.reverse();
@@ -109,8 +109,8 @@ export function useChatMessages(on: boolean, max = 300): ChatMsg[] {
   return list;
 }
 
-/** 앱 전체에서 한 번 — 등록된 기기면 새 메시지 알림 + 안 읽은 개수. 채팅 화면을 보고 있으면 알림 대신 읽음 처리 */
-export function useChatWatcher(onChatPage: boolean): number {
+/** 앱 전체에서 한 번 — 등록된 기기면 새 메시지 알림 + 안 읽은 메시지. 채팅 화면을 보고 있으면 알림 대신 읽음 처리 */
+export function useChatWatcher(onChatPage: boolean): ChatMsg[] {
   const role = useChatRole();
   const msgs = useChatMessages(!!role, 100);
   const [seen, setSeen] = useState(getLastSeen());
@@ -121,6 +121,13 @@ export function useChatWatcher(onChatPage: boolean): number {
   }, []);
   const me = deviceId();
   const unreadMsgs = msgs.filter((m) => m.device !== me && m.at > seen);
+  // 채팅 화면을 띄워 둔 채 다른 창에 있다가 돌아오면 읽음
+  useEffect(() => {
+    if (!role || !onChatPage) return;
+    const onVis = () => { if (document.visibilityState === 'visible' && msgs.length) markSeen(msgs[msgs.length - 1].at); };
+    document.addEventListener('visibilitychange', onVis);
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, [role, onChatPage, msgs]);
   // 새로 들어온 것만 한 번씩 알림
   const [notified, setNotified] = useState<Set<string>>(new Set());
   useEffect(() => {
@@ -135,5 +142,5 @@ export function useChatWatcher(onChatPage: boolean): number {
     fireNotification(`💬 ${last.name || roleLabel(last.role)} (${roleLabel(last.role)})${fresh.length > 1 ? ` · 새 메시지 ${fresh.length}건` : ''}`, last.text.slice(0, 120), 'ssbon-purchase-chat');
     setNotified((p) => { const n = new Set(p); fresh.forEach((m) => n.add(m.id)); return n; });
   }, [msgs, role, onChatPage]); // eslint-disable-line react-hooks/exhaustive-deps
-  return role ? unreadMsgs.length : 0;
+  return role ? unreadMsgs.filter((m) => !m.pending) : [];
 }
