@@ -34,6 +34,11 @@ export default function CoolingBoard() {
         <span className="text-3xl font-mono font-bold text-gray-800 tabular-nums">{hhmm(now)}</span>
       </div>
 
+      <ItemSearch date={date} isToday={isToday} now={now}
+        carts={[...new Map([...day, ...activeAll].map((c) => [c.id, c])).values()]}
+        roomName={(id) => roomOf(id)?.name || `냉각실 ${id}`}
+        slotText={(c) => { const r = roomOf(c.room); return r ? slotLabel(r, c.slot) : ''; }} />
+
       {showCfg && <ConfigPanel cfg={cfg} onSave={async (c) => { await saveCfg(c); setShowCfg(false); }} />}
 
       {waiting.length > 0 && (
@@ -203,6 +208,91 @@ function ConfigPanel({ cfg, onSave }: { cfg: CoolingConfig; onSave: (c: CoolingC
         <button disabled={busy} onClick={async () => { setBusy(true); try { await onSave(c); } finally { setBusy(false); } }}
           className="px-4 py-2 bg-blue-600 text-white rounded font-bold">{busy ? '저장 중…' : '저장'}</button>
       </div>
+    </div>
+  );
+}
+
+/* ===== 품목 검색 — 외부 인원이 품목 하나가 지금 어디 있는지 / 언제 나갔는지 바로 보게 ===== */
+function codeNum(code: string) { return Number((code.match(/\d+/) || ['0'])[0]); }
+function ItemSearch({ date, isToday, now, carts, roomName, slotText }: {
+  date: string; isToday: boolean; now: number; carts: CoolingCart[];
+  roomName: (id: number) => string; slotText: (c: CoolingCart) => string;
+}) {
+  const [q, setQ] = useState('');
+  const Q = q.trim().toUpperCase().replace(/\s+/g, '');
+  // 품목코드 → 그 품목이 실린 대차들
+  const hits = (() => {
+    if (!Q) return [];
+    const isNum = /^\d+$/.test(Q);
+    const match = (code: string, name: string) => {
+      const c = code.toUpperCase();
+      if (isNum) return codeNum(c) === Number(Q);                       // 63 → E63, F63
+      return c === Q || c.startsWith(Q) || name.replace(/\s+/g, '').toUpperCase().includes(Q);
+    };
+    const by = new Map<string, { code: string; name: string; rows: { cart: CoolingCart; qty: number }[] }>();
+    carts.forEach((cart) => cart.items.forEach((it) => {
+      if (!match(it.code, it.name || '')) return;
+      const g = by.get(it.code) || { code: it.code, name: it.name, rows: [] };
+      g.rows.push({ cart, qty: it.qty });
+      by.set(it.code, g);
+    }));
+    let list = [...by.values()];
+    // 코드를 정확히 친 경우엔 그 품목만 (G01 → G010 같은 건 빼기)
+    if (!isNum && list.some((g) => g.code.toUpperCase() === Q)) list = list.filter((g) => g.code.toUpperCase() === Q);
+    list.forEach((g) => g.rows.sort((a, b) => (a.cart.startAt || a.cart.waitAt || 0) - (b.cart.startAt || b.cart.waitAt || 0)));
+    return list.sort((a, b) => codeNum(a.code) - codeNum(b.code) || a.code.localeCompare(b.code));
+  })();
+
+  const line = (cart: CoolingCart, qty: number) => {
+    const other = cart.date !== date ? ` (${cart.date.slice(5)} 입고분)` : '';
+    const who = <><b className="text-gray-900">{cart.cartNo}번 대차</b><span className={`ml-1.5 px-1.5 py-0.5 rounded text-white text-xs whitespace-nowrap ${CH_STYLE[cart.channel].bg}`}>{cart.channel}</span> · {qty}개</>;
+    if (cart.waiting) {
+      return { tone: 'border-amber-300 bg-amber-50', badge: '⏸ 대기 중', badgeCls: 'bg-amber-500',
+        text: <>냉각실에 넣기 전 대기 중{cart.waitAt ? ` · ${hhmm(cart.waitAt)}부터` : ''}{other} · {who}</> };
+    }
+    if (cart.out) {
+      return { tone: 'border-gray-200 bg-gray-50', badge: '✔ 출고 완료', badgeCls: 'bg-gray-500',
+        text: <><b>{roomName(cart.room)}</b>에서 냉각 · <b>{hhmm(cart.startAt)}</b> 입고 → <b>{cart.outAt ? hhmm(cart.outAt) : '—'}</b> 출고{other} · {who}</> };
+    }
+    if (now >= cart.endAt) {
+      return { tone: 'border-rose-300 bg-rose-50', badge: '🔔 냉각 끝 · 출고 대기', badgeCls: 'bg-rose-600',
+        text: <><b>{roomName(cart.room)}</b> {slotText(cart)} · <b>{hhmm(cart.startAt)}</b> 입고 · <b>{hhmm(cart.endAt)}</b>에 냉각 끝 ({fmtLeft(now - cart.endAt)} 지남){other} · {who}</> };
+    }
+    return { tone: 'border-sky-300 bg-sky-50', badge: '❄ 냉각 중', badgeCls: 'bg-sky-600',
+      text: <><b>{roomName(cart.room)}</b> {slotText(cart)} · <b>{hhmm(cart.startAt)}</b> 입고 · 출고 예정 <b className="text-sky-800">{hhmm(cart.endAt)}</b> (남은 시간 {fmtLeft(cart.endAt - now)}){other} · {who}</> };
+  };
+
+  return (
+    <div className="bg-white border rounded-xl px-4 py-3 space-y-2">
+      <div className="flex items-center gap-2 flex-wrap">
+        <span className="font-bold text-gray-800">🔍 품목 찾기</span>
+        <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="품목코드나 이름 (예: G01 · 63 · 영양약밥)"
+          className="flex-1 min-w-[220px] max-w-md border-2 rounded-lg px-3 py-2 text-lg" />
+        {q && <button onClick={() => setQ('')} className="px-3 py-2 border rounded-lg text-sm">지우기</button>}
+        <span className="text-xs text-gray-500">{isToday ? '오늘' : date} 입고한 대차 + 지금 냉각실에 있는 대차에서 찾습니다</span>
+      </div>
+      {Q && hits.length === 0 && (
+        <div className="text-sm text-gray-500 px-1 py-2">「{q.trim()}」 이(가) 실린 대차가 없습니다 — 아직 대차에 싣지 않았거나 다른 날짜에 입고했을 수 있습니다.</div>
+      )}
+      {hits.map((g) => (
+        <div key={g.code} className="border rounded-lg overflow-hidden">
+          <div className="px-3 py-2 bg-slate-50 border-b flex items-baseline gap-2">
+            <b className="font-mono text-lg">{g.code}</b><span className="font-semibold text-gray-800">{g.name}</span>
+            <span className="text-xs text-gray-500 ml-auto">대차 {g.rows.length}대 · 합계 {g.rows.reduce((s2, r) => s2 + r.qty, 0)}개</span>
+          </div>
+          <div className="divide-y">
+            {g.rows.map(({ cart, qty }) => {
+              const l = line(cart, qty);
+              return (
+                <div key={cart.id} className={`px-3 py-2 flex items-start gap-2 border-l-4 ${l.tone}`}>
+                  <span className={`shrink-0 px-2 py-0.5 rounded text-white text-xs font-bold whitespace-nowrap ${l.badgeCls}`}>{l.badge}</span>
+                  <span className="text-[15px] text-gray-700 leading-snug">{l.text}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      ))}
     </div>
   );
 }
