@@ -145,8 +145,8 @@ export function useChatWatcher(onChatPage: boolean): ChatMsg[] {
     }
     const fresh = unreadMsgs.filter((m) => !notified.has(m.id) && !m.pending);
     if (fresh.length === 0) return;
-    const last = fresh[fresh.length - 1];
-    fireNotification(`💬 ${last.name || roleLabel(last.role)} (${roleLabel(last.role)})${fresh.length > 1 ? ` · 새 메시지 ${fresh.length}건` : ''}`, last.text.slice(0, 120), 'ssbon-purchase-chat');
+    // 알림에는 내용을 싣지 않는다 — 대화는 채팅 화면에서만
+    fireNotification(`💬 새 메시지 ${unreadMsgs.length}건 — 대화를 확인하세요`, '구매팀 채팅을 열어 확인해 주세요.', 'ssbon-purchase-chat');
     setNotified((p) => { const n = new Set(p); fresh.forEach((m) => n.add(m.id)); return n; });
   }, [msgs, role, onChatPage]); // eslint-disable-line react-hooks/exhaustive-deps
   return role ? unreadMsgs.filter((m) => !m.pending) : [];

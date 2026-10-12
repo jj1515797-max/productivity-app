@@ -7,7 +7,6 @@
 import { useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { unlockAudio } from '../lib/cooling';
-import { roleLabel } from '../lib/purchaseChat';
 import type { ChatMsg } from '../lib/purchaseChat';
 
 /** 띵-동-띵 2.4초짜리 알림음 WAV (반복 재생용) */
@@ -77,12 +76,11 @@ export default function ChatAlarm({ unread }: { unread: ChatMsg[] }) {
   // 창이 뒤에 있으면 윈도우 알림을 확인할 때까지 20초마다 다시
   useEffect(() => {
     if (!on || !('Notification' in window) || Notification.permission !== 'granted') return;
-    const last = unread[unread.length - 1];
     const show = () => {
       if (document.visibilityState === 'visible') return;
       try {
         const n = new Notification(`💬 새 메시지 ${unread.length}건 — 대화를 확인하세요`, {
-          body: `${last.name || roleLabel(last.role)} (${roleLabel(last.role)}): ${last.text.slice(0, 100)}`,
+          body: '구매팀 채팅을 열어 대화를 확인해 주세요.',
           tag: 'ssbon-purchase-chat', requireInteraction: true, renotify: true,
         } as NotificationOptions);
         n.onclick = () => { window.focus(); nav('/inventory/chat'); n.close(); };
@@ -100,14 +98,8 @@ export default function ChatAlarm({ unread }: { unread: ChatMsg[] }) {
           <div className="text-2xl font-extrabold">💬 새 메시지 {unread.length}건</div>
           <div className="text-sm text-gray-800 mt-0.5">구매팀 채팅 — 확인할 때까지 알림이 울립니다</div>
         </div>
-        <div className="px-5 py-4 space-y-2 max-h-[45vh] overflow-y-auto">
-          {unread.slice(-4).map((m) => (
-            <div key={m.id}>
-              <div className="text-xs text-gray-500">{m.name || roleLabel(m.role)} · {roleLabel(m.role)}</div>
-              <div className="text-base whitespace-pre-wrap break-words">{m.text}</div>
-            </div>
-          ))}
-          {unread.length > 4 && <div className="text-xs text-gray-500">… 외 {unread.length - 4}건</div>}
+        <div className="px-5 py-5 text-center text-lg text-gray-700">
+          구매팀 채팅에 새 메시지가 왔습니다.<br />대화를 확인해 주세요.
         </div>
         <div className="px-5 pb-5">
           <button onClick={() => nav('/inventory/chat')} className="w-full py-4 rounded-xl bg-blue-600 text-white text-xl font-bold">확인 (대화 보기)</button>
