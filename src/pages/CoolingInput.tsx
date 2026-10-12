@@ -250,12 +250,19 @@ export default function CoolingInput() {
           </div>
           {q && <span className="text-sm text-gray-500">{filtered.length}개</span>}
           {/* 채널을 골라 둔 상태면 보이는 카드를 한 번에 고를 수 있다 */}
-          {chFilter !== '전체' && filtered.length > 0 && (
-            <button onClick={() => { chime('tap'); setSel(new Set(filtered.map((c) => c.key))); }}
-              className="ml-auto px-3 py-2 rounded-lg border-2 border-blue-500 text-blue-700 font-bold">
-              보이는 {chFilter} {filtered.length}개 모두 선택
-            </button>
-          )}
+          {chFilter !== '전체' && filtered.length > 0 && (() => {
+            // 보이는 카드가 전부 골라져 있으면 한 번 더 눌러 전체 해제
+            const allOn = filtered.every((c) => sel.has(c.key));
+            return (
+              <button onClick={() => {
+                chime('tap');
+                setSel(allOn ? new Set() : new Set(filtered.map((c) => c.key)));
+              }}
+                className={`ml-auto px-3 py-2 rounded-lg border-2 font-bold ${allOn ? 'border-gray-400 bg-gray-100 text-gray-700' : 'border-blue-500 text-blue-700'}`}>
+                {allOn ? `보이는 ${chFilter} ${filtered.length}개 모두 해제` : `보이는 ${chFilter} ${filtered.length}개 모두 선택`}
+              </button>
+            );
+          })()}
         </div>
         {/* 카드가 많아도 아래 냉각실 도면이 바로 보이게 — 목록 안에서만 스크롤 */}
         <div className="p-3 max-h-[45vh] overflow-y-auto overscroll-contain">
