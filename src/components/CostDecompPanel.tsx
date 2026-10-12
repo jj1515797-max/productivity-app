@@ -200,13 +200,18 @@ export default function CostDecompPanel({
 
       {/* 연동 비교 — A → 연동 → B */}
       <div className="p-4 border-b">
-        <div className="text-xs font-bold text-gray-600 mb-2">🔁 {monthB} 기준 연동 비교</div>
+        <div className="text-xs font-bold text-gray-600">🔁 연동 비교 — 생산량이 바뀐 만큼은 빼고, 같은 조건이었다면 얼마 들었어야 했는지와 비교</div>
+        <div className="text-[11px] text-gray-500 mb-2">
+          {monthA}과 똑같이(같은 제품 비율 · 같은 수율) {monthB}만큼 만들었다면 {monthB} 단가로 얼마가 들었을지를 「연동 원재료비」로 놓고, 실제 {monthB} 원재료비와 비교합니다.
+        </div>
         <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_1fr_auto_1fr] gap-2 items-stretch">
-          <Kpi title={`${monthA} 원재료비`} value={man(t.MA, false)} note={`생산 ${Math.round(t.QA).toLocaleString()} EA`} />
-          <Arrow label="① 물량 + ② 단가" v={t.vol + t.price} />
-          <Kpi title="연동 원재료비" value={man(t.flexed, false)} note={`${monthA} 쓰임새를 ${monthB} 생산량(×${t.k.toFixed(3)})·단가로 환산`} accent />
-          <Arrow label="③ 구성 + ④ 수율 + ⑤ 기타" v={flexGap} />
-          <Kpi title={`${monthB} 원재료비`} value={man(t.MB, false)} note={`생산 ${Math.round(t.QB).toLocaleString()} EA`} />
+          <Kpi title={`${monthA} 원재료비`} value={man(t.MA, false)}
+            note={`${monthA} 실투입량 × ${t.aSubShare >= 0.999 ? `${monthB} 단가 (${monthA} 단가가 없어서)` : `${monthA} 단가`} · 생산 ${Math.round(t.QA).toLocaleString()} EA`} />
+          <Arrow label={Math.abs(t.price) >= 0.5 ? '생산량이 바뀐 몫 + 단가가 바뀐 몫 (① 물량 + ② 단가)' : '생산량이 바뀐 만큼 늘어난 몫 (① 물량)'} v={t.vol + t.price} />
+          <Kpi title={`연동 원재료비 (${monthA}처럼 ${monthB}만큼 만들었다면)`} value={man(t.flexed, false)}
+            note={`${monthA} 실투입량 × ${t.k.toFixed(3)}배 (생산 ${Math.abs((t.k - 1) * 100).toFixed(1)}% ${t.k >= 1 ? '증가' : '감소'}) × ${monthB} 단가`} accent />
+          <Arrow label="같은 양을 만들 때보다 덜(−)·더(+) 쓴 몫 (③ 구성 + ④ 수율 + ⑤ 기타)" v={flexGap} />
+          <Kpi title={`${monthB} 원재료비`} value={man(t.MB, false)} note={`${monthB} 실투입량 × ${monthB} 단가 · 생산 ${Math.round(t.QB).toLocaleString()} EA`} />
         </div>
       </div>
 
@@ -337,7 +342,7 @@ function Arrow({ label, v }: { label: string; v: number }) {
     <div className="flex sm:flex-col items-center justify-center gap-1 px-1 text-center">
       <span className="text-gray-400 text-lg leading-none"><span className="sm:hidden">↓</span><span className="hidden sm:inline">→</span></span>
       <span className={`text-sm font-bold tabular-nums ${tone(v)}`}>{man(v)}</span>
-      <span className="text-[10px] text-gray-500 leading-tight max-w-[7rem]">{label}</span>
+      <span className="text-[10px] text-gray-500 leading-tight max-w-[10rem]">{label}</span>
     </div>
   );
 }
