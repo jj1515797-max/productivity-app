@@ -308,7 +308,32 @@ export default function CostDecompPanel({
               </tbody>
             </table>
           </div>
-          <div className="text-[10px] text-gray-500 mt-1">① 물량 · ② 단가 · 원재료비 합계는 실투입 × 단가라 레시피와 무관하게 같고, 레시피는 「표준소요」만 바꿔 ③·④·⑤ 의 나눔이 달라집니다.</div>
+          <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-2">
+            {[
+              {
+                t: '③ 제품 구성', c: 'border-indigo-200 bg-indigo-50/60',
+                d: '「무엇을 만들었나」 의 영향입니다. 원재료가 많이(비싸게) 드는 제품의 생산 비중이 늘면 +, 적게 드는 제품 비중이 늘면 − 입니다. 같은 수율로 만들었다고 보고 계산하므로 공장의 잘잘못이 아니라 주문·생산계획의 영향입니다.',
+              },
+              {
+                t: '④ 수율', c: 'border-emerald-200 bg-emerald-50/60',
+                d: `「같은 제품을 얼마나 아껴 만들었나」 입니다. 수율 = 레시피상 필요량 ÷ 실제 투입량. ${monthB}에 만든 제품을 ${monthA} 수율 그대로 만들었다면 필요했을 양보다 실제로 덜 넣었으면 −(절감), 더 넣었으면 + 입니다. 손질·로스·계량 같은 현장 관리의 결과입니다.`,
+              },
+              {
+                t: '⑤ 기타', c: 'border-gray-200 bg-gray-50',
+                d: '수율을 비교할 수 없어 ③·④ 로 나누지 못한 원재료 몫입니다. 한 달이라도 실투입이 없거나, 수율이 20~200% 를 벗어나 입력 이상으로 보이거나, 레시피에는 없는데 실투입만 있는 원재료가 여기로 갑니다.',
+              },
+            ].map((x) => (
+              <div key={x.t} className={`border rounded p-2.5 ${x.c}`}>
+                <div className="text-xs font-bold text-gray-800">{x.t}</div>
+                <div className="text-[11px] text-gray-700 leading-relaxed mt-0.5">{x.d}</div>
+              </div>
+            ))}
+          </div>
+          <div className="mt-2 text-[11px] text-gray-600 leading-relaxed space-y-0.5">
+            <div>· <b>수율 비교 원재료</b> — 두 달 모두 수율을 계산할 수 있어 ④ 수율에 들어간 원재료 수입니다. 많을수록 ⑤ 기타가 작아집니다.</div>
+            <div>· <b>레시피 반영</b> — 그 달 생산량 중 레시피가 등록된 제품의 비율({monthA} · {monthB}). 100% 가 아니면 레시피 없는 제품 몫이 빠져 계산됩니다.</div>
+            <div>· <b>왜 레시피에 따라 달라지나</b> — 원재료비 합계와 ① 물량 · ② 단가는 「실투입 × 단가」 라 레시피와 무관하게 같습니다. 레시피는 제품마다 「원래 얼마가 필요한가(표준소요)」 를 정하므로, 그 기준으로 나누는 ③ · ④ · ⑤ 만 달라집니다. 분석용 레시피가 실제 배합에 가까워 더 정확합니다.</div>
+          </div>
         </div>
       )}
 
