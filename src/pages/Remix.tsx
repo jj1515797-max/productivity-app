@@ -395,13 +395,14 @@ export default function Remix() {
       </div>
 
       {/* 단계별 그룹 표 */}
-      <div className="bg-white border rounded-lg overflow-x-auto">
+      {/* 표 안에서 스크롤 — 날짜·지시/잔여/재배합·일 총계 머리는 위에, 단계·코드·품목명은 왼쪽에 고정 (틀 고정) */}
+      <div className="bg-white border rounded-lg overflow-auto max-h-[calc(100vh-120px)]">
         <table className="w-full text-xs">
-          <thead className="bg-slate-50 text-gray-600">
+          <thead className="bg-slate-50 text-gray-600 sticky top-0 z-20 shadow-[0_2px_0_0_rgb(148,163,184)]">
             <tr>
-              <th rowSpan={2} className="px-2 py-2 text-left border w-20">단계</th>
-              <th rowSpan={2} className="px-2 py-2 text-left border w-20">코드</th>
-              <th rowSpan={2} className="px-2 py-2 text-left border min-w-[140px]">품목명</th>
+              <th rowSpan={2} className="px-2 py-2 text-left border w-16 min-w-[4rem] sticky left-0 z-30 bg-slate-50">단계</th>
+              <th rowSpan={2} className="px-2 py-2 text-left border w-20 min-w-[5rem] sticky left-16 z-30 bg-slate-50">코드</th>
+              <th rowSpan={2} className="px-2 py-2 text-left border w-40 min-w-[10rem] sticky left-36 z-30 bg-slate-50">품목명</th>
               {weekDateStrs.map((d) => (
                 <th key={d} colSpan={3} className="px-2 py-1 text-center border bg-blue-50 text-blue-900 font-semibold">
                   {d.slice(5)}
@@ -411,28 +412,28 @@ export default function Remix() {
             <tr>
               {weekDateStrs.map((d) => (
                 <Fragment key={d + '-hdr'}>
-                  <th className="px-1 py-1 text-right border border-l-2 border-l-slate-400">지시</th>
-                  <th className="px-1 py-1 text-right border">잔여</th>
+                  <th className="px-1 py-1 text-right border border-l-2 border-l-slate-400 bg-slate-50">지시</th>
+                  <th className="px-1 py-1 text-right border bg-slate-50">잔여</th>
                   <th className="px-1 py-1 text-right border bg-amber-50">재배합</th>
                 </Fragment>
               ))}
             </tr>
-          </thead>
-          <tbody>
-            {/* 일 총계 (맨 위) */}
-            <tr className="bg-slate-200 border-y-2 border-slate-400 sticky top-0">
-              <td colSpan={3} className="px-2 py-2 text-right text-sm font-bold text-slate-800 bg-slate-200">일 총계</td>
+            {/* 일 총계 — 머리와 함께 위에 고정 */}
+            <tr className="bg-slate-200 border-y-2 border-slate-400">
+              <td colSpan={3} className="px-2 py-2 text-right text-sm font-bold text-slate-800 bg-slate-200 sticky left-0 z-30">일 총계</td>
               {weekDateStrs.map((d) => {
                 const t = dayTotals[d];
                 return (
                   <Fragment key={d + '-top'}>
-                    <td className="px-1 py-2 text-right border-x text-sm font-bold">{t?.totalQty.toLocaleString() || ''}</td>
-                    <td className="px-1 py-2 text-right border-x text-sm font-bold text-rose-700">{t?.remaining.toLocaleString() || ''}</td>
+                    <td className="px-1 py-2 text-right border-x text-sm font-bold bg-slate-200">{t?.totalQty.toLocaleString() || ''}</td>
+                    <td className="px-1 py-2 text-right border-x text-sm font-bold text-rose-700 bg-slate-200">{t?.remaining.toLocaleString() || ''}</td>
                     <td className="px-1 py-2 text-right border-x text-sm font-bold text-amber-700 bg-amber-100">{t?.remixCount || ''}</td>
                   </Fragment>
                 );
               })}
             </tr>
+          </thead>
+          <tbody>
             {STAGES.map((s) => {
               const items = grouped.get(s.key) || [];
               if (items.length === 0) return null;
@@ -440,14 +441,14 @@ export default function Remix() {
                 <Fragment key={`stg-${s.key}`}>
                   <tr key={`hd-${s.key}`} className="bg-slate-100">
                     <td colSpan={3 + weekDateStrs.length * 3} className="px-3 py-1.5 font-bold text-slate-700 text-sm">
-                      {s.label} <span className="text-xs text-gray-500 font-normal">({items.length}품목)</span>
+                      <span className="sticky left-3">{s.label} <span className="text-xs text-gray-500 font-normal">({items.length}품목)</span></span>
                     </td>
                   </tr>
                   {items.map((it) => (
                     <tr key={`${s.key}-${it.norm}`} className="border-t hover:bg-slate-50/50">
-                      <td className="px-2 py-1 text-gray-500 border">{s.label}</td>
-                      <td className="px-2 py-1 font-mono border">{it.code}</td>
-                      <td className="px-2 py-1 border">{it.name || '-'}</td>
+                      <td className="px-2 py-1 text-gray-500 border sticky left-0 z-10 bg-white">{s.label}</td>
+                      <td className="px-2 py-1 font-mono border sticky left-16 z-10 bg-white">{it.code}</td>
+                      <td className="px-2 py-1 border sticky left-36 z-10 bg-white">{it.name || '-'}</td>
                       {weekDateStrs.map((d) => {
                         const totalQty = (itemsByDate[d] || {})[it.norm]?.totalQty || 0;
                         const log = (logisticsByDate[d] || {})[it.norm];
@@ -469,7 +470,7 @@ export default function Remix() {
                   ))}
                   {/* 단계 소계: 건수 카운팅 */}
                   <tr className="bg-slate-50 border-t">
-                    <td colSpan={3} className="px-2 py-1 text-right text-xs font-semibold text-slate-600">소계 (건수)</td>
+                    <td colSpan={3} className="px-2 py-1 text-right text-xs font-semibold text-slate-600 sticky left-0 z-10 bg-slate-50">소계 (건수)</td>
                     {weekDateStrs.map((d) => {
                       let q = 0, r = 0, m = 0;
                       items.forEach((it) => {
