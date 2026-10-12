@@ -600,6 +600,8 @@ function CategoryTable({ rows, monthA, monthB }: { rows: DecompMatRow[]; monthA:
   });
   const list = [...cats.entries()].sort((a, b) => a[1].yld - b[1].yld);
   const mx = Math.max(1, ...list.map(([, c]) => Math.abs(c.yld)));
+  const [open, setOpen] = useState<Set<string>>(new Set());
+  const toggle = (k: string) => setOpen((p) => { const n = new Set(p); if (n.has(k)) n.delete(k); else n.add(k); return n; });
   return (
     <div className="overflow-x-auto border rounded">
       <table className="w-full text-xs min-w-[720px]">
@@ -616,8 +618,9 @@ function CategoryTable({ rows, monthA, monthB }: { rows: DecompMatRow[]; monthA:
         </thead>
         <tbody className="divide-y">
           {list.map(([name, c]) => (
-            <tr key={name}>
-              <td className="px-2 py-1.5 font-semibold">{name} <span className="text-[10px] text-gray-400 font-normal">{c.n}종</span></td>
+            <Fragment key={name}>
+            <tr onClick={() => toggle(name)} className={`cursor-pointer hover:bg-indigo-50/40 ${open.has(name) ? 'bg-indigo-50/60' : ''}`}>
+              <td className="px-2 py-1.5 font-semibold"><span className="text-gray-400 w-3 inline-block">{open.has(name) ? '▾' : '▸'}</span> {name} <span className="text-[10px] text-gray-400 font-normal">{c.n}종</span></td>
               <td className="px-2 py-1.5 text-right tabular-nums">{c.sG > 0 ? pct(c.sE / c.sG) : '—'} → {c.sH > 0 ? pct(c.sF / c.sH) : '—'}</td>
               <td className="px-2 py-1.5"><Diverge v={c.yld} max={mx} /></td>
               <td className={`px-2 py-1.5 text-right tabular-nums font-bold ${tone(c.yld)}`}>{won(c.yld)}</td>
@@ -625,10 +628,28 @@ function CategoryTable({ rows, monthA, monthB }: { rows: DecompMatRow[]; monthA:
               <td className={`px-2 py-1.5 text-right tabular-nums ${tone(c.other)}`}>{won(c.other)}</td>
               <td className="px-2 py-1.5 text-right tabular-nums">{Math.round(c.costB).toLocaleString()}</td>
             </tr>
+            {open.has(name) && rows
+              .filter((r) => r.status !== 'noUse' && (r.category || '미분류') === name)
+              .sort((a, b) => a.yld - b.yld || Math.abs(b.mix) - Math.abs(a.mix))
+              .map((r) => (
+                <tr key={r.key} className="bg-slate-50/80 text-[11px]">
+                  <td className="pl-7 pr-2 py-1">
+                    <span className="text-gray-800">{r.name}</span>{r.swing && <span className="ml-1 text-amber-700" title="수율이 크게 바뀜 — 레시피 변경·입력 확인">⚠</span>}
+                    {r.status !== 'ok' && <span className="ml-1 text-[10px] text-gray-400">{statusLabel(r.status, monthA, monthB)}</span>}
+                  </td>
+                  <td className="px-2 py-1 text-right tabular-nums text-gray-700">{pct(r.yA)} → {pct(r.yB)}{r.dY !== null && <span className={`ml-1 ${r.dY > 0 ? 'text-emerald-700' : r.dY < 0 ? 'text-rose-700' : 'text-gray-400'}`}>({pp(r.dY, 1)})</span>}</td>
+                  <td className="px-2 py-1"><Diverge v={r.yld} max={mx} /></td>
+                  <td className={`px-2 py-1 text-right tabular-nums ${tone(r.yld)}`}>{Math.abs(r.yld) >= 1 ? won(r.yld) : '—'}</td>
+                  <td className={`px-2 py-1 text-right tabular-nums ${tone(r.mix)}`}>{Math.abs(r.mix) >= 1 ? won(r.mix) : '—'}</td>
+                  <td className={`px-2 py-1 text-right tabular-nums ${tone(r.other)}`}>{Math.abs(r.other) >= 1 ? won(r.other) : '—'}</td>
+                  <td className="px-2 py-1 text-right tabular-nums text-gray-600">{Math.round(r.costB).toLocaleString()}</td>
+                </tr>
+              ))}
+            </Fragment>
           ))}
         </tbody>
       </table>
-      <div className="text-[10px] text-gray-500 px-2 py-1">수율은 두 달 모두 '정상'인 원재료만으로 낸 가중 수율(Σ표준 ÷ Σ실투입)입니다. 분류는 설정 › 원재료 분류 기준.</div>
+      <div className="text-[10px] text-gray-500 px-2 py-1">분류 줄을 누르면 그 분류의 원재료가 펼쳐집니다. 수율은 두 달 모두 '정상'인 원재료만으로 낸 가중 수율(Σ표준 ÷ Σ실투입)입니다. 분류는 설정 › 원재료 분류 기준.</div>
     </div>
   );
 }
