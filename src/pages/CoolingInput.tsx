@@ -206,7 +206,7 @@ export default function CoolingInput() {
                   className="text-left rounded-xl border-4 border-rose-500 bg-rose-50 p-4 animate-pulse active:scale-[0.98]">
                   <div className="flex items-center gap-2">
                     <span className="text-3xl font-extrabold text-gray-900">{c.cartNo}번</span>
-                    <span className={`px-2 py-0.5 rounded text-white text-sm font-bold ${CH_STYLE[c.channel].bg}`}>{c.channel}</span>
+                    <span className={`px-2 py-0.5 rounded text-white text-sm font-bold whitespace-nowrap shrink-0 ${CH_STYLE[c.channel].bg}`}>{c.channel}</span>
                     <span className="ml-auto text-xs text-rose-700 font-bold">{fmtLeft(now - c.endAt)} 지남</span>
                   </div>
                   <div className="mt-1 text-lg font-bold text-rose-800">{room?.name || `냉각실 ${c.room}`} · {room ? slotLabel(room, c.slot) : ''}</div>
@@ -301,7 +301,7 @@ export default function CoolingInput() {
                 className={`text-left rounded-xl border-2 ${CH_STYLE[c.channel].border} bg-white p-3 active:scale-[0.97]`}>
                 <div className="flex items-center gap-2">
                   <span className="text-2xl font-extrabold">{c.cartNo}번</span>
-                  <span className={`px-2 py-0.5 rounded text-white text-xs font-bold ${CH_STYLE[c.channel].bg}`}>{c.channel}</span>
+                  <span className={`px-2 py-0.5 rounded text-white text-xs font-bold whitespace-nowrap shrink-0 ${CH_STYLE[c.channel].bg}`}>{c.channel}</span>
                 </div>
                 <div className="text-sm text-gray-700 mt-1 line-clamp-2">{c.items.map((i) => i.code).join(', ')}</div>
                 <div className="text-xs text-gray-500 mt-0.5">{c.items.length}품목 · {c.items.reduce((s2, i) => s2 + i.qty, 0)}개{c.waitAt ? ` · ${hhmm(c.waitAt)}부터 대기` : ''}</div>
@@ -347,7 +347,7 @@ export default function CoolingInput() {
                 <div key={c.id} className="px-4 py-2.5 flex items-center gap-3 flex-wrap">
                   <span className="text-sm text-gray-500 tabular-nums w-20">{c.outAt ? hhmm(c.outAt) : ''} 출고</span>
                   <span className="text-xl font-extrabold w-14">{c.cartNo}번</span>
-                  <span className={`px-2 py-0.5 rounded text-white text-xs font-bold ${CH_STYLE[c.channel].bg}`}>{c.channel}</span>
+                  <span className={`px-2 py-0.5 rounded text-white text-xs font-bold whitespace-nowrap shrink-0 ${CH_STYLE[c.channel].bg}`}>{c.channel}</span>
                   <span className="text-sm text-gray-600">{roomOf(c.room)?.name}</span>
                   <span className="text-sm flex-1 min-w-[200px]">{c.items.map((i) => `${i.code} ${i.name} ${i.qty}`).join(' / ')}</span>
                   <button onClick={() => unrelease(c)}

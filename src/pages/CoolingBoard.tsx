@@ -65,9 +65,9 @@ export default function CoolingBoard() {
           <table className="w-full text-sm">
             <thead className="text-xs text-gray-500 bg-gray-50">
               <tr>
-                <th className="px-3 py-2 text-left">상태</th><th className="px-3 py-2 text-left">냉각실 · 자리</th>
-                <th className="px-3 py-2 text-left">대차</th><th className="px-3 py-2 text-left">채널</th>
-                <th className="px-3 py-2 text-left">품목</th><th className="px-3 py-2 text-right">입고</th><th className="px-3 py-2 text-right">종료</th>
+                <th className="px-3 py-2 text-left whitespace-nowrap">상태</th><th className="px-3 py-2 text-left whitespace-nowrap">냉각실 · 자리</th>
+                <th className="px-3 py-2 text-left whitespace-nowrap">대차</th><th className="px-3 py-2 text-left whitespace-nowrap">채널</th>
+                <th className="px-3 py-2 text-left w-full">품목</th><th className="px-3 py-2 text-right whitespace-nowrap">입고</th><th className="px-3 py-2 text-right whitespace-nowrap">종료</th>
               </tr>
             </thead>
             <tbody className="divide-y">
@@ -77,13 +77,13 @@ export default function CoolingBoard() {
                 const room = roomOf(c.room);
                 return (
                   <tr key={c.id} className={left <= 0 ? 'bg-rose-50' : ''}>
-                    <td className={`px-3 py-2 font-bold tabular-nums ${left <= 0 ? 'text-rose-600' : 'text-gray-800'}`}>{left <= 0 ? '종료 · 출고 대기' : `${fmtLeft(left)} 남음`}</td>
-                    <td className="px-3 py-2">{room?.name || c.room} · {room ? slotLabel(room, c.slot) : ''}</td>
-                    <td className="px-3 py-2 font-extrabold text-lg">{c.cartNo}</td>
-                    <td className="px-3 py-2"><span className={`px-2 py-0.5 rounded text-white text-xs font-bold ${CH_STYLE[c.channel].bg}`}>{c.channel}</span></td>
+                    <td className={`px-3 py-2 font-bold tabular-nums whitespace-nowrap ${left <= 0 ? 'text-rose-600' : 'text-gray-800'}`}>{left <= 0 ? '종료 · 출고 대기' : `${fmtLeft(left)} 남음`}</td>
+                    <td className="px-3 py-2 whitespace-nowrap">{room?.name || c.room} · {room ? slotLabel(room, c.slot) : ''}</td>
+                    <td className="px-3 py-2 font-extrabold text-lg whitespace-nowrap">{c.cartNo}</td>
+                    <td className="px-3 py-2 whitespace-nowrap"><span className={`px-2 py-0.5 rounded text-white text-xs font-bold ${CH_STYLE[c.channel].bg}`}>{c.channel}</span></td>
                     <td className="px-3 py-2">{c.items.map((i) => <span key={i.code} className="mr-2"><b className="font-mono">{i.code}</b> {i.name} <span className="text-gray-500">{i.qty}</span></span>)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums text-gray-500">{hhmm(c.startAt)}</td>
-                    <td className="px-3 py-2 text-right tabular-nums font-bold">{hhmm(c.endAt)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums text-gray-500 whitespace-nowrap">{hhmm(c.startAt)}</td>
+                    <td className="px-3 py-2 text-right tabular-nums font-bold whitespace-nowrap">{hhmm(c.endAt)}</td>
                   </tr>
                 );
               })}
@@ -103,17 +103,17 @@ export default function CoolingBoard() {
             {rec.length === 0 ? <div className="px-4 py-6 text-center text-gray-400 text-sm">이 날짜에 입고한 대차가 없습니다</div> : (
               <table className="w-full text-sm">
                 <thead className="text-xs text-gray-500 bg-gray-50">
-                  <tr><th className="px-3 py-1.5 text-left">입고</th><th className="px-3 py-1.5 text-left">출고</th><th className="px-3 py-1.5 text-left">냉각실</th><th className="px-3 py-1.5 text-left">대차</th><th className="px-3 py-1.5 text-left">채널</th><th className="px-3 py-1.5 text-left">품목</th></tr>
+                  <tr><th className="px-3 py-1.5 text-left whitespace-nowrap">입고</th><th className="px-3 py-1.5 text-left whitespace-nowrap">출고</th><th className="px-3 py-1.5 text-left whitespace-nowrap">냉각실</th><th className="px-3 py-1.5 text-left whitespace-nowrap">대차</th><th className="px-3 py-1.5 text-left whitespace-nowrap">채널</th><th className="px-3 py-1.5 text-left w-full">품목</th></tr>
                 </thead>
                 <tbody className="divide-y">
                   {rec.map((c) => (
                     <tr key={c.id}>
-                      <td className="px-3 py-1.5 tabular-nums">{c.waiting ? '—' : hhmm(c.startAt)}</td>
-                      <td className="px-3 py-1.5 tabular-nums">{c.out ? (c.outAt ? hhmm(c.outAt) : '출고') : c.waiting ? <span className="text-amber-700 font-medium">대기 중</span> : <span className="text-blue-600 font-medium">냉각실에 있음</span>}</td>
-                      <td className="px-3 py-1.5">{roomOf(c.room)?.name}</td>
-                      <td className="px-3 py-1.5 font-bold">{c.cartNo}번</td>
-                      <td className="px-3 py-1.5"><span className={`px-2 py-0.5 rounded text-white text-xs ${CH_STYLE[c.channel].bg}`}>{c.channel}</span></td>
-                      <td className="px-3 py-1.5">{c.items.map((i) => `${i.code} ${i.name} ${i.qty}`).join(' / ')}</td>
+                      <td className="px-3 py-1.5 tabular-nums whitespace-nowrap align-top">{c.waiting ? '—' : hhmm(c.startAt)}</td>
+                      <td className="px-3 py-1.5 tabular-nums whitespace-nowrap align-top">{c.out ? (c.outAt ? hhmm(c.outAt) : '출고') : c.waiting ? <span className="text-amber-700 font-medium">대기 중</span> : <span className="text-blue-600 font-medium">냉각실에 있음</span>}</td>
+                      <td className="px-3 py-1.5 whitespace-nowrap align-top">{roomOf(c.room)?.name}</td>
+                      <td className="px-3 py-1.5 font-bold whitespace-nowrap align-top">{c.cartNo}번</td>
+                      <td className="px-3 py-1.5 whitespace-nowrap align-top"><span className={`px-2 py-0.5 rounded text-white text-xs whitespace-nowrap ${CH_STYLE[c.channel].bg}`}>{c.channel}</span></td>
+                      <td className="px-3 py-1.5 align-top">{c.items.map((i) => `${i.code} ${i.name} ${i.qty}`).join(' / ')}</td>
                     </tr>
                   ))}
                 </tbody>
