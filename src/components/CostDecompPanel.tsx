@@ -217,7 +217,7 @@ export default function CostDecompPanel({
 
       {/* 효과 합계 */}
       <div className="p-4 border-b">
-        <div className="text-xs font-bold text-gray-600 mb-2">📊 원재료비 증감 {man(dM)}원을 나누면 <span className="font-normal text-gray-400">(− 줄어듦 · + 늘어남 · 합은 실제 증감과 같음)</span></div>
+        <div className="text-xs font-bold text-gray-600 mb-2">📊 원재료비 증감 {man(dM)}원을 나누면 <span className="font-normal text-gray-500">( <b className="text-emerald-700">− 줄어듦(좋음)</b> · <b className="text-rose-700">+ 늘어남(나쁨)</b> · ① 물량은 많이 만들어 느는 몫이라 좋고 나쁨이 없음 )</span></div>
         <div className="space-y-2">
           {effects.map((e) => (
             <div key={e.key} className="grid grid-cols-[7.5rem_1fr_6.5rem] sm:grid-cols-[10rem_1fr_7rem_12rem] gap-2 items-center">
@@ -232,9 +232,15 @@ export default function CostDecompPanel({
               </div>
             </div>
           ))}
+          <div className="grid grid-cols-[7.5rem_1fr_6.5rem] sm:grid-cols-[10rem_1fr_7rem_12rem] gap-2 items-center border-t-2 border-indigo-200 pt-2 bg-indigo-50/60 rounded px-1">
+            <div className="text-sm font-bold text-indigo-900 leading-tight">같은 조건 비교<div className="text-[10px] font-normal text-gray-500">연동 기준 = ③ + ④ + ⑤</div></div>
+            <div className="text-[11px] text-gray-600">물량·단가를 빼고 {monthA}과 같은 조건이었다면 들었을 원재료비와의 차이 — 결론의 절감·증가 금액</div>
+            <div className={`text-right font-bold tabular-nums text-lg ${tone(flexGap)}`}>{man(flexGap)}</div>
+            <div className="hidden sm:block" />
+          </div>
           <div className="grid grid-cols-[7.5rem_1fr_6.5rem] sm:grid-cols-[10rem_1fr_7rem_12rem] gap-2 items-center border-t pt-2">
-            <div className="text-sm font-bold">합계</div>
-            <div className="text-[11px] text-gray-500">{monthB} − {monthA}</div>
+            <div className="text-sm font-bold leading-tight">실제 원재료비 증감<div className="text-[10px] font-normal text-gray-500">물량 포함 = ① ~ ⑤</div></div>
+            <div className="text-[11px] text-gray-500">{monthA} {man(t.MA, false)} → {monthB} {man(t.MB, false)} — 원재료비 금액 자체가 변한 크기 (더 만든 만큼 늘어난 것 포함)</div>
             <div className={`text-right font-bold tabular-nums ${tone(dM)}`}>{man(dM)}</div>
             <div className="hidden sm:block" />
           </div>
