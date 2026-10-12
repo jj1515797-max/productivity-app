@@ -7,7 +7,7 @@
  *    (앱 전체가 로그인 없이 쓰는 구조라 화면에서 가리는 것이다 — 데이터 자체를 암호화하지는 않는다)
  */
 import { useEffect, useState } from 'react';
-import { addDoc, collection, limit, onSnapshot, orderBy, query } from 'firebase/firestore';
+import { addDoc, collection, doc, limit, onSnapshot, orderBy, query, updateDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { fireNotification, supportsNotification } from './completionAlert';
 
@@ -24,6 +24,8 @@ export interface ChatMsg {
   device: string;
   at: number;
   day: string;
+  /** 보낸 사람이 지운 메시지 — 양쪽 화면에 '삭제된 메시지입니다' */
+  deleted?: boolean;
   pending?: boolean;
 }
 
@@ -82,6 +84,11 @@ export function sendChat(text: string, role: ChatRole, name: string) {
   return addDoc(collection(db, CHAT_COL), { text, name, role, device: deviceId(), at, day: dayOf(at) });
 }
 
+/** 내가 보낸 메시지 지우기 — 내용은 비우고 '삭제됨' 표시만 남긴다 (상대 화면에서도 바로 바뀜) */
+export function deleteChat(id: string) {
+  return updateDoc(doc(db, CHAT_COL, id), { deleted: true, text: '', deletedAt: Date.now() });
+}
+
 /** 등록된 기기인지 (다른 화면에서 등록·해제하면 바로 반영) */
 export function useChatRole(): ChatRole | null {
   const [role, setRole] = useState(getChatRole());
@@ -120,7 +127,7 @@ export function useChatWatcher(onChatPage: boolean): ChatMsg[] {
     return () => window.removeEventListener(EVT, sync);
   }, []);
   const me = deviceId();
-  const unreadMsgs = msgs.filter((m) => m.device !== me && m.at > seen);
+  const unreadMsgs = msgs.filter((m) => m.device !== me && m.at > seen && !m.deleted);
   // 채팅 화면을 띄워 둔 채 다른 창에 있다가 돌아오면 읽음
   useEffect(() => {
     if (!role || !onChatPage) return;

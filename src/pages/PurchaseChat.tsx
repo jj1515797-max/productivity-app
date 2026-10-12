@@ -2,7 +2,8 @@
 import { Fragment, useEffect, useRef, useState } from 'react';
 import { Navigate } from 'react-router-dom';
 import ChatSetupModal from '../components/ChatSetupModal';
-import { deviceId, getChatName, markSeen, roleLabel, sendChat, useChatMessages, useChatRole } from '../lib/purchaseChat';
+import { deleteChat, deviceId, getChatName, markSeen, roleLabel, sendChat, useChatMessages, useChatRole } from '../lib/purchaseChat';
+import type { ChatMsg } from '../lib/purchaseChat';
 
 const hm = (t: number) => { const d = new Date(t); return `${d.getHours() < 12 ? '오전' : '오후'} ${((d.getHours() + 11) % 12) + 1}:${String(d.getMinutes()).padStart(2, '0')}`; };
 const dayLabel = (t: number) => { const d = new Date(t); return `${d.getFullYear()}년 ${d.getMonth() + 1}월 ${d.getDate()}일 ${'일월화수목금토'[d.getDay()]}요일`; };
@@ -15,6 +16,7 @@ export default function PurchaseChat() {
   const name = getChatName();
   const [text, setText] = useState('');
   const [err, setErr] = useState('');
+  const [delTarget, setDelTarget] = useState<ChatMsg | null>(null);
   const bottom = useRef<HTMLDivElement>(null);
   const box = useRef<HTMLDivElement>(null);
   const first = useRef(true);
@@ -76,9 +78,15 @@ export default function PurchaseChat() {
                     <div className="text-xs text-gray-800 mb-0.5">{m.name || '이름 없음'} <span className="text-[10px] text-gray-600">· {roleLabel(m.role)}</span></div>
                   )}
                   <div className={`flex items-end gap-1 ${mine ? 'flex-row-reverse' : ''}`}>
-                    <div className={`px-3 py-2 rounded-2xl text-[15px] leading-snug whitespace-pre-wrap break-words shadow-sm ${mine ? 'bg-[#fee500] text-gray-900 rounded-tr-md' : 'bg-white text-gray-900 rounded-tl-md'}`}>
-                      {m.text}
-                    </div>
+                    {m.deleted ? (
+                      <div className="px-3 py-2 rounded-2xl text-[14px] italic text-gray-500 bg-white/60 border border-white/80">🚫 삭제된 메시지입니다</div>
+                    ) : (
+                      <div onClick={mine ? () => setDelTarget(m) : undefined}
+                        title={mine ? '눌러서 삭제' : undefined}
+                        className={`px-3 py-2 rounded-2xl text-[15px] leading-snug whitespace-pre-wrap break-words shadow-sm ${mine ? 'bg-[#fee500] text-gray-900 rounded-tr-md cursor-pointer active:brightness-95' : 'bg-white text-gray-900 rounded-tl-md'}`}>
+                        {m.text}
+                      </div>
+                    )}
                     {!sameAsNext && (
                       <span className="text-[10px] text-gray-700 whitespace-nowrap mb-0.5">{m.pending ? '보내는 중' : hm(m.at)}</span>
                     )}
@@ -99,6 +107,23 @@ export default function PurchaseChat() {
         <button onClick={send} disabled={!text.trim()} className="px-4 py-2 rounded-xl bg-[#fee500] font-bold text-gray-900 disabled:opacity-40">보내기</button>
       </div>
       {setup && <ChatSetupModal onClose={() => setSetup(false)} />}
+      {delTarget && (
+        <div className="fixed inset-0 z-[75] bg-black/50 flex items-center justify-center p-4" onClick={() => setDelTarget(null)}>
+          <div className="bg-white rounded-2xl w-full max-w-sm p-5 space-y-4" onClick={(e) => e.stopPropagation()}>
+            <div className="text-lg font-bold">이 메시지를 삭제할까요?</div>
+            <div className="text-sm bg-gray-50 border rounded-lg px-3 py-2 whitespace-pre-wrap break-words max-h-40 overflow-y-auto">{delTarget.text}</div>
+            <div className="text-xs text-gray-500">상대방 화면에서도 「삭제된 메시지입니다」로 바뀝니다.</div>
+            <div className="grid grid-cols-2 gap-2">
+              <button onClick={() => setDelTarget(null)} className="py-3 rounded-lg border text-lg">취소</button>
+              <button onClick={() => {
+                const id = delTarget.id;
+                setDelTarget(null);
+                deleteChat(id).catch((e) => setErr(`삭제 실패: ${e?.message || e} — 다시 눌러 주세요`));
+              }} className="py-3 rounded-lg bg-rose-600 text-white text-lg font-bold">삭제</button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
