@@ -440,6 +440,34 @@ export default function CoolingInput() {
             setAsk({ title: `${c.cartNo}번 대차 출고`, msg: `아직 냉각 중입니다 (${fmtLeft(c.endAt - now)} 남음).\n그래도 출고할까요?`, ok: '출고', danger: true, onOk: () => release(c) });
           }}
           onMove={() => { setMoving(detail); setDetail(null); }}
+          onRemoveItems={(codes) => {
+            const c = active.find((x) => x.id === detail.id) || detail;
+            const gone = c.items.filter((i) => codes.includes(i.code));
+            const rest = c.items.filter((i) => !codes.includes(i.code));
+            if (gone.length === 0) return;
+            if (rest.length === 0) {
+              // 다 빼면 빈 대차가 되므로 입고 취소와 같다
+              setAsk({
+                title: `${c.cartNo}번 대차 입고 취소`,
+                msg: '품목을 전부 고르셨습니다.\n대차 기록이 지워지고 품목이 모두 입고 대기로 돌아갑니다.',
+                ok: '입고 취소', danger: true,
+                onOk: () => { fire(deleteDoc(doc(db, CART_COL, c.id)), '입고 취소'); setDetail(null); },
+              });
+              return;
+            }
+            setAsk({
+              title: `${c.cartNo}번 대차 · 품목 입고 취소`,
+              msg: `${gone.map((i) => `${i.code} ${i.name} ${i.qty}개`).join('\n')}\n\n이 품목만 입고 대기로 돌아갑니다.\n대차는 남은 ${rest.length}품목으로 냉각을 계속합니다 (타이머 그대로).`,
+              ok: '입고 취소', danger: true,
+              onOk: () => {
+                fire(updateDoc(doc(db, CART_COL, c.id), { items: rest }), '품목 입고 취소');
+                showToast(`${c.cartNo}번 대차 ${gone.map((i) => i.code).join(', ')} 입고 취소 → 입고 대기`, () => {
+                  fire(updateDoc(doc(db, CART_COL, c.id), { items: c.items }), '품목 입고 취소 되돌리기');
+                  setToast(null);
+                });
+              },
+            });
+          }}
           onCancel={() => setAsk({
             title: `${detail.cartNo}번 대차 입고 취소`,
             msg: '잘못 입고한 경우에 씁니다.\n대차 기록이 지워지고 품목이 다시 입고 대기로 돌아갑니다.',
@@ -547,16 +575,29 @@ function RoomPick({ rooms, active, room, setRoom, allowWait }: {
   );
 }
 
-function ItemList({ items, title }: { items: { code: string; name: string; qty: number }[]; title: string }) {
+function ItemList({ items, title, selected, onToggle, hint }: {
+  items: { code: string; name: string; qty: number }[]; title: string;
+  /** 주면 줄을 눌러 고를 수 있다 (냉각 중 품목 빼기) */
+  selected?: Set<string>; onToggle?: (code: string) => void; hint?: string;
+}) {
   return (
     <div>
-      <div className="text-sm font-bold text-gray-700 mb-1">{title} <span className="font-normal text-gray-500">{items.length}품목 · {items.reduce((s2, i) => s2 + i.qty, 0)}개</span></div>
+      <div className="text-sm font-bold text-gray-700 mb-1">{title} <span className="font-normal text-gray-500">{items.length}품목 · {items.reduce((s2, i) => s2 + i.qty, 0)}개</span>
+        {hint && <span className="font-normal text-gray-400 text-xs ml-2">{hint}</span>}
+      </div>
       <div className="border rounded-lg divide-y max-h-48 overflow-y-auto overscroll-contain">
-        {items.map((i) => (
-          <div key={i.code} className="px-3 py-1.5 flex items-center gap-2 text-sm">
-            <b className="font-mono w-14">{i.code}</b><span className="flex-1 truncate">{i.name}</span><b className="tabular-nums">{i.qty}</b>
-          </div>
-        ))}
+        {items.map((i) => {
+          const on = !!selected?.has(i.code);
+          const row = (
+            <>
+              {onToggle && <span className={`w-5 h-5 rounded border-2 flex items-center justify-center text-xs font-bold ${on ? 'bg-rose-600 border-rose-600 text-white' : 'border-gray-300'}`}>{on ? '✓' : ''}</span>}
+              <b className="font-mono w-14">{i.code}</b><span className="flex-1 truncate">{i.name}</span><b className="tabular-nums">{i.qty}</b>
+            </>
+          );
+          return onToggle
+            ? <button key={i.code} type="button" onClick={() => onToggle(i.code)} className={`w-full text-left px-3 py-2 flex items-center gap-2 text-sm ${on ? 'bg-rose-50' : 'active:bg-gray-50'}`}>{row}</button>
+            : <div key={i.code} className="px-3 py-1.5 flex items-center gap-2 text-sm">{row}</div>;
+        })}
       </div>
     </div>
   );
@@ -667,11 +708,19 @@ function WaitingModal({ cart, cards, rooms, active, minutesOf, onClose, onSave, 
   );
 }
 
-function CartDetail({ cart, room, now, onClose, onRelease, onMove, onCancel }: {
+function CartDetail({ cart, room, now, onClose, onRelease, onMove, onCancel, onRemoveItems }: {
   cart: CoolingCart; room?: RoomConfig; now: number;
   onClose: () => void; onRelease: () => void; onMove: () => void; onCancel: () => void;
+  /** 냉각 중에 고른 품목만 대차에서 뺀다 (입고 대기로 돌아감) */
+  onRemoveItems: (codes: string[]) => void;
 }) {
   const left = cart.endAt - now;
+  const [sel, setSel] = useState<Set<string>>(new Set());
+  // 대차 품목이 바뀌면(뺀 뒤, 다른 기기에서 수정) 없는 품목 선택은 지운다
+  const itemKey = cart.items.map((i) => i.code).join('|');
+  useEffect(() => { setSel((p) => new Set([...p].filter((c) => cart.items.some((i) => i.code === c)))); }, [itemKey]); // eslint-disable-line react-hooks/exhaustive-deps
+  const toggle = (code: string) => setSel((p) => { const n = new Set(p); if (n.has(code)) n.delete(code); else n.add(code); return n; });
+  const selQty = cart.items.filter((i) => sel.has(i.code)).reduce((s2, i) => s2 + i.qty, 0);
   return (
     <Shell onClose={onClose}
       head={<>
@@ -679,11 +728,20 @@ function CartDetail({ cart, room, now, onClose, onRelease, onMove, onCancel }: {
         <span className={`px-2 py-1 rounded text-white font-bold ${CH_STYLE[cart.channel].bg}`}>{cart.channel}</span>
       </>}
       foot={
+        sel.size > 0 ? (
+          <div className="grid grid-cols-3 gap-2">
+            <button onClick={() => setSel(new Set())} className="h-14 rounded-xl border-2 font-bold">선택 해제</button>
+            <button onClick={() => onRemoveItems([...sel])} className="col-span-2 h-14 rounded-xl bg-rose-600 text-white font-bold text-lg">
+              선택한 {sel.size}품목 · {selQty}개 입고 취소
+            </button>
+          </div>
+        ) : (
         <div className="grid grid-cols-3 gap-2">
           <button onClick={onCancel} className="h-14 rounded-xl border-2 border-rose-300 text-rose-600 font-bold">입고 취소</button>
           <button onClick={onMove} className="h-14 rounded-xl border-2 font-bold">자리 이동</button>
           <button onClick={onRelease} className={`h-14 rounded-xl font-bold text-white text-lg ${left <= 0 ? 'bg-rose-600' : 'bg-gray-500'}`}>출고</button>
         </div>
+        )
       }>
       <div className="space-y-3">
         <div className="text-gray-700">{room?.name || `냉각실 ${cart.room}`} · {room ? slotLabel(room, cart.slot) : ''}</div>
@@ -692,7 +750,7 @@ function CartDetail({ cart, room, now, onClose, onRelease, onMove, onCancel }: {
           <div className="text-sm font-normal text-gray-500">{hhmm(cart.startAt)} 입고 → {hhmm(cart.endAt)} 종료 ({cart.durationMin}분)</div>
         </div>
         {/* 품목이 많아도(아침에 몰아 넣을 때) 이 안에서만 스크롤 — 아래 출고 버튼은 항상 보인다 */}
-        <ItemList title="실린 품목" items={cart.items} />
+        <ItemList title="실린 품목" items={cart.items} selected={sel} onToggle={toggle} hint="눌러서 고르면 그 품목만 입고 취소할 수 있어요" />
       </div>
     </Shell>
   );
