@@ -11,7 +11,8 @@ const dayLabel = (t: number) => { const d = new Date(t); return `${d.getFullYear
 export default function PurchaseChat() {
   const role = useChatRole();
   const [setup, setSetup] = useState(false);
-  const msgs = useChatMessages(!!role);
+  // 지운 메시지는 흔적 없이 뺀다 (양쪽 모두)
+  const msgs = useChatMessages(!!role).filter((m) => !m.deleted);
   const me = deviceId();
   const name = getChatName();
   const [text, setText] = useState('');
@@ -78,9 +79,7 @@ export default function PurchaseChat() {
                     <div className="text-xs text-gray-800 mb-0.5">{m.name || '이름 없음'} <span className="text-[10px] text-gray-600">· {roleLabel(m.role)}</span></div>
                   )}
                   <div className={`flex items-end gap-1 ${mine ? 'flex-row-reverse' : ''}`}>
-                    {m.deleted ? (
-                      <div className="px-3 py-2 rounded-2xl text-[14px] italic text-gray-500 bg-white/60 border border-white/80">🚫 삭제된 메시지입니다</div>
-                    ) : (
+                    {(
                       <div onClick={mine ? () => setDelTarget(m) : undefined}
                         title={mine ? '눌러서 삭제' : undefined}
                         className={`px-3 py-2 rounded-2xl text-[15px] leading-snug whitespace-pre-wrap break-words shadow-sm ${mine ? 'bg-[#fee500] text-gray-900 rounded-tr-md cursor-pointer active:brightness-95' : 'bg-white text-gray-900 rounded-tl-md'}`}>
@@ -112,7 +111,7 @@ export default function PurchaseChat() {
           <div className="bg-white rounded-2xl w-full max-w-sm p-5 space-y-4" onClick={(e) => e.stopPropagation()}>
             <div className="text-lg font-bold">이 메시지를 삭제할까요?</div>
             <div className="text-sm bg-gray-50 border rounded-lg px-3 py-2 whitespace-pre-wrap break-words max-h-40 overflow-y-auto">{delTarget.text}</div>
-            <div className="text-xs text-gray-500">상대방 화면에서도 「삭제된 메시지입니다」로 바뀝니다.</div>
+            <div className="text-xs text-gray-500">상대방 화면에서도 대화에서 사라집니다.</div>
             <div className="grid grid-cols-2 gap-2">
               <button onClick={() => setDelTarget(null)} className="py-3 rounded-lg border text-lg">취소</button>
               <button onClick={() => {
