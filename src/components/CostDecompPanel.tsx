@@ -141,7 +141,7 @@ export default function CostDecompPanel({
             ? `${monthA} 원재료비의 ${Math.round(t.aSubShare * 100)}%는 그달 단가가 없어 다른 달 단가로 계산했습니다 — 그 원재료들은 단가 효과가 0 으로 잡혀 ② 가 실제보다 작게 보일 수 있습니다.`
             : '',
         t.swingCount > 0 && !zero(t.swingYld)
-          ? `수율 효과 ${man(t.yld)}에는 수율이 ${DECOMP_SWING * 100}%p 넘게 바뀐 원재료 ${t.swingCount}종(${swingNames.join('·')} 등)의 ${man(t.swingYld)}이 들어 있습니다. 두 달 모두 지금 레시피로 계산하므로, 그사이 배합(개당 g)을 바꿨거나 입력이 틀렸으면 그 차이가 수율로 보입니다 — 확인 후 성과로 쓰세요.`
+          ? `수율 효과 ${man(t.yld)}에는 수율이 ${DECOMP_SWING * 100}%p 넘게 바뀐 원재료 ${t.swingCount}종(${swingNames.join('·')} 등)의 ${man(t.swingYld)}이 들어 있습니다. 두 달 모두 지금 레시피로 계산하므로, 그사이 배합(개당 g)을 바꿨거나 입력이 틀렸으면 그 차이가 수율로 보입니다.`
           : '',
         Math.abs(t.other) > Math.abs(flexGap) * 0.3 && Math.abs(t.other) >= 1e5 ? `⑤ 기타(${man(t.other)})가 큽니다 — 아래 원재료별 표에서 '비교 불가'를 눌러 실투입 없음·범위 밖 원재료를 확인하세요.` : '',
         view.coverage.missingA + view.coverage.missingB > 0 ? `레시피가 없는 제품이 있습니다 (${monthA} ${Math.round(view.coverage.missingA).toLocaleString()} EA · ${monthB} ${Math.round(view.coverage.missingB).toLocaleString()} EA) — 그 제품 원재료는 표준소요 0 이라 수율·구성이 왜곡될 수 있습니다.` : '',
