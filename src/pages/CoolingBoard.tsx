@@ -36,8 +36,7 @@ export default function CoolingBoard() {
 
       <ItemSearch date={date} isToday={isToday} now={now}
         carts={[...new Map([...day, ...activeAll].map((c) => [c.id, c])).values()]}
-        roomName={(id) => roomOf(id)?.name || `냉각실 ${id}`}
-        slotText={(c) => { const r = roomOf(c.room); return r ? slotLabel(r, c.slot) : ''; }} />
+        roomName={(id) => roomOf(id)?.name || `냉각실 ${id}`} />
 
       {showCfg && <ConfigPanel cfg={cfg} onSave={async (c) => { await saveCfg(c); setShowCfg(false); }} />}
 
@@ -214,9 +213,9 @@ function ConfigPanel({ cfg, onSave }: { cfg: CoolingConfig; onSave: (c: CoolingC
 
 /* ===== 품목 검색 — 외부 인원이 품목 하나가 지금 어디 있는지 / 언제 나갔는지 바로 보게 ===== */
 function codeNum(code: string) { return Number((code.match(/\d+/) || ['0'])[0]); }
-function ItemSearch({ date, isToday, now, carts, roomName, slotText }: {
+function ItemSearch({ date, isToday, now, carts, roomName }: {
   date: string; isToday: boolean; now: number; carts: CoolingCart[];
-  roomName: (id: number) => string; slotText: (c: CoolingCart) => string;
+  roomName: (id: number) => string;
 }) {
   const [q, setQ] = useState('');
   const Q = q.trim().toUpperCase().replace(/\s+/g, '');
@@ -256,10 +255,10 @@ function ItemSearch({ date, isToday, now, carts, roomName, slotText }: {
     }
     if (now >= cart.endAt) {
       return { tone: 'border-rose-300 bg-rose-50', badge: '🔔 냉각 끝 · 출고 대기', badgeCls: 'bg-rose-600',
-        text: <><b>{roomName(cart.room)}</b> {slotText(cart)} · <b>{hhmm(cart.startAt)}</b> 입고 · <b>{hhmm(cart.endAt)}</b>에 냉각 끝 ({fmtLeft(now - cart.endAt)} 지남){other} · {who}</> };
+        text: <><b>{roomName(cart.room)}</b> · <b>{hhmm(cart.startAt)}</b> 입고 · <b>{hhmm(cart.endAt)}</b>에 냉각 끝 ({fmtLeft(now - cart.endAt)} 지남){other} · {who}</> };
     }
     return { tone: 'border-sky-300 bg-sky-50', badge: '❄ 냉각 중', badgeCls: 'bg-sky-600',
-      text: <><b>{roomName(cart.room)}</b> {slotText(cart)} · <b>{hhmm(cart.startAt)}</b> 입고 · 출고 예정 <b className="text-sky-800">{hhmm(cart.endAt)}</b> (남은 시간 {fmtLeft(cart.endAt - now)}){other} · {who}</> };
+      text: <><b>{roomName(cart.room)}</b> · <b>{hhmm(cart.startAt)}</b> 입고 · 출고 예정 <b className="text-sky-800">{hhmm(cart.endAt)}</b> (남은 시간 {fmtLeft(cart.endAt - now)}){other} · {who}</> };
   };
 
   return (
