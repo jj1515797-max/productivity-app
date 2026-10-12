@@ -26,6 +26,9 @@ import BarcodeCheck from './pages/BarcodeCheck';
 import CoolingInput from './pages/CoolingInput';
 import CoolingBoard from './pages/CoolingBoard';
 import Inbound from './pages/Inbound';
+import PurchaseChat from './pages/PurchaseChat';
+import ChatSetupModal from './components/ChatSetupModal';
+import { useChatRole, useChatWatcher } from './lib/purchaseChat';
 import InboundHistory from './pages/InboundHistory';
 import Logo from './components/Logo';
 import AnalyticsGate from './components/AnalyticsGate';
@@ -138,6 +141,7 @@ function MainContainer() {
         <Route path="/attendance" element={<Attendance />} />
         <Route path="/attendance/productivity" element={<ProductivityInput />} />
         <Route path="/inventory" element={<Inventory />} />
+        <Route path="/inventory/chat" element={<PurchaseChat />} />
         <Route path="/purchase/inbound" element={<Inbound />} />
         <Route path="/purchase/history" element={<InboundHistory />} />
       </Routes>
@@ -196,7 +200,10 @@ const SUB_TABS: Record<Section, { label: string; to: string; exact?: boolean }[]
     { label: '조직도', to: '/attendance', exact: true },
     { label: '생산성 입력', to: '/attendance/productivity' },
   ],
-  inventory: [{ label: '재고관리', to: '/inventory' }],
+  inventory: [
+    { label: '재고관리', to: '/inventory', exact: true },
+    { label: '구매팀', to: '/inventory/chat' },
+  ],
 };
 
 function Header() {
@@ -207,11 +214,20 @@ function Header() {
       window.dispatchEvent(new Event('ssbon:alert-changed'));
     });
   });
+  // 「재고관리」 5초 꾹 → 구매팀 채팅에 이 기기 등록 (이름·역할). 등록한 기기만 대화가 보이고 알림이 온다
+  const [chatSetup, setChatSetup] = useState(false);
+  const chatPress = useLongPress(() => setChatSetup(true));
+  const chatRole = useChatRole();
   const today = new Date();
   const days = ['일', '월', '화', '수', '목', '금', '토'];
   const dateLabel = `${today.getMonth() + 1}/${today.getDate()}(${days[today.getDay()]})`;
   const location = useLocation();
   const section = getSection(location.pathname);
+  const unread = useChatWatcher(location.pathname.startsWith('/inventory/chat'));
+  const pressOf = (sec: Section) => (sec === 'dashboard' ? longPress : sec === 'inventory' ? chatPress : null);
+  const chatMark = (sec: Section) => (sec === 'inventory' && chatRole
+    ? <span title={unread ? `구매팀 채팅 새 메시지 ${unread}건` : '구매팀 채팅 등록됨'} className={unread ? 'ml-0.5 px-1.5 rounded-full bg-rose-500 text-white text-[10px] font-bold leading-4' : ''}>{unread ? `💬${unread}` : '💬'}</span>
+    : null);
   const onAnalytics = location.pathname.startsWith('/analytics');
   const analyticsAuthed = onAnalytics && !!localStorage.getItem('analyticsAuthedAt');
 
@@ -250,16 +266,17 @@ function Header() {
                 {showDivider && <span className="w-px h-5 bg-blue-400 mx-1.5" aria-hidden />}
                 <NavLink
                   to={l.to}
-                  {...(l.section === 'dashboard' ? longPress.handlers : {})}
-                  onClick={l.section === 'dashboard' ? longPress.consumeClick : undefined}
-                  title={l.section === 'dashboard' ? '5초 꾹 누르면 생산 완료 알림을 켜고 끌 수 있습니다' : undefined}
+                  {...(pressOf(l.section)?.handlers || {})}
+                  onClick={pressOf(l.section)?.consumeClick}
+                  title={l.section === 'dashboard' ? '5초 꾹 누르면 생산 완료 알림을 켜고 끌 수 있습니다' : l.section === 'inventory' ? '5초 꾹 누르면 구매팀 채팅에 이 기기를 등록합니다' : undefined}
                   className={`px-3 py-1.5 text-sm rounded font-medium transition flex items-center gap-1.5 select-none ${
                     active ? 'bg-white text-blue-700' : 'text-blue-100 hover:bg-blue-800'
-                  } ${l.section === 'dashboard' && longPress.holding ? 'ring-2 ring-amber-300 scale-95' : ''}`}
+                  } ${pressOf(l.section)?.holding ? 'ring-2 ring-amber-300 scale-95' : ''}`}
                 >
                   {l.icon && <span className="text-xs">{l.icon}</span>}
                   {l.label}
                   {l.section === 'dashboard' && alertOn && <span title="생산 완료 알림 켜짐">🔔</span>}
+                  {chatMark(l.section)}
                 </NavLink>
               </span>
             );
@@ -284,14 +301,17 @@ function Header() {
             <NavLink
               key={l.to}
               to={l.to}
-              {...(l.section === 'dashboard' ? longPress.handlers : {})}
-              onClick={l.section === 'dashboard' ? longPress.consumeClick : undefined}
-              className={`px-1 py-1.5 text-xs rounded font-medium transition flex flex-col items-center justify-center gap-0.5 select-none ${
+              {...(pressOf(l.section)?.handlers || {})}
+              onClick={pressOf(l.section)?.consumeClick}
+              className={`px-1 py-1.5 text-xs rounded font-medium transition flex flex-col items-center justify-center gap-0.5 select-none relative ${
                 active ? 'bg-white text-blue-700' : 'text-blue-100 active:bg-blue-800'
-              } ${l.section === 'dashboard' && longPress.holding ? 'ring-2 ring-amber-300' : ''}`}
+              } ${pressOf(l.section)?.holding ? 'ring-2 ring-amber-300' : ''}`}
             >
               {l.icon && <span className="text-sm leading-none">{l.icon}</span>}
               <span className="leading-none">{l.label}{l.section === 'dashboard' && alertOn ? ' 🔔' : ''}</span>
+              {l.section === 'inventory' && chatRole && unread > 0 && (
+                <span className="absolute -top-1 -right-0.5 px-1 rounded-full bg-rose-500 text-white text-[9px] font-bold leading-4">{unread}</span>
+              )}
             </NavLink>
           );
         })}
@@ -304,6 +324,7 @@ function Header() {
           </button>
         )}
       </nav>
+      {chatSetup && <ChatSetupModal onClose={() => setChatSetup(false)} />}
     </header>
   );
 }
