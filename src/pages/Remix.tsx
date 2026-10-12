@@ -190,7 +190,9 @@ export default function Remix() {
   }, [itemsByDate, logisticsByDate, remixByDate, weekDateStrs]);
 
   // 재배합 입력: qty(수량) 받음. count=1 (품목 1개당 1건)
-  const saveRemix = async (date: string, code: string, qty: number) => {
+  const saveRemix = async (date: string, code: string, qtyIn: number) => {
+    // 재배합 수량은 개수(양수) — 실수로 '-5' 를 넣어도 5 로 저장한다 (원재료비 추산에 쓰임)
+    const qty = Math.abs(qtyIn);
     if (qty === 0 || isNaN(qty)) {
       await deleteDoc(doc(db, 'remix', date, 'items', code)).catch(() => {});
     } else {
@@ -547,6 +549,7 @@ function RemixCell({ value, onChange }: { value: number; onChange: (v: number) =
       }}
       className="w-full px-1 py-0.5 text-right text-xs bg-transparent focus:bg-white focus:outline-none focus:ring-1 focus:ring-amber-400"
       placeholder="0"
+      min={0}
     />
   );
 }
