@@ -264,8 +264,9 @@ export default function CoolingInput() {
             );
           })()}
         </div>
-        {/* 카드가 많아도 아래 냉각실 도면이 바로 보이게 — 목록 안에서만 스크롤 */}
-        <div className="p-3 max-h-[45vh] overflow-y-auto overscroll-contain">
+        {/* 카드가 많아도 아래 냉각실 도면이 바로 보이게 — 목록 안에서만 스크롤.
+            가로(좁은 화면)·세로 스크롤을 모두 여기서만 해야 A~I 머리줄이 틀고정처럼 위에 붙어 있다 */}
+        <div className="px-3 pb-3 max-h-[45vh] overflow-auto overscroll-contain">
           {!loaded ? <div className="text-center text-gray-400 py-8">불러오는 중…</div>
             : filtered.length === 0 ? <div className="text-center text-gray-400 py-8">{cards.length === 0 ? '입고할 품목이 없습니다 — 외포장-1·2·3 화면에서 품목 행을 눌러 「분류 완료」 하면 여기에 뜹니다' : q ? `「${q}」 에 맞는 품목이 없습니다` : '고른 필터에 맞는 품목이 없습니다'}</div>
               : (
@@ -281,12 +282,12 @@ export default function CoolingInput() {
                   const extra = [...cols.keys()].filter((L) => !ORDER.includes(L)).sort();
                   const letters = [...ORDER, ...extra];
                   return (
-                    <div className="grid gap-x-2 overflow-x-auto" style={{ gridTemplateColumns: `repeat(${letters.length}, minmax(6.5rem, 1fr))` }}>
+                    <div className="grid gap-x-2" style={{ gridTemplateColumns: `repeat(${letters.length}, minmax(6.5rem, 1fr))` }}>
                       {letters.map((L) => {
                         const codes = cols.get(L) || [];
                         return (
                           <div key={L} className="min-w-0">
-                            <div className={`sticky top-0 z-10 bg-white/95 backdrop-blur pb-1 mb-1.5 text-center border-b-2 ${codes.length ? 'border-gray-400' : 'border-gray-200'}`}>
+                            <div className={`sticky top-0 z-10 bg-white pt-3 pb-1 mb-1.5 text-center border-b-2 ${codes.length ? 'border-gray-400' : 'border-gray-200'}`}>
                               <span className={`text-lg font-extrabold ${codes.length ? 'text-gray-800' : 'text-gray-300'}`}>{L}</span>
                               {codes.length > 0 && <span className="ml-1 text-[11px] text-gray-500">{codes.length}</span>}
                             </div>
