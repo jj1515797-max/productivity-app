@@ -13,7 +13,7 @@ import { db } from '../firebase';
 import { createCollector, validateSql } from './pgSqlGen.mjs';
 import type { TableStat, SqlValidation } from './pgSqlGen.mjs';
 
-/** 최상위 컬렉션 (코드베이스 기준) */
+/** 최상위 컬렉션 (코드베이스 기준) — 새 컬렉션을 만들면 여기에도 꼭 넣는다 */
 export const ROOT_COLLECTIONS = [
   'productSettings', 'materials', 'recipes', 'subRecipes', 'ambientRecipes',
   'materialPrices', 'materialPricesInventory', 'materialPricesMonthly', 'materialOutflow',
@@ -21,10 +21,23 @@ export const ROOT_COLLECTIONS = [
   'monthlyStats', 'monthlyMeta', 'under10Manual', 'visits',
   'attendanceSnapshot', 'attendanceMeta', 'analyticsGraphs',
   'appMeta', 'settings', 'purchaseInbound',
+  // 원재료수율·원가 분석용
+  'recipesYield', 'subRecipesYield', 'ambientRecipesYield',   // 분석용 레시피 3종
+  'materialInput',        // 실제 투입중량 (ERP 수불 불출량)
+  'materialCategories',   // 원재료 카테고리
+  'productionMonthly',    // 월별 생산수량 (앱 도입 전 달)
+  // 현장 기능
+  'productBarcodes',      // 제품 바코드 DB
+  'coolingCarts', 'coolingConfig',   // 냉각 대차 입출고 · 냉각실 설정
+  'containerStock',       // 용기 재고
+  'purchaseChat',         // 구매팀 채팅
 ];
-/** 서브컬렉션 ID (collectionGroup 으로 전량 수집) */
+/** 서브컬렉션 ID (collectionGroup 으로 전량 수집 — 같은 이름이면 부모가 달라도 다 모인다:
+ *  items = days/{날짜}/items + remix/{날짜}/items, entries = 호기 생산 + waste/{날짜}/entries) */
 export const GROUP_COLLECTIONS = [
   'items', 'logistics', 'ambient', 'scoop', 'scoopFlags', 'entries', 'records', 'movements', 'requests',
+  'packSorted',   // days/{날짜}/packSorted — 외포장 정렬
+  'logs',         // barcodeScans/{날짜}/logs — 바코드 검수 기록
 ];
 
 export interface BackupProgress {
@@ -39,6 +52,8 @@ export interface BackupResult {
   docCount: number;
   validation: SqlValidation;
   incomplete: string | null;   // 읽기 상한 도달 시 중단 지점
+  /** 읽다가 오류가 나 빠진 컬렉션 (권한·색인 등) — 비어 있어야 정상 */
+  skipped: string[];
   sizeBytes: number;
 }
 
@@ -56,6 +71,7 @@ export async function runBackup(opts: {
   const collector = createCollector();
   let docCount = 0;
   let incomplete: string | null = null;
+  const skipped: string[] = [];
 
   const totalUnits = ROOT_COLLECTIONS.length + GROUP_COLLECTIONS.length;
   let done = 0;
@@ -86,29 +102,30 @@ export async function runBackup(opts: {
 
   for (const name of ROOT_COLLECTIONS) {
     report(name);
-    try { await pull(name, false); } catch (e) { console.warn(`[백업] ${name} 건너뜀:`, e); }
+    try { await pull(name, false); } catch (e) { console.warn(`[백업] ${name} 건너뜀:`, e); skipped.push(name); }
     done++;
     if (incomplete) break;
   }
   if (!incomplete) {
     for (const name of GROUP_COLLECTIONS) {
       report(name);
-      try { await pull(name, true); } catch (e) { console.warn(`[백업] ${name}(그룹) 건너뜀:`, e); }
+      try { await pull(name, true); } catch (e) { console.warn(`[백업] ${name}(그룹) 건너뜀:`, e); skipped.push(`${name}(하위)`); }
       done++;
       if (incomplete) break;
     }
   }
 
   const stamp = new Date().toISOString();
-  const header = incomplete
+  const header = (incomplete
     ? `generated: ${stamp}  ⚠ 불완전 (중단: ${incomplete})`
-    : `generated: ${stamp}`;
+    : `generated: ${stamp}`) + (skipped.length ? `  ⚠ 읽기 실패로 빠짐: ${skipped.join(', ')}` : '');
   const { sql, stats } = collector.build({ header });
   report('완료');
   return {
     sql, stats, docCount,
     validation: validateSql(sql),
     incomplete,
+    skipped,
     sizeBytes: new Blob([sql]).size,
   };
 }

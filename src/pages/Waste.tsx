@@ -2,6 +2,7 @@ import { Fragment, useEffect, useMemo, useState } from 'react';
 import { addDoc, collection, collectionGroup, deleteDoc, doc, getDocs, onSnapshot, query, where } from 'firebase/firestore';
 import ExcelJS from 'exceljs';
 import { db } from '../firebase';
+import { isWasteEntryDoc } from '../lib/appDocs';
 import { todayKey } from '../lib/dateUtil';
 import { CODE_KEY_PREFIX, expandAll, expandWasteEntry, monthPriceKey, normalizeCode, normalizeMaterialName } from '../lib/wasteCompute';
 import type { Recipe, WasteEntry } from '../lib/wasteCompute';
@@ -136,9 +137,8 @@ export default function Waste() {
         const all: WasteEntry[] = [];
         snap.forEach((d) => {
           const data = d.data() as WasteEntry;
-          // 폐기 entries 만 필터 (다른 컬렉션과 collectionGroup 충돌 방지)
-          // — 폐기 entries 는 'cost', 'qty', 'code' 가짐. 호기 entries 는 'machine' 필드 있음.
-          if ((data as any).machine !== undefined) return;
+          // 폐기 entries 만 (collectionGroup('entries') 는 호기 생산 days/…/machines/…/entries 도 잡는다) — 경로로 거른다
+          if (!isWasteEntryDoc(d)) return;
           if (!data.date || !data.code) return;
           all.push({ ...data, id: d.id });
         });

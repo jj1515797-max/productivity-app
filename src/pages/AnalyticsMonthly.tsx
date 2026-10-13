@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { collection, collectionGroup, getDocs, query, where } from 'firebase/firestore';
 import { db } from '../firebase';
+import { isDaysDoc, isMachineEntryDoc } from '../lib/appDocs';
 import type { AmbientEntry, Item, MachineEntry } from '../types';
 import AmbientInputModal from '../components/AmbientInputModal';
 import LogisticsInputModal from '../components/LogisticsInputModal';
@@ -279,9 +280,10 @@ export default function AnalyticsMonthly() {
       ])
         .then(([entriesSnap, itemsSnap, ambientSnap, logMap]) => {
           if (cancelled) return;
-          const ents = entriesSnap.docs.map((d) => d.data() as MachineEntry).filter((e) => !!e.machine);
-          const its = itemsSnap.docs.map((d) => d.data() as Item);
-          const ambs = ambientSnap.docs.map((d) => d.data() as AmbientEntry);
+          // days/ 경로만 (재배합 remix/…/items · 폐기 waste/…/entries 제외)
+          const ents = entriesSnap.docs.filter(isMachineEntryDoc).map((d) => d.data() as MachineEntry);
+          const its = itemsSnap.docs.filter(isDaysDoc).map((d) => d.data() as Item);
+          const ambs = ambientSnap.docs.filter(isDaysDoc).map((d) => d.data() as AmbientEntry);
           setEntries(ents);
           setItems(its);
           setAmbient(ambs);
@@ -323,9 +325,9 @@ export default function AnalyticsMonthly() {
       ])
         .then((arr) => {
           if (cancelled) return;
-          const ents = arr[0].docs.map((d) => d.data() as MachineEntry).filter((e) => !!e.machine);
-          const ambs = arr[1].docs.map((d) => d.data() as AmbientEntry);
-          const prevItems = arr[2].docs.map((d) => d.data() as Item);
+          const ents = arr[0].docs.filter(isMachineEntryDoc).map((d) => d.data() as MachineEntry);
+          const ambs = arr[1].docs.filter(isDaysDoc).map((d) => d.data() as AmbientEntry);
+          const prevItems = arr[2].docs.filter(isDaysDoc).map((d) => d.data() as Item);
           const prevLogMap = arr[3] as Record<string, number>;
           setPrevLogisticsByDay(prevLogMap);
           setPrevMonthData({ entries: ents, ambient: ambs, items: prevItems });
@@ -384,9 +386,9 @@ export default function AnalyticsMonthly() {
       .then((results) => {
         if (cancelled) return;
         misses.forEach((pm, i) => {
-          const ents = (results[i * 4] as any).docs.map((d: any) => d.data() as MachineEntry).filter((e: MachineEntry) => !!e.machine);
-          const ambs = (results[i * 4 + 1] as any).docs.map((d: any) => d.data() as AmbientEntry);
-          const its = (results[i * 4 + 2] as any).docs.map((d: any) => d.data() as Item);
+          const ents = (results[i * 4] as any).docs.filter(isMachineEntryDoc).map((d: any) => d.data() as MachineEntry);
+          const ambs = (results[i * 4 + 1] as any).docs.filter(isDaysDoc).map((d: any) => d.data() as AmbientEntry);
+          const its = (results[i * 4 + 2] as any).docs.filter(isDaysDoc).map((d: any) => d.data() as Item);
           const log = results[i * 4 + 3] as Record<string, number>;
           const ms = computeMonthStats(ents, ambs, its, log);
           if (ms.daysWorked > 0) {

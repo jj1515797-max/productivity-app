@@ -13,6 +13,7 @@ import type { MonthlyProduction } from '../lib/monthlyProduction';
 import { expandAmbientRecipeMap, expandRecipeMap } from '../lib/bomExpansion';
 import { buildMaterialWorkbook, makePriceResolver } from '../lib/materialWorkbook';
 import { PM_COL, toRawMonth } from '../lib/productionMonthly';
+import { isDaysDoc, isMachineEntryDoc } from '../lib/appDocs';
 import type { ProductionMonthlyDoc } from '../lib/productionMonthly';
 import { remapInputs } from '../lib/materialInputMap';
 import { buildCategoryIndex, categoryOf } from '../lib/materialCategory';
@@ -115,23 +116,18 @@ async function fetchMonth(month: string): Promise<RawMonth> {
     getDocs(query(collectionGroup(db, 'ambient'), where('date', '>=', start), where('date', '<=', end))),
     fetchMonthLogistics(month),
   ]);
-  // entries 컬렉션그룹은 외포장(ambient)도 같이 잡힐 수 있어 machine 필드로 필터
-  const entries: MachineEntry[] = [];
-  ents.forEach((d) => {
-    const data = d.data() as MachineEntry;
-    if (!data.machine) return; // ambient 등 다른 entries 제외
-    entries.push(data);
-  });
+  // 같은 이름의 다른 하위 컬렉션(폐기 waste/…/entries · 재배합 remix/…/items)이 섞이지 않게 days/ 경로만
+  const entries: MachineEntry[] = ents.docs.filter(isMachineEntryDoc).map((d) => d.data() as MachineEntry);
+  const items: Item[] = its.docs.filter(isDaysDoc).map((d) => d.data() as Item);
+  const ambient: AmbientEntry[] = amb.docs.filter(isDaysDoc).map((d) => d.data() as AmbientEntry);
   // 앱 생산 데이터가 하나도 없는 달(앱 도입 전)만 — 설정 › 월별 생산수량에 넣어 둔 마감 수량을 쓴다 (원재료수율과 같은 규칙)
-  if (entries.length === 0 && its.empty && amb.empty && Object.keys(log.byDay).length === 0) {
+  if (entries.length === 0 && items.length === 0 && ambient.length === 0 && Object.keys(log.byDay).length === 0) {
     const pm = await getDoc(doc(db, PM_COL, month)).catch(() => null);
     if (pm?.exists()) {
       const d = pm.data() as ProductionMonthlyDoc;
       return { ...(toRawMonth(d) as RawMonth), pmVer: String(d.updatedAt || '') };
     }
   }
-  const items: Item[] = its.docs.map((d) => d.data() as Item);
-  const ambient: AmbientEntry[] = amb.docs.map((d) => d.data() as AmbientEntry);
   return { entries, items, ambient, logistics: log.byDay, logisticsByCode: log.byDayCode };
 }
 
@@ -190,9 +186,10 @@ export default function MaterialAnalysis() {
     } catch {}
     return unsub;
   }, []);
-  // 캐시 키를 raw3 로 올리면서 더는 안 읽는 옛 raw2 를 지운다 (한 달 1MB 넘어 용량을 막는다)
+  // 캐시 키를 raw4 로 올리면서 더는 안 읽는 옛 raw2·raw3 를 지운다 (한 달 1MB 넘어 용량을 막는다).
+  // raw3 에는 재배합 문서가 섞여 '앱 데이터 있는 달'로 잘못 저장된 달(예: 2025-09)이 남아 있을 수 있다.
   useEffect(() => {
-    try { Object.keys(localStorage).filter((k) => k.startsWith(PREFIX + 'raw2:')).forEach((k) => localStorage.removeItem(k)); } catch {}
+    try { Object.keys(localStorage).filter((k) => k.startsWith(PREFIX + 'raw2:') || k.startsWith(PREFIX + 'raw3:')).forEach((k) => localStorage.removeItem(k)); } catch {}
   }, []);
   const [expandStages, setExpandStages] = useState<Record<string, boolean>>({});
   const [err, setErr] = useState<string | null>(null);
@@ -311,7 +308,7 @@ export default function MaterialAnalysis() {
         // 지난달도 월초 정정이 잦아 짧게 둔다 (원재료수율 화면과 같은 규칙)
         const ttl = m >= shiftMonth(tm, -1) ? TTL_CURRENT : TTL_PAST;
         if (!bustCache) {
-          const c = getCache<RawMonth>(`raw3:${m}`, ttl, m);
+          const c = getCache<RawMonth>(`raw4:${m}`, ttl, m);
           // 월별 생산수량으로 채운 달은 그 문서가 바뀌었으면 다시 읽는다. 빈 달도 나중에 수량을 넣었을 수 있으니 다시 읽는다.
           const empty = c && c.entries.length === 0 && c.items.length === 0 && c.ambient.length === 0 && Object.keys(c.logistics).length === 0;
           let stale = !!empty;
@@ -322,7 +319,7 @@ export default function MaterialAnalysis() {
           if (c && !stale) return c;
         }
         const r = await fetchMonth(m);
-        setCache(`raw3:${m}`, r, [`raw3:${monthA}`, `raw3:${monthB}`]);
+        setCache(`raw4:${m}`, r, [`raw4:${monthA}`, `raw4:${monthB}`]);
         return r;
       };
       const [aRaw, bRaw, inA, inB, cats] = await Promise.all([

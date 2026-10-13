@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { collection, collectionGroup, doc, getDocs, query, setDoc, where } from 'firebase/firestore';
 import ExcelJS from 'exceljs';
 import { db } from '../firebase';
+import { isDaysDoc, isMachineEntryDoc } from '../lib/appDocs';
 import type { Item, MachineEntry, ProductSetting } from '../types';
 import { canonicalShort, convertErpCode, normalizeCode } from '../lib/codeUtil';
 
@@ -255,10 +256,9 @@ export default function Under10() {
           getDocs(collection(db, 'under10Manual')),
         ]);
         if (cancel) return;
-        const items: Item[] = [];
-        itemsSnap.forEach((d) => items.push(d.data() as Item));
-        const entries: MachineEntry[] = [];
-        entriesSnap.forEach((d) => entries.push(d.data() as MachineEntry));
+        // days/ 경로만 (재배합 remix/…/items · 폐기 waste/…/entries 제외)
+        const items: Item[] = itemsSnap.docs.filter(isDaysDoc).map((d) => d.data() as Item);
+        const entries: MachineEntry[] = entriesSnap.docs.filter(isMachineEntryDoc).map((d) => d.data() as MachineEntry);
         const manualMap: Record<string, ManualOverride> = {};
         manualSnap.forEach((d) => { manualMap[d.id] = d.data() as ManualOverride; });
 

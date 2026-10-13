@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { collection, collectionGroup, deleteDoc, doc, onSnapshot, query, setDoc, where } from 'firebase/firestore';
 import { db } from '../firebase';
+import { isDaysDoc } from '../lib/appDocs';
 import { AMBIENT_CATEGORIES, AMBIENT_PRODUCTS, CATEGORY_STYLES, productSlug } from '../lib/ambientProducts';
 import type { AmbientEntry } from '../types';
 
@@ -276,6 +277,7 @@ function MonthView({ defaultMonth, onClose }: { defaultMonth: string; onClose: (
       const list: Row[] = [];
       snap.forEach((d) => {
         const data = d.data() as AmbientEntry;
+        if (!isDaysDoc(d)) return;
         if (!data.date || data.date < start || data.date > end) return;
         list.push({ ...data, docId: d.id });
       });

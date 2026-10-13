@@ -23,6 +23,7 @@ import type { UsageContrib } from '../lib/materialUsage';
 import { addAuditSheet, addEvidenceSheet, addGuideSheet } from '../lib/yieldWorkbookExtras';
 import { computeMonthlyProduction } from '../lib/monthlyProduction';
 import { PM_COL, toRawMonth } from '../lib/productionMonthly';
+import { isDaysDoc, isMachineEntryDoc } from '../lib/appDocs';
 import type { ProductionMonthlyDoc } from '../lib/productionMonthly';
 import { expandAmbientRecipeMap, expandRecipeMap } from '../lib/bomExpansion';
 import { remapInputs } from '../lib/materialInputMap';
@@ -30,8 +31,9 @@ import { remapInputs } from '../lib/materialInputMap';
 const EXCLUDE_DEFAULT = ['정제수'];
 // 레시피 소스(분석용 DB)가 도입되면서 기준이 바뀌므로 버전을 올린다.
 // 키에 소스를 넣어 '분석용/현장 BOM' 값이 서로 덮어쓰지 않게 한다.
-const CACHE_PREFIX = 'yieldStd4:';
-const OLD_CACHE_PREFIXES = ['yieldStd3:', 'yieldStd2:', 'yieldStd:'];
+// yieldStd4 에는 재배합 문서 때문에 생산 0 으로 잘못 계산된 달(예: 2025-09)이 남아 있을 수 있어 버린다
+const CACHE_PREFIX = 'yieldStd5:';
+const OLD_CACHE_PREFIXES = ['yieldStd4:', 'yieldStd3:', 'yieldStd2:', 'yieldStd:'];
 // 두 달 이상 지난 달만 오래 둔다. 지난달은 월초에 생산·잔여량 정정이 잦아서 짧게.
 // (레시피가 바뀌면 캐시 키의 레시피 지문이 달라져 자동으로 새로 계산)
 const TTL_PAST = 30 * 24 * 60 * 60 * 1000;
@@ -131,22 +133,20 @@ async function fetchMonth(month: string): Promise<RawMonth> {
     getDocs(query(collectionGroup(db, 'ambient'), where('date', '>=', start), where('date', '<=', end))),
     fetchMonthLogistics(month),
   ]);
-  const entries: MachineEntry[] = [];
-  ents.forEach((d) => {
-    const data = d.data() as MachineEntry;
-    if (!data.machine) return;
-    entries.push(data);
-  });
+  // 같은 이름의 다른 하위 컬렉션(폐기 waste/…/entries · 재배합 remix/…/items)이 섞이지 않게 days/ 경로만
+  const entries: MachineEntry[] = ents.docs.filter(isMachineEntryDoc).map((d) => d.data() as MachineEntry);
+  const items: Item[] = its.docs.filter(isDaysDoc).map((d) => d.data() as Item);
+  const ambient: AmbientEntry[] = amb.docs.filter(isDaysDoc).map((d) => d.data() as AmbientEntry);
   // 앱 생산 데이터가 하나도 없는 달(앱 도입 전)만 — 설정 › 월별 생산수량에 넣어 둔 마감 수량을 쓴다.
   // 앱 데이터가 있는 달은 지금과 똑같이 앱 데이터만 쓴다.
-  if (entries.length === 0 && its.empty && amb.empty && Object.keys(log.byDay).length === 0) {
+  if (entries.length === 0 && items.length === 0 && ambient.length === 0 && Object.keys(log.byDay).length === 0) {
     const pm = await getDoc(doc(db, PM_COL, month)).catch(() => null);
     if (pm?.exists()) return toRawMonth(pm.data() as ProductionMonthlyDoc) as RawMonth;
   }
   return {
     entries,
-    items: its.docs.map((d) => d.data() as Item),
-    ambient: amb.docs.map((d) => d.data() as AmbientEntry),
+    items,
+    ambient,
     logistics: log.byDay,
     logisticsByCode: log.byDayCode,
   };

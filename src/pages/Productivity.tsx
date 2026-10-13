@@ -2,6 +2,7 @@ import { Fragment, useEffect, useMemo, useState } from 'react';
 import { collection, collectionGroup, doc, getDoc, getDocs, query, where } from 'firebase/firestore';
 import ExcelJS from 'exceljs';
 import { db } from '../firebase';
+import { isDaysDoc } from '../lib/appDocs';
 import { todayKey } from '../lib/dateUtil';
 import type { AttendanceRecord, Item, Member, ProductSetting } from '../types';
 import { summarizeAttendance } from '../lib/attendance';
@@ -334,8 +335,10 @@ export default function Productivity() {
         where('date', '>=', fetchFrom), where('date', '<=', fetchTo))),
       getDocs(collection(db, 'productSettings')),
       getDocs(collection(db, 'members')),
-    ]).then(async ([prodSnap, itemsSnap, settingsSnap, memberSnap]) => {
+    ]).then(async ([prodSnap, itemsSnap0, settingsSnap, memberSnap]) => {
       if (cancel) return;
+      // days/ 생산계획만 (재배합 remix/…/items 는 날짜가 있어 같이 잡힌다)
+      const itemsSnap = itemsSnap0.docs.filter(isDaysDoc);
 
       // 출근 기록은 각 미스 월의 각 날짜를 개별 fetch (collectionGroup 인덱스 회피)
       // 단, productivity 문서에 attend/leave 가 이미 저장돼 있으면 그 날짜는 skip

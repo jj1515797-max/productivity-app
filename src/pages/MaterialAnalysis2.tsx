@@ -3,6 +3,7 @@ import type { ReactNode } from 'react';
 import { collection, collectionGroup, doc, getDoc, getDocs, onSnapshot, query, setDoc, where } from 'firebase/firestore';
 import ExcelJS from 'exceljs';
 import { db } from '../firebase';
+import { isDaysDoc, isMachineEntryDoc } from '../lib/appDocs';
 import type { AmbientEntry, Item, MachineEntry } from '../types';
 import type { AmbientRecipe, Recipe } from '../lib/wasteCompute';
 import { CODE_KEY_PREFIX, monthPriceKey, normalizeCode, normalizeMaterialName } from '../lib/wasteCompute';
@@ -88,14 +89,10 @@ async function fetchMonth(month: string): Promise<RawMonth> {
     getDocs(query(collectionGroup(db, 'ambient'), where('date', '>=', start), where('date', '<=', end))),
     fetchMonthLogistics(month),
   ]);
-  const entries: MachineEntry[] = [];
-  ents.forEach((d) => {
-    const data = d.data() as MachineEntry;
-    if (!data.machine) return;
-    entries.push(data);
-  });
-  const items: Item[] = its.docs.map((d) => d.data() as Item);
-  const ambient: AmbientEntry[] = amb.docs.map((d) => d.data() as AmbientEntry);
+  // days/ 경로만 (재배합 remix/…/items · 폐기 waste/…/entries 제외)
+  const entries: MachineEntry[] = ents.docs.filter(isMachineEntryDoc).map((d) => d.data() as MachineEntry);
+  const items: Item[] = its.docs.filter(isDaysDoc).map((d) => d.data() as Item);
+  const ambient: AmbientEntry[] = amb.docs.filter(isDaysDoc).map((d) => d.data() as AmbientEntry);
   return { entries, items, ambient, logistics: log.byDay, logisticsByCode: log.byDayCode };
 }
 
@@ -234,11 +231,13 @@ export default function MaterialAnalysis2() {
       const fetchOrCache = async (): Promise<RawMonth> => {
         const ttl = month === tm ? TTL_CURRENT : TTL_PAST;
         if (!bustCache) {
-          const c = getCache<RawMonth>(`raw2:${month}`, ttl);
+          const c = getCache<RawMonth>(`raw3:${month}`, ttl);
           if (c) return c;
         }
         const r = await fetchMonth(month);
-        setCache(`raw2:${month}`, r);
+        // 옛 raw2 (재배합 문서가 섞였을 수 있음) 는 더 안 읽으니 지운다
+        try { Object.keys(localStorage).filter((k) => k.startsWith(PREFIX + 'raw2:')).forEach((k) => localStorage.removeItem(k)); } catch {}
+        setCache(`raw3:${month}`, r);
         return r;
       };
       const r = await fetchOrCache();

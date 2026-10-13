@@ -2,10 +2,11 @@
  *  앱을 쓰기 전 달(작년 등)의 마감 기준 품목별 생산수량을 월 단위로 붙여넣는다.
  *  원재료수율 분석은 앱 생산 데이터가 없는 달에만 이 값을 쓴다. 날짜별 생산 화면과는 섞지 않는다. */
 import { useEffect, useMemo, useState } from 'react';
-import { collection, collectionGroup, deleteDoc, doc, getDocs, limit, onSnapshot, query, setDoc, where } from 'firebase/firestore';
+import { collection, deleteDoc, doc, getDocs, onSnapshot, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import { canonicalShort } from '../lib/codeUtil';
 import { PM_COL, ambientKey, parseProductionPaste, toDoc } from '../lib/productionMonthly';
+import { monthHasDayItems } from '../lib/appDocs';
 import type { ProductionMonthlyDoc } from '../lib/productionMonthly';
 
 const prevMonth = () => {
@@ -57,11 +58,13 @@ export default function ProductionMonthlyPanel() {
     })().catch(() => { setColdKeys(new Set()); setAmbKeys(new Set()); });
   }, []);
 
-  // 그 달에 앱 생산 데이터가 있나 — 있으면 수율분석은 앱 데이터를 쓴다는 걸 미리 알려 준다
+  // 그 달에 앱 생산 데이터가 있나 — 있으면 수율분석은 앱 데이터를 쓴다는 걸 미리 알려 준다.
+  // (collectionGroup('items') 는 재배합 remix/{날짜}/items 도 잡아서 날짜별 days/{날짜}/items 를 직접 본다)
   useEffect(() => {
+    let off = false;
     setAppHasData(null);
-    getDocs(query(collectionGroup(db, 'items'), where('date', '>=', `${month}-01`), where('date', '<=', `${month}-31`), limit(1)))
-      .then((s) => setAppHasData(!s.empty)).catch(() => setAppHasData(false));
+    monthHasDayItems(month).then((v) => { if (!off) setAppHasData(v); }).catch(() => { if (!off) setAppHasData(false); });
+    return () => { off = true; };
   }, [month]);
 
   const parsed = useMemo(() => {

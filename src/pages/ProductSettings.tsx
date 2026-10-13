@@ -3595,7 +3595,7 @@ function DbBackupPanel() {
       const res = await uploadBackup(gh, r.sql, {
         docCount: r.docCount,
         tables: r.stats.length,
-        incomplete: r.incomplete || '',
+        incomplete: r.incomplete || (r.skipped.length ? `읽기 실패로 빠짐: ${r.skipped.join(', ')}` : ''),
         sqlBytes: r.sizeBytes,
         stamp: now.toISOString().slice(0, 10),
         generatedAt: now.toISOString(),
@@ -3625,7 +3625,7 @@ function DbBackupPanel() {
       });
       setResult(r);
       const stamp = new Date().toISOString().slice(0, 10);
-      downloadSql(r.sql, `ssbon_backup_${stamp}${r.incomplete ? '_불완전' : ''}.sql`);
+      downloadSql(r.sql, `ssbon_backup_${stamp}${r.incomplete || r.skipped.length ? '_불완전' : ''}.sql`);
       // 설정이 채워져 있으면 이어서 깃허브에 올린다 (실패해도 다운로드는 이미 끝났다)
       if (gh.owner && gh.repo && gh.token && gh.path) await doUpload(r);
     } catch (e) {
@@ -3788,6 +3788,11 @@ function DbBackupPanel() {
             <div className="bg-amber-50 border border-amber-300 rounded p-3 text-sm text-amber-800">
               ⚠ <b>불완전한 백업</b>입니다 (중단: {result.incomplete}).
               파일명에도 표시했습니다. 이관용으로 쓰려면 다시 받으세요.
+            </div>
+          ) : result.skipped.length > 0 ? (
+            <div className="bg-amber-50 border border-amber-300 rounded p-3 text-sm text-amber-800">
+              ⚠ <b>일부 표를 읽지 못했습니다</b>: {result.skipped.join(', ')} — 나머지는 다운로드됐습니다.
+              잠시 뒤 다시 받거나, 계속되면 알려 주세요.
             </div>
           ) : (
             <div className="bg-emerald-50 border border-emerald-300 rounded p-3 text-sm text-emerald-800">

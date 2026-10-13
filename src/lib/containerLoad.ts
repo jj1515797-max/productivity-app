@@ -3,6 +3,7 @@
  */
 import { collection, collectionGroup, getDocs, query, where } from 'firebase/firestore';
 import { db } from '../firebase';
+import { isDaysDoc, isMachineEntryDoc } from './appDocs';
 import { canonicalShort, compareCode } from './codeUtil';
 import { computeMonthlyProduction } from './monthlyProduction';
 import { todayKey } from './dateUtil';
@@ -65,12 +66,9 @@ export async function loadContainerMonth(month: string): Promise<ContainerMonth>
   });
 
   // days/ 하위만 (waste/entries · remix/items 섞이지 않게 경로로 거름)
-  const entries = entSnap.docs
-    .filter((d) => d.ref.path.startsWith('days/') && d.ref.path.includes('/machines/'))
-    .map((d) => d.data() as MachineEntry)
-    .filter((e) => !!e.machine);
-  const items = itemSnap.docs.filter((d) => d.ref.path.startsWith('days/')).map((d) => d.data() as Item);
-  const ambient = ambSnap.docs.filter((d) => d.ref.path.startsWith('days/')).map((d) => d.data() as AmbientEntry);
+  const entries = entSnap.docs.filter(isMachineEntryDoc).map((d) => d.data() as MachineEntry);
+  const items = itemSnap.docs.filter(isDaysDoc).map((d) => d.data() as Item);
+  const ambient = ambSnap.docs.filter(isDaysDoc).map((d) => d.data() as AmbientEntry);
 
   // 제품 DB → 단축코드별 용기 구분 (ERP 코드 끝 '-51' = 작은용기)
   const sizeByShort = new Map<string, 'small' | 'large'>();
