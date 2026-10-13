@@ -4,7 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { collection, deleteDoc, doc, setDoc, updateDoc } from 'firebase/firestore';
 import { db } from '../firebase';
 import {
-  CART_COL, CHANNELS, CH_STYLE, cartMinutes, splitByDate, unlockAudio, chime, fmtLeft, hhmm, nextFreeSlot, slotLabel, useCoolingConfig,
+  CART_COL, CHANNELS, CH_SHORT, CH_STYLE, cartMinutes, splitByDate, unlockAudio, chime, fmtLeft, hhmm, nextFreeSlot, slotLabel, useCoolingConfig,
 } from '../lib/cooling';
 import type { CartItem, Channel, CoolingCart, RoomConfig } from '../lib/cooling';
 import { useActiveCarts, useDayCarts, usePendingCards } from '../lib/coolingData';
@@ -269,31 +269,43 @@ export default function CoolingInput() {
           {!loaded ? <div className="text-center text-gray-400 py-8">불러오는 중…</div>
             : filtered.length === 0 ? <div className="text-center text-gray-400 py-8">{cards.length === 0 ? '입고할 품목이 없습니다 — 외포장-1·2·3 화면에서 품목 행을 눌러 「분류 완료」 하면 여기에 뜹니다' : q ? `「${q}」 에 맞는 품목이 없습니다` : '고른 필터에 맞는 품목이 없습니다'}</div>
               : (
-                <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-2">
-                  {filtered.map((c) => {
-                    const st = CH_STYLE[c.channel];
-                    const on = sel.has(c.key);
-                    const dim = !!selChannel && selChannel !== c.channel;
-                    return (
-                      <button key={c.key} onClick={() => toggle(c)}
-                        className={`relative text-left rounded-lg border-2 p-2.5 transition active:scale-[0.97]
-                          ${on ? `${st.border} ${st.soft} ring-4 ring-blue-400` : 'border-gray-200 bg-white'} ${dim ? 'opacity-40' : ''}`}>
-                        <span className={`absolute right-2 top-2 px-1.5 py-0.5 rounded text-[11px] font-bold text-white ${st.bg}`}>{c.channel}</span>
-                        <div className="font-mono font-extrabold text-xl text-gray-900">{c.code}</div>
-                        <div className="text-sm text-gray-700 truncate pr-2">{c.name}</div>
-                        <div className="mt-1 text-2xl font-extrabold tabular-nums">{c.remain.toLocaleString()}<span className="text-xs font-normal text-gray-500 ml-1">개</span></div>
-                        <div className="text-[11px] text-gray-500">
-                          <b className="text-indigo-700 mr-1">외포장{c.packs.join('·')}</b>
-                          {c.lastAt && <b className="text-gray-700 mr-1">{c.lastAt}</b>}
-                          {c.inQty > 0 && `이미 ${c.inQty} 입고 · `}
-                          생산 {c.produced.toLocaleString()}/{c.target.toLocaleString()}
-                          {c.produced < c.target && <span className="text-rose-600 font-bold"> 생산 중</span>}
+                // 품목 단계 글자(A~I)별 세로 줄 — 열 안에서는 번호순(카드는 이미 번호 → 글자 → 채널 순으로 정렬돼 있음)
+                (() => {
+                  const ORDER = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I'];
+                  const letterOf = (code: string) => (code.match(/[A-Za-z]/)?.[0] || '#').toUpperCase();
+                  const cols = new Map<string, typeof filtered>();
+                  filtered.forEach((c) => { const L = letterOf(c.code); cols.set(L, [...(cols.get(L) || []), c]); });
+                  const letters = [...cols.keys()].sort((a, b) => {
+                    const ia = ORDER.indexOf(a), ib = ORDER.indexOf(b);
+                    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
+                  });
+                  return (
+                    <div className="grid gap-2 overflow-x-auto" style={{ gridTemplateColumns: `repeat(${letters.length}, minmax(5.5rem, 1fr))` }}>
+                      {letters.map((L) => (
+                        <div key={L} className="space-y-1.5 min-w-0">
+                          <div className="sticky top-0 z-10 bg-white/95 backdrop-blur py-1 text-center border-b-2 border-gray-300">
+                            <span className="text-xl font-extrabold text-gray-800">{L}</span>
+                            <span className="ml-1 text-xs text-gray-500">{cols.get(L)!.length}</span>
+                          </div>
+                          {cols.get(L)!.map((c) => {
+                            const st = CH_STYLE[c.channel];
+                            const on = sel.has(c.key);
+                            const dim = !!selChannel && selChannel !== c.channel;
+                            return (
+                              <button key={c.key} onClick={() => toggle(c)} title={`${c.name} · ${c.remain.toLocaleString()}개`}
+                                className={`relative w-full rounded-lg border-2 px-1.5 pt-4 pb-2 text-center transition active:scale-[0.97]
+                                  ${st.border} ${on ? 'bg-white ring-4 ring-blue-500' : st.soft} ${dim ? 'opacity-30' : ''}`}>
+                                <span className={`absolute right-1 top-1 px-1 rounded text-[10px] font-bold text-white leading-4 ${st.bg}`}>{CH_SHORT[c.channel]}</span>
+                                {on && <span className="absolute left-1.5 top-0.5 text-blue-600 text-base font-bold">✔</span>}
+                                <div className="font-mono font-extrabold text-3xl leading-none text-gray-900 tracking-tight">{c.code}</div>
+                              </button>
+                            );
+                          })}
                         </div>
-                        {on && <span className="absolute left-2 top-2 text-blue-600 text-lg">✔</span>}
-                      </button>
-                    );
-                  })}
-                </div>
+                      ))}
+                    </div>
+                  );
+                })()
               )}
         </div>
       </section>
