@@ -269,40 +269,62 @@ export default function CoolingInput() {
           {!loaded ? <div className="text-center text-gray-400 py-8">불러오는 중…</div>
             : filtered.length === 0 ? <div className="text-center text-gray-400 py-8">{cards.length === 0 ? '입고할 품목이 없습니다 — 외포장-1·2·3 화면에서 품목 행을 눌러 「분류 완료」 하면 여기에 뜹니다' : q ? `「${q}」 에 맞는 품목이 없습니다` : '고른 필터에 맞는 품목이 없습니다'}</div>
               : (
-                // 품목 단계 글자(A~I)별 세로 줄 — 열 안에서는 번호순(카드는 이미 번호 → 글자 → 채널 순으로 정렬돼 있음)
+                // 품목 단계 글자(A~I) 9칸을 항상 같은 폭으로 — 칸 위치가 고정돼 손에 익는다.
+                // 같은 코드는 카드 하나로 묶고, 채널은 카드 아래 색깔 칩(누르면 그 채널 선택)
                 (() => {
                   const ORDER = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I'];
                   const letterOf = (code: string) => (code.match(/[A-Za-z]/)?.[0] || '#').toUpperCase();
-                  const cols = new Map<string, typeof filtered>();
-                  filtered.forEach((c) => { const L = letterOf(c.code); cols.set(L, [...(cols.get(L) || []), c]); });
-                  const letters = [...cols.keys()].sort((a, b) => {
-                    const ia = ORDER.indexOf(a), ib = ORDER.indexOf(b);
-                    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || a.localeCompare(b);
-                  });
+                  const byCode = new Map<string, typeof filtered>();
+                  filtered.forEach((c) => byCode.set(c.code, [...(byCode.get(c.code) || []), c]));   // 이미 번호순 → 채널순
+                  const cols = new Map<string, string[]>();
+                  [...byCode.keys()].forEach((code) => { const L = letterOf(code); cols.set(L, [...(cols.get(L) || []), code]); });
+                  const extra = [...cols.keys()].filter((L) => !ORDER.includes(L)).sort();
+                  const letters = [...ORDER, ...extra];
                   return (
-                    <div className="grid gap-2 overflow-x-auto" style={{ gridTemplateColumns: `repeat(${letters.length}, minmax(5.5rem, 1fr))` }}>
-                      {letters.map((L) => (
-                        <div key={L} className="space-y-1.5 min-w-0">
-                          <div className="sticky top-0 z-10 bg-white/95 backdrop-blur py-1 text-center border-b-2 border-gray-300">
-                            <span className="text-xl font-extrabold text-gray-800">{L}</span>
-                            <span className="ml-1 text-xs text-gray-500">{cols.get(L)!.length}</span>
+                    <div className="grid gap-x-2 overflow-x-auto" style={{ gridTemplateColumns: `repeat(${letters.length}, minmax(6.5rem, 1fr))` }}>
+                      {letters.map((L) => {
+                        const codes = cols.get(L) || [];
+                        return (
+                          <div key={L} className="min-w-0">
+                            <div className={`sticky top-0 z-10 bg-white/95 backdrop-blur pb-1 mb-1.5 text-center border-b-2 ${codes.length ? 'border-gray-400' : 'border-gray-200'}`}>
+                              <span className={`text-lg font-extrabold ${codes.length ? 'text-gray-800' : 'text-gray-300'}`}>{L}</span>
+                              {codes.length > 0 && <span className="ml-1 text-[11px] text-gray-500">{codes.length}</span>}
+                            </div>
+                            <div className="space-y-1.5">
+                              {codes.map((code) => {
+                                const list = byCode.get(code)!;
+                                const anyOn = list.some((c) => sel.has(c.key));
+                                const single = list.length === 1;
+                                return (
+                                  <div key={code}
+                                    onClick={single ? () => toggle(list[0]) : undefined}
+                                    title={`${list[0].name} · ${list.map((c) => `${c.channel} ${c.remain.toLocaleString()}개`).join(' / ')}`}
+                                    className={`relative rounded-xl bg-white border shadow-sm px-1.5 pt-2 pb-1.5 text-center transition
+                                      ${anyOn ? 'border-blue-500 ring-2 ring-blue-400' : 'border-gray-200'} ${single ? 'cursor-pointer active:scale-[0.97]' : ''}`}>
+                                    {anyOn && <span className="absolute left-1.5 top-0.5 text-blue-600 text-sm font-bold">✔</span>}
+                                    <div className="font-mono font-extrabold text-[26px] leading-none text-gray-900 tracking-tight">{code}</div>
+                                    <div className="mt-1.5 flex flex-wrap justify-center gap-1">
+                                      {list.map((c) => {
+                                        const st = CH_STYLE[c.channel];
+                                        const on = sel.has(c.key);
+                                        const dim = !!selChannel && selChannel !== c.channel;
+                                        return (
+                                          <button key={c.key} type="button"
+                                            onClick={(e) => { e.stopPropagation(); toggle(c); }}
+                                            className={`px-1.5 py-0.5 rounded-md text-[11px] font-bold leading-4 border transition
+                                              ${on ? `${st.bg} text-white border-transparent` : `bg-white ${st.text} ${st.border}`} ${dim ? 'opacity-35' : ''}`}>
+                                            {on ? '✔ ' : ''}{CH_SHORT[c.channel]}
+                                          </button>
+                                        );
+                                      })}
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
                           </div>
-                          {cols.get(L)!.map((c) => {
-                            const st = CH_STYLE[c.channel];
-                            const on = sel.has(c.key);
-                            const dim = !!selChannel && selChannel !== c.channel;
-                            return (
-                              <button key={c.key} onClick={() => toggle(c)} title={`${c.name} · ${c.remain.toLocaleString()}개`}
-                                className={`relative w-full rounded-lg border-2 px-1.5 pt-4 pb-2 text-center transition active:scale-[0.97]
-                                  ${st.border} ${on ? 'bg-white ring-4 ring-blue-500' : st.soft} ${dim ? 'opacity-30' : ''}`}>
-                                <span className={`absolute right-1 top-1 px-1 rounded text-[10px] font-bold text-white leading-4 ${st.bg}`}>{CH_SHORT[c.channel]}</span>
-                                {on && <span className="absolute left-1.5 top-0.5 text-blue-600 text-base font-bold">✔</span>}
-                                <div className="font-mono font-extrabold text-3xl leading-none text-gray-900 tracking-tight">{c.code}</div>
-                              </button>
-                            );
-                          })}
-                        </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   );
                 })()
