@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import { useParams } from 'react-router-dom';
-import { collection, doc, onSnapshot, addDoc, deleteDoc, updateDoc } from 'firebase/firestore';
+import { collection, doc, onSnapshot, addDoc, deleteDoc, updateDoc, query, where } from 'firebase/firestore';
 import { db } from '../firebase';
 import { todayKey, formatTime, effectiveTodayKey } from '../lib/dateUtil';
 import { loadViewDate, saveViewDate } from '../lib/viewDate';
@@ -35,6 +35,17 @@ export default function Machine() {
   const [selectedCode, setSelectedCode] = useState<string | null>(null);
   const [qty, setQty] = useState<number>(0);
   const [isAdditional, setIsAdditional] = useState(false);
+  // 고른 품목의 내포장(스쿱) 카운팅 합계 — 그 품목 기록만 실시간 구독 (days/{날짜}/scoop, code 같은 것)
+  const [scoopQty, setScoopQty] = useState<number | null>(null);
+  useEffect(() => {
+    setScoopQty(null);
+    if (!selectedCode) return;
+    return onSnapshot(query(collection(db, 'days', date, 'scoop'), where('code', '==', selectedCode)), (s) => {
+      let t = 0;
+      s.forEach((d) => { t += Number((d.data() as { qty?: number }).qty) || 0; });
+      setScoopQty(t);
+    }, () => setScoopQty(null));
+  }, [date, selectedCode]);
 
   useEffect(() => {
     return onSnapshot(collection(db, 'days', date, 'items'), (snap) => {
@@ -186,6 +197,12 @@ export default function Machine() {
                   <div className={`font-mono text-xs ${active ? 'opacity-70' : partial ? 'text-rose-600' : 'opacity-70'}`}>{it.code}</div>
                   <div className="font-medium">{it.name}</div>
                   <div className={`text-xs ${active ? 'opacity-70' : 'opacity-70'}`}>총 {it.totalQty}EA</div>
+                  {/* 누른 품목 — 내포장(스쿱)에서 지금까지 센 수량 */}
+                  {active && scoopQty !== null && (
+                    <div className="mt-1.5 inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-violet-500 text-white text-sm font-bold tabular-nums">
+                      내포장 {scoopQty.toLocaleString()}개
+                    </div>
+                  )}
                   {partial && !active && (
                     <div className="mt-1.5 inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-rose-500 text-white text-[11px] font-bold">
                       추가 {remaining}개 필요
