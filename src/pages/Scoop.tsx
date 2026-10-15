@@ -2,12 +2,13 @@
  *  - 작업자가 자리에서 품목 선택 → +20/낱개 버튼으로 카운팅
  *  - 같은 품목을 여러 명이 동시에 풀면 풀(pool)에 합산. 실시간 공유.
  *  - 데이터: days/{date}/scoop/{auto}  =  { code, name, worker, qty, ts }
- *  - 작업자 이름은 기기별 localStorage 에 저장
+ *  - 작업자 이름은 기기별 localStorage 에 저장 (그날만 — 새벽 2시에 날이 바뀌면 새로 입력)
+ *  - 자리 태블릿은 날짜 고정(오늘). 현황판만 날짜를 고를 수 있다
  */
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { addDoc, collection, deleteDoc, doc, getDocs, onSnapshot, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
-import type { Item, ProductSetting } from '../types';
+import type { Item, Member, ProductSetting } from '../types';
 import { todayKey, effectiveTodayKey } from '../lib/dateUtil';
 import { getStage, STAGE_LETTERS } from '../lib/monthlyProduction';
 import { canonicalShort } from '../lib/codeUtil';
@@ -22,6 +23,7 @@ interface ScoopEvent {
 }
 const WORKER_KEY = 'scoop:worker';
 const PICKED_KEY = 'scoop:picked';   // 마지막 선택 품목코드 (기기 새로고침해도 유지)
+const WORKER_DAY_KEY = 'scoop:workerDay';   // 이름을 넣은 생산일 — 날이 바뀌면 이름을 새로 받는다
 
 export default function Scoop({ board }: { board?: boolean }) {
   const [date, setDate] = useState(effectiveTodayKey());
@@ -126,57 +128,82 @@ export default function Scoop({ board }: { board?: boolean }) {
   }, [items, byCode, date, notifyCfg]);
 
   if (board) return <BoardView date={date} setDate={setDate} items={items} byCode={byCode} remixSet={remixSet} />;
-  return <TabletView date={date} setDate={setDate} items={items} byCode={byCode} events={events} remixSet={remixSet} toggleRemix={toggleRemix} />;
+  return <TabletView date={date} items={items} byCode={byCode} events={events} remixSet={remixSet} toggleRemix={toggleRemix} />;
 }
 
 /* ============================= 자리 태블릿 ============================= */
+/** 앞에 붙은 [베본] 같은 접두어는 뗀다 */
+const cleanName = (n: string) => (n || '').replace(/^\s*\[[^\]]*\]\s*/, '');
+
+/** 설명 글은 화면에 늘어놓지 않고 ⓘ 를 눌렀을 때만 (태블릿은 마우스오버가 없다) */
+function Info({ text, right }: { text: string; right?: boolean }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <span className="relative inline-flex">
+      <button type="button" onClick={() => setOpen((v) => !v)} aria-label="설명"
+        className="w-7 h-7 rounded-full border border-gray-300 text-gray-500 text-sm font-bold bg-white active:bg-gray-100">ⓘ</button>
+      {open && (
+        <span onClick={() => setOpen(false)}
+          className={`absolute z-30 top-9 ${right ? 'right-0' : 'left-0'} w-64 bg-gray-900 text-white text-xs leading-relaxed rounded-lg px-3 py-2 shadow-xl whitespace-pre-line`}>
+          {text}
+        </span>
+      )}
+    </span>
+  );
+}
+
 function TabletView({
-  date, setDate, items, byCode, events, remixSet, toggleRemix,
+  date, items, byCode, events, remixSet, toggleRemix,
 }: {
   date: string;
-  setDate: (d: string) => void;
   items: Item[];
   byCode: Map<string, { total: number; byWorker: Map<string, number>; events: ScoopEvent[] }>;
   events: ScoopEvent[];
   remixSet: Set<string>;
   toggleRemix: (code: string, on: boolean) => void;
 }) {
-  const [worker, setWorker] = useState<string>(() => localStorage.getItem(WORKER_KEY) || '');
+  // 작업자 이름은 그날만 — 어제 이름이 태블릿에 남아 있으면 지우고 매일 새로 받는다
+  const [worker, setWorkerState] = useState<string>(() => {
+    try { return localStorage.getItem(WORKER_DAY_KEY) === date ? (localStorage.getItem(WORKER_KEY) || '') : ''; } catch { return ''; }
+  });
+  const setWorker = (w: string) => {
+    setWorkerState(w);
+    try { localStorage.setItem(WORKER_KEY, w); localStorage.setItem(WORKER_DAY_KEY, date); } catch { /* 무시 */ }
+  };
+  // 새벽 2시에 날짜가 넘어가면 이름도 새로
+  useEffect(() => {
+    try { if (localStorage.getItem(WORKER_DAY_KEY) !== date) setWorkerState(''); } catch { /* 무시 */ }
+  }, [date]);
   const [picked, setPicked] = useState<string>(() => localStorage.getItem(PICKED_KEY) || '');
   const [search, setSearch] = useState('');
   const [stageFilter, setStageFilter] = useState<string>('');   // '' = 전체
   const [showPicker, setShowPicker] = useState(false);
   const [manualQty, setManualQty] = useState<number>(0);
-  const [saving, setSaving] = useState(false);
-  // 글씨 크기 단계 (0=보통,1=크게,2=아주크게) — 기기별 저장. 텍스트 크기만 키워 레이아웃 유지.
+  // 글씨 크기 4단계 (보통 → 크게 → 아주크게 → 최대) — 기기별 저장
   const [textScale, setTextScale] = useState<number>(() => Number(localStorage.getItem('scoop:textScale')) || 0);
   useEffect(() => { localStorage.setItem('scoop:textScale', String(textScale)); }, [textScale]);
   const SZ: Record<string, string[]> = {
-    code:        ['text-lg',  'text-xl',  'text-2xl', 'text-3xl'],
-    name:        ['text-2xl', 'text-3xl', 'text-4xl', 'text-5xl'],
-    chip:        ['text-sm',  'text-base', 'text-lg', 'text-xl'],
-    packChip:    ['text-base', 'text-lg', 'text-xl', 'text-2xl'],
-    packBig:     ['text-xl',  'text-2xl', 'text-3xl', 'text-4xl'],
-    bannerLabel: ['text-sm',  'text-base', 'text-xl', 'text-2xl'],
-    bannerBig:   ['text-3xl', 'text-4xl', 'text-5xl', 'text-6xl'],
-    bannerUnit:  ['text-xl',  'text-2xl', 'text-3xl', 'text-4xl'],
-    kpiLabel:    ['text-xs',  'text-sm',  'text-lg', 'text-xl'],
-    kpiNum:      ['text-2xl', 'text-3xl', 'text-4xl', 'text-5xl'],
-    bigBtn:      ['text-3xl', 'text-4xl', 'text-5xl', 'text-6xl'],
-    subBtn:      ['text-xl',  'text-2xl', 'text-3xl', 'text-4xl'],
-    manualLabel: ['text-sm',  'text-base', 'text-lg', 'text-xl'],
-    manualInput: ['text-lg',  'text-xl',  'text-2xl', 'text-3xl'],
-    mine:        ['text-sm',  'text-base', 'text-lg', 'text-xl'],
+    code:        ['text-[16px]', 'text-[19px]', 'text-[23px]', 'text-[28px]'],
+    name:        ['text-[26px]', 'text-[32px]', 'text-[40px]', 'text-[50px]'],
+    chipLabel:   ['text-[13px]', 'text-[15px]', 'text-[18px]', 'text-[22px]'],
+    chip:        ['text-[16px]', 'text-[19px]', 'text-[23px]', 'text-[28px]'],
+    kpiLabel:    ['text-[14px]', 'text-[16px]', 'text-[20px]', 'text-[24px]'],
+    kpiNum:      ['text-[28px]', 'text-[35px]', 'text-[44px]', 'text-[56px]'],
+    bigBtn:      ['text-[28px]', 'text-[35px]', 'text-[44px]', 'text-[56px]'],
+    undoBtn:     ['text-[28px]', 'text-[32px]', 'text-[38px]', 'text-[44px]'],   // 글자가 길어 한 단계씩 작게
+    workerChip:  ['text-[13px]', 'text-[15px]', 'text-[18px]', 'text-[22px]'],
+    manualLabel: ['text-[15px]', 'text-[18px]', 'text-[22px]', 'text-[26px]'],
+    manualInput: ['text-[20px]', 'text-[24px]', 'text-[30px]', 'text-[36px]'],
+    mine:        ['text-[15px]', 'text-[18px]', 'text-[22px]', 'text-[26px]'],
     pickerTab:   ['text-sm',  'text-base', 'text-lg', 'text-xl'],
-    pickerCode:  ['text-base', 'text-lg', 'text-xl', 'text-2xl'],
-    pickerName:  ['text-base', 'text-lg', 'text-xl', 'text-2xl'],
-    pickerQty:   ['text-sm',  'text-base', 'text-lg', 'text-xl'],
+    pickerCode:  ['text-sm', 'text-base', 'text-lg', 'text-xl'],
+    pickerName:  ['text-lg', 'text-xl', 'text-2xl', 'text-3xl'],
+    pickerQty:   ['text-base', 'text-lg', 'text-xl', 'text-2xl'],
   };
   const sz = (k: string) => SZ[k][textScale] || SZ[k][0];
   // 완바트 수량 표시용: productSettings 1회 로드 → canonicalShort 기준 맵
   const [prodMap, setProdMap] = useState<Map<string, ProductSetting>>(new Map());
 
-  useEffect(() => { localStorage.setItem(WORKER_KEY, worker); }, [worker]);
   useEffect(() => { localStorage.setItem(PICKED_KEY, picked); }, [picked]);
 
   useEffect(() => {
@@ -213,240 +240,255 @@ function TabletView({
   const remain = target - total;
   const myCount = worker && stat ? (stat.byWorker.get(worker) || 0) : 0;
 
-  const addQty = async (qty: number) => {
+  // 알림 띠 (되돌리기 · 저장 실패)
+  const [toast, setToast] = useState<{ msg: string; undo?: () => void; err?: boolean } | null>(null);
+  const toastTimer = useRef<number | undefined>(undefined);
+  const showToast = (t: { msg: string; undo?: () => void; err?: boolean }) => {
+    setToast(t);
+    window.clearTimeout(toastTimer.current);
+    toastTimer.current = window.setTimeout(() => setToast(null), 10_000);
+  };
+  useEffect(() => () => window.clearTimeout(toastTimer.current), []);
+
+  // 누르면 바로 반영 — 서버 응답을 기다리지 않는다 (와이파이가 약해도 버튼이 멈추지 않게). 실패만 알린다.
+  // 장갑 낀 손 두 번 눌림 방지로 0.3초만 잠근다
+  const lockUntil = useRef(0);
+  const addQty = (qty: number) => {
     if (!picked || !cur || !worker.trim() || qty === 0) return;
-    setSaving(true);
-    try {
-      await addDoc(collection(db, 'days', date, 'scoop'), {
-        code: cur.code, name: cur.name || '', worker: worker.trim(), qty, ts: Date.now(),
-      });
-    } finally { setSaving(false); }
+    const t = Date.now();
+    if (t < lockUntil.current) return;
+    lockUntil.current = t + 300;
+    addDoc(collection(db, 'days', date, 'scoop'), {
+      code: cur.code, name: cur.name || '', worker: worker.trim(), qty, ts: t,
+    }).catch((e) => showToast({ msg: `⚠ 저장 실패 — 인터넷 연결을 확인하고 다시 눌러 주세요 (${e?.message || e})`, err: true }));
   };
 
-  const undoLast = async () => {
+  // 직전 취소 — 확인 창 없이 바로. 잘못 눌렀으면 10초 안에 「되돌리기」
+  const undoLast = () => {
     if (!picked || !worker.trim()) return;
-    const mine = events
+    const last = events
       .filter((e) => e.code === picked && (e.worker || '') === worker.trim())
-      .sort((a, b) => b.ts - a.ts);
-    const last = mine[0];
+      .sort((a, b) => b.ts - a.ts)[0];
     if (!last) return;
-    if (!confirm(`마지막 +${last.qty} 취소할까요?`)) return;
-    await deleteDoc(doc(db, 'days', date, 'scoop', last.id)).catch(() => {});
+    deleteDoc(doc(db, 'days', date, 'scoop', last.id))
+      .catch((e) => showToast({ msg: `⚠ 취소 저장 실패 — 다시 눌러 주세요 (${e?.message || e})`, err: true }));
+    showToast({
+      msg: `+${last.qty} 취소했습니다`,
+      undo: () => {
+        setDoc(doc(db, 'days', date, 'scoop', last.id), { code: last.code, name: last.name, worker: last.worker, qty: last.qty, ts: last.ts })
+          .catch(() => {});
+        setToast(null);
+      },
+    });
   };
+
+  const toastEl = toast && (
+    <div className={`fixed bottom-6 left-1/2 -translate-x-1/2 z-50 rounded-xl px-5 py-3 shadow-xl flex items-center gap-4 max-w-[92vw] ${toast.err ? 'bg-rose-600 text-white' : 'bg-gray-900 text-white'}`}>
+      <span className="text-base">{toast.msg}</span>
+      {toast.undo && <button onClick={toast.undo} className="px-4 py-2 rounded-lg bg-white/20 font-bold text-amber-300 whitespace-nowrap">↩ 되돌리기</button>}
+    </div>
+  );
 
   if (!worker.trim()) {
     return (
-      <div className="max-w-md mx-auto mt-12 bg-white rounded-2xl shadow p-6 space-y-4">
-        <h2 className="text-xl font-bold">👤 작업자 이름</h2>
-        <p className="text-sm text-gray-500">이 태블릿에서 카운팅할 작업자 이름을 한 번만 등록하세요.</p>
+      <div className="max-w-[400px] mx-auto mt-12 bg-white rounded-2xl shadow p-6 space-y-4">
+        <div className="flex items-center gap-2">
+          <h2 className="text-xl font-bold">👤 작업자 이름</h2>
+          <Info text={'이 태블릿에서 카운팅할 작업자 이름입니다.\n매일 새로 입력합니다 (새벽 2시에 바뀜).'} />
+        </div>
         <WorkerSetup onSet={setWorker} />
       </div>
     );
   }
 
+  const ps = cur ? prodMap.get(canonicalShort(cur.code)) : undefined;
+  const pw = ps?.packWeight;
+  const vat = ps?.vatMaxQty;
+  const hasVat = vat !== undefined && vat !== null && vat > 0;
+  // 상태 색: 부족 빨강 · 딱 맞음 초록 · 초과 보라(브랜드색)
+  const st = target <= 0 ? 'none' : remain > 0 ? 'short' : remain === 0 ? 'done' : 'over';
+  const stBox = { none: 'bg-slate-50', short: 'bg-rose-50', done: 'bg-emerald-50', over: 'bg-violet-50' }[st];
+  const stText = { none: 'text-gray-500', short: 'text-rose-700', done: 'text-emerald-700', over: 'text-violet-700' }[st];
+  const stBar = { none: 'bg-gray-300', short: 'bg-rose-500', done: 'bg-emerald-500', over: 'bg-violet-500' }[st];
+  // 글씨를 많이 키우면 좁은 화면에서 2단이 넘치니 더 넓을 때만 2단
+  const twoCol = textScale >= 2 ? 'xl:grid-cols-2' : 'min-[760px]:grid-cols-2';
+
   return (
     <div className="space-y-3 select-none">
-      {/* 상단바 */}
-      <div className="bg-white border rounded-lg p-3 flex items-center gap-3 flex-wrap">
-        <span className="text-sm text-gray-500">날짜</span>
-        <input type="date" value={date} onChange={(e) => e.target.value && setDate(e.target.value)}
-          className="border rounded px-2 py-1 text-sm font-bold" />
+      {/* 도구줄 — 날짜는 고정(오늘), 새벽 2시에 저절로 바뀐다 */}
+      <div className="bg-white border rounded-lg px-3 py-2 flex items-center gap-2 flex-wrap">
+        <span className="px-2.5 py-1.5 rounded-md bg-slate-100 text-sm font-bold tabular-nums">{date}</span>
         <span className="text-gray-300">|</span>
         <span className="text-sm text-gray-500">작업자</span>
         <span className="font-bold text-violet-700">{worker}</span>
         <button onClick={() => setWorker('')}
-          className="px-4 py-2 rounded-lg bg-violet-600 text-white text-sm font-bold hover:bg-violet-700 active:scale-95 transition shadow-sm whitespace-nowrap">
+          className="px-3 py-2 rounded-lg bg-violet-600 text-white text-sm font-bold active:scale-95 transition whitespace-nowrap">
           🔄 작업자 변경
         </button>
-        <span className="ml-auto text-xs text-gray-400">실시간 공유 · 여러 명 동시 작업 가능</span>
+        {cur && (
+          <>
+            <span className="text-gray-300">|</span>
+            <button onClick={() => toggleRemix(cur.code, !remixSet.has(cur.code))}
+              className={`px-3 py-2 rounded-lg text-sm font-bold border-2 whitespace-nowrap transition active:scale-95 ${
+                remixSet.has(cur.code) ? 'bg-rose-500 text-white border-rose-500' : 'bg-white text-gray-500 border-gray-300'}`}>
+              {remixSet.has(cur.code) ? '☑ 재배합' : '☐ 재배합'}
+            </button>
+            <button onClick={() => setShowPicker(true)}
+              className="px-3 py-2 rounded-lg text-sm font-bold border-2 border-violet-300 bg-violet-50 text-violet-700 active:scale-95 transition whitespace-nowrap">
+              🔄 품목 변경
+            </button>
+          </>
+        )}
+        <span className="ml-auto flex items-center gap-2">
+          <Info right text={'실시간 공유 — 같은 품목을 여러 명이 동시에 세도 바로 합쳐집니다.\n날짜는 오늘로 고정 (새벽 2시에 바뀜).\n잘못 눌렀으면 「직전 취소」 (내가 넣은 마지막 1건).'} />
+          <button onClick={() => setTextScale((textScale + 1) % 4)}
+            className="px-3 py-2 rounded-lg text-sm font-bold border-2 border-gray-300 bg-white text-gray-600 whitespace-nowrap active:scale-95 transition">
+            🔍 글씨 {['보통', '크게', '아주크게', '최대'][textScale]}
+          </button>
+        </span>
       </div>
 
-      {/* 품목 선택 카드 */}
+      {/* 품목 선택 안내 */}
       {!picked || !cur ? (
         <div className="bg-violet-50 border-2 border-violet-200 rounded-2xl p-8 text-center">
           <div className="text-lg font-bold text-violet-800 mb-3">📦 작업할 품목을 선택하세요</div>
           <button onClick={() => setShowPicker(true)}
-            className="px-6 py-3 bg-violet-600 text-white rounded-xl font-bold text-lg hover:bg-violet-700">
+            className="px-8 py-4 bg-violet-600 text-white rounded-xl font-bold text-xl active:scale-95">
             품목 고르기
           </button>
         </div>
       ) : (
-        <div className="bg-white border-2 border-violet-300 rounded-2xl p-5 shadow-sm">
-          <div className="flex items-start justify-between gap-3">
-            <div className="flex-1 min-w-0">
-              <div className={`${sz('code')} text-violet-600 font-mono font-bold`}>{cur.code}</div>
-              {/* 품목명 — 긴 이름은 말줄임(…) 처리 */}
-              <div className={`${sz('name')} font-bold text-gray-800 truncate`}>{cur.name || cur.code}</div>
-            </div>
-            {/* 제품 정보 블록 — 포장중량(크게) + 1바트 수량을 한 덩어리로 가운데 배치 */}
-            {(() => {
-              const ps = prodMap.get(canonicalShort(cur.code));
-              const w = ps?.packWeight;
-              const v = ps?.vatMaxQty;
-              if (!w && (v === undefined || v === null)) return null;
-              return (
-                <div className="shrink-0 self-center flex flex-col items-center gap-1.5">
-                  {w && (
-                    <span className={`px-5 py-2 bg-emerald-100 text-emerald-800 border-2 border-emerald-400 rounded-xl ${sz('packBig')} font-extrabold whitespace-nowrap shadow-sm`}>
-                      포장중량 {w.toLocaleString()}g
+        <div className="bg-white border-2 border-violet-300 rounded-2xl p-4 shadow-sm space-y-4">
+          {/* 정보 띠 — 포장중량 · 사용도구(냄비) 또는 1바트 수량 · 목표 바트 구성 */}
+          {(pw || (vat !== undefined && vat !== null)) && (
+            <div className="bg-slate-100 rounded-xl px-4 py-2.5 flex items-center gap-x-4 gap-y-2 flex-wrap">
+              {pw ? (
+                <span className="flex items-center gap-2">
+                  <span className={`${sz('chipLabel')} text-gray-500 font-semibold`}>포장중량</span>
+                  <span className={`px-3 py-1 rounded-lg bg-violet-100 text-violet-800 border border-violet-300 ${sz('chip')} font-extrabold tabular-nums`}>{pw.toLocaleString()}g</span>
+                </span>
+              ) : null}
+              {vat === 999 ? (
+                <span className="flex items-center gap-2">
+                  <span className={`${sz('chipLabel')} text-gray-500 font-semibold`}>사용도구</span>
+                  <span className={`px-3 py-1 rounded-lg bg-orange-100 text-orange-800 border border-orange-300 ${sz('chip')} font-extrabold`}>냄비</span>
+                </span>
+              ) : hasVat ? (
+                <>
+                  <span className="flex items-center gap-2">
+                    <span className={`${sz('chipLabel')} text-gray-500 font-semibold`}>1바트</span>
+                    <span className={`px-3 py-1 rounded-lg bg-sky-100 text-sky-800 border border-sky-300 ${sz('chip')} font-extrabold tabular-nums`}>{vat!.toLocaleString()}개</span>
+                  </span>
+                  {target > 0 && (
+                    <span className="flex items-center gap-2">
+                      <span className={`${sz('chipLabel')} text-gray-500 font-semibold`}>목표</span>
+                      <span className={`px-3 py-1 rounded-lg bg-amber-100 text-amber-800 border border-amber-300 ${sz('chip')} font-extrabold tabular-nums`}>
+                        {Math.floor(target / vat!)}바트{target % vat! > 0 ? ` + ${target % vat!}개` : ''}
+                      </span>
                     </span>
                   )}
-                  {v !== undefined && v !== null && (
-                    v === 999 ? (
-                      <span className={`px-3 py-0.5 bg-orange-100 text-orange-700 border border-orange-300 rounded-full ${sz('chip')} font-bold whitespace-nowrap`}>
-                        냄비
-                      </span>
-                    ) : (
-                      <span className={`px-3 py-0.5 bg-cyan-100 text-cyan-700 border border-cyan-300 rounded-full ${sz('chip')} font-bold whitespace-nowrap`}>
-                        1바트 = {v.toLocaleString()}개
-                      </span>
-                    )
-                  )}
-                </div>
-              );
-            })()}
-            <div className="flex items-center gap-3 shrink-0">
-              <button onClick={() => setTextScale((textScale + 1) % 4)}
-                title="글씨 크기 조정 (보통 → 크게 → 아주크게 → 최대)"
-                className="px-4 py-3 rounded-xl text-base font-bold border-2 border-gray-300 bg-white text-gray-600 hover:bg-gray-50 whitespace-nowrap active:scale-95 transition">
-                🔍 글씨 {['보통', '크게', '아주크게', '최대'][textScale]}
-              </button>
-              <button onClick={() => toggleRemix(cur.code, !remixSet.has(cur.code))}
-                className={`px-4 py-3 rounded-xl text-base font-bold border-2 whitespace-nowrap transition active:scale-95 ${
-                  remixSet.has(cur.code)
-                    ? 'bg-rose-500 text-white border-rose-500 shadow'
-                    : 'bg-white text-gray-500 border-gray-300 hover:bg-gray-50'
-                }`}>
-                {remixSet.has(cur.code) ? '☑ 재배합' : '☐ 재배합'}
-              </button>
-              <button onClick={() => setShowPicker(true)}
-                className="px-5 py-3 bg-violet-100 text-violet-700 border-2 border-violet-300 rounded-xl text-base font-bold hover:bg-violet-200 active:scale-95 transition whitespace-nowrap shadow-sm">
-                🔄 품목 변경
-              </button>
-            </div>
-          </div>
-
-          {/* 목표 바트 구성 배너 — 오늘 몇 바트 + 나머지 몇 개 */}
-          {(() => {
-            const v = prodMap.get(canonicalShort(cur.code))?.vatMaxQty;
-            if (!v || v === 999) return null;
-            const fullVats = Math.floor(target / v);
-            const partial = target - fullVats * v;
-            return (
-              <div className="mt-3 bg-amber-50 border-2 border-amber-300 rounded-xl px-4 py-3 flex items-center justify-center gap-2 flex-wrap">
-                <span className={`${sz('bannerLabel')} font-bold text-amber-700`}>오늘 목표 {target.toLocaleString()}개 =</span>
-                <span className={`${sz('bannerBig')} font-extrabold text-amber-800 tabular-nums`}>{fullVats}<span className={`${sz('bannerUnit')} ml-0.5`}>바트</span></span>
-                {partial > 0 && (
-                  <>
-                    <span className={`${sz('bannerUnit')} font-bold text-amber-500`}>+</span>
-                    <span className={`${sz('bannerBig')} font-extrabold text-amber-800 tabular-nums`}>{partial}<span className={`${sz('bannerUnit')} ml-0.5`}>개</span></span>
-                  </>
-                )}
-              </div>
-            );
-          })()}
-
-          {/* 진행률 큰 표시 */}
-          <div className="mt-4 grid grid-cols-3 gap-3 text-center">
-            <div className="bg-slate-50 rounded-lg p-3">
-              <div className={`${sz('kpiLabel')} text-gray-500`}>목표</div>
-              <div className={`${sz('kpiNum')} font-bold text-gray-800`}>{target.toLocaleString()}</div>
-            </div>
-            <div className="bg-emerald-50 rounded-lg p-3">
-              <div className={`${sz('kpiLabel')} text-emerald-700`}>현재</div>
-              <div className={`${sz('kpiNum')} font-bold text-emerald-700`}>{total.toLocaleString()}</div>
-            </div>
-            <div className={`rounded-lg p-3 ${remain > 0 ? 'bg-rose-50' : remain === 0 && total > 0 ? 'bg-emerald-50' : remain < 0 ? 'bg-violet-50' : 'bg-slate-50'}`}>
-              <div className={`${sz('kpiLabel')} ${remain > 0 ? 'text-rose-700' : remain === 0 && total > 0 ? 'text-emerald-700' : remain < 0 ? 'text-violet-700' : 'text-gray-500'}`}>{remain > 0 ? '부족' : remain < 0 ? '초과' : (total > 0 ? '완료' : '부족')}</div>
-              <div className={`${sz('kpiNum')} font-bold ${remain > 0 ? 'text-rose-700' : remain === 0 && total > 0 ? 'text-emerald-700' : remain < 0 ? 'text-violet-700' : 'text-gray-700'}`}>{Math.abs(remain).toLocaleString()}</div>
-            </div>
-          </div>
-
-          {/* 진행 바 — 현황판과 색 통일: 부족=빨강 / 완료=초록 / 초과=보라 */}
-          <div className="mt-3 h-4 bg-gray-100 rounded-full overflow-hidden">
-            <div
-              className={`h-full transition-all ${
-                target <= 0 ? 'bg-gray-300'
-                : remain > 0 ? 'bg-rose-500'
-                : remain === 0 ? 'bg-emerald-500'
-                : 'bg-violet-500'
-              }`}
-              style={{ width: `${target > 0 ? Math.min(100, (total / target) * 100) : 0}%` }}
-            />
-          </div>
-
-          {/* 작업자별 합계 (같은 풀) */}
-          {stat && stat.byWorker.size > 0 && (
-            <div className="mt-3 flex flex-wrap gap-2 text-xs">
-              {Array.from(stat.byWorker.entries())
-                .sort((a, b) => b[1] - a[1])
-                .map(([w, q]) => (
-                  <span key={w}
-                    className={`px-2 py-1 rounded-full ${w === worker ? 'bg-violet-600 text-white font-bold' : 'bg-gray-100 text-gray-600'}`}>
-                    {w} {q.toLocaleString()}
-                  </span>
-                ))}
+                </>
+              ) : null}
             </div>
           )}
 
-          {/* 큰 버튼들 */}
-          <div className="mt-5 grid grid-cols-2 gap-3">
-            <button onClick={() => addQty(20)} disabled={saving}
-              className={`py-8 bg-violet-600 text-white rounded-2xl ${sz('bigBtn')} font-bold hover:bg-violet-700 active:scale-95 disabled:opacity-50 transition shadow`}>
-              + 20
-            </button>
-            <button onClick={undoLast}
-              className={`py-8 bg-white border-2 border-rose-300 text-rose-600 rounded-2xl ${sz('subBtn')} font-bold hover:bg-rose-50 active:scale-95 transition`}>
-              ↶ 직전 취소
-            </button>
-          </div>
+          <div className={`grid grid-cols-1 ${twoCol} gap-4`}>
+            {/* 왼쪽 — 품목 · 숫자 · 진행 막대 · 작업자 */}
+            <div className="space-y-3 min-w-0">
+              <div>
+                <div className={`${sz('code')} text-violet-600 font-bold tabular-nums`}>{cur.code}</div>
+                <div className={`${sz('name')} font-bold text-gray-900 leading-tight truncate`}>{cleanName(cur.name || cur.code)}</div>
+              </div>
+              <div className="grid grid-cols-3 gap-2 text-center">
+                <div className="bg-slate-50 rounded-xl py-3">
+                  <div className={`${sz('kpiLabel')} text-gray-500`}>목표</div>
+                  <div className={`${sz('kpiNum')} font-bold text-gray-900 tabular-nums leading-tight`}>{target.toLocaleString()}</div>
+                </div>
+                <div className="bg-emerald-50 rounded-xl py-3">
+                  <div className={`${sz('kpiLabel')} text-emerald-700`}>현재</div>
+                  <div className={`${sz('kpiNum')} font-bold text-emerald-700 tabular-nums leading-tight`}>{total.toLocaleString()}</div>
+                </div>
+                <div className={`rounded-xl py-3 ${stBox}`}>
+                  <div className={`${sz('kpiLabel')} ${stText}`}>{st === 'over' ? '초과' : st === 'done' ? '완료' : '부족'}</div>
+                  <div className={`${sz('kpiNum')} font-bold tabular-nums leading-tight ${stText}`}>{Math.abs(remain).toLocaleString()}</div>
+                </div>
+              </div>
+              <div className="h-5 bg-gray-100 rounded-full overflow-hidden">
+                <div className={`h-full transition-all ${stBar}`}
+                  style={{ width: `${target > 0 ? Math.min(100, (total / target) * 100) : 0}%` }} />
+              </div>
+              {stat && stat.byWorker.size > 0 && (
+                <div className="flex flex-wrap gap-1.5">
+                  {Array.from(stat.byWorker.entries())
+                    .sort((a, b) => b[1] - a[1])
+                    .map(([w, q]) => (
+                      <span key={w}
+                        className={`px-2.5 py-1 rounded-full tabular-nums ${sz('workerChip')} ${w === worker ? 'bg-violet-600 text-white font-bold' : 'bg-gray-100 text-gray-700'}`}>
+                        {w} {q.toLocaleString()}
+                      </span>
+                    ))}
+                </div>
+              )}
+              <div className={`${sz('mine')} text-gray-600`}>
+                내 합계(<span className="font-bold text-violet-700">{worker}</span>): <span className="font-bold text-violet-700 tabular-nums">{myCount.toLocaleString()}</span>개
+              </div>
+            </div>
 
-          {/* 낱개 입력 */}
-          <div className="mt-3 bg-slate-50 border rounded-lg p-3 flex items-center gap-2">
-            <span className={`${sz('manualLabel')} text-gray-600`}>낱개</span>
-            <input type="number" inputMode="numeric" value={manualQty || ''} onChange={(e) => setManualQty(Number(e.target.value) || 0)}
-              className={`flex-1 border rounded px-3 py-2 text-center font-bold ${sz('manualInput')}`} placeholder="예: 6" />
-            <button onClick={async () => { if (manualQty > 0) { await addQty(manualQty); setManualQty(0); } }}
-              disabled={saving || manualQty <= 0}
-              className="px-5 py-2 bg-emerald-600 text-white rounded font-bold hover:bg-emerald-700 disabled:bg-gray-300">
-              + 추가
-            </button>
-          </div>
-
-          {/* 내 합계 */}
-          <div className={`mt-3 text-center ${sz('mine')} text-gray-600`}>
-            내 합계 (<span className="font-bold text-violet-700">{worker}</span>): <span className="font-bold text-violet-700">{myCount.toLocaleString()}</span> 개
+            {/* 오른쪽 — 큰 버튼 (손 쪽) */}
+            <div className="space-y-3">
+              <div className="grid grid-cols-2 gap-3">
+                <button onClick={() => addQty(20)}
+                  className={`min-h-[120px] bg-violet-600 text-white rounded-2xl ${sz('bigBtn')} font-bold active:scale-95 active:bg-violet-700 transition shadow tabular-nums`}>
+                  + 20
+                </button>
+                <button onClick={undoLast}
+                  className={`min-h-[120px] px-2 bg-white border-2 border-rose-400 text-rose-600 rounded-2xl ${sz('undoBtn')} leading-tight font-bold active:scale-95 active:bg-rose-50 transition`}>
+                  ↶ 직전 취소
+                </button>
+              </div>
+              {/* 낱개 — 20개 단위가 아닌 나머지. 숫자칸을 누를 때만 키보드가 뜬다 */}
+              <div className="bg-slate-50 border rounded-xl p-3 flex items-center gap-2">
+                <span className={`${sz('manualLabel')} text-gray-600 font-semibold`}>낱개</span>
+                <input type="number" inputMode="numeric" value={manualQty || ''} onChange={(e) => setManualQty(Number(e.target.value) || 0)}
+                  className={`flex-1 min-w-0 border rounded-lg px-3 py-2 text-center font-bold tabular-nums ${sz('manualInput')}`} placeholder="예: 6" />
+                <button onClick={() => { if (manualQty > 0) { addQty(manualQty); setManualQty(0); } }}
+                  disabled={manualQty <= 0}
+                  className={`px-5 py-3 bg-emerald-600 text-white rounded-lg font-bold ${sz('manualLabel')} active:scale-95 disabled:bg-gray-300`}>
+                  + 추가
+                </button>
+              </div>
+            </div>
           </div>
         </div>
       )}
 
       {/* 품목 선택 모달 */}
       {showPicker && (
-        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-          <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl h-[80vh] flex flex-col overflow-hidden">
+        <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-3" onClick={() => setShowPicker(false)}>
+          <div className="bg-white rounded-xl shadow-2xl w-full max-w-3xl h-[92vh] flex flex-col overflow-hidden" onClick={(e) => e.stopPropagation()}>
             <div className="px-5 py-3 border-b flex items-center justify-between bg-violet-50">
               <h3 className="font-bold text-lg">품목 선택</h3>
-              <button onClick={() => setShowPicker(false)} className="w-8 h-8 rounded-full hover:bg-gray-200 text-gray-500">×</button>
+              <button onClick={() => setShowPicker(false)} aria-label="닫기" className="w-11 h-11 rounded-full text-2xl text-gray-500 active:bg-gray-200">×</button>
             </div>
             <div className="p-3 border-b space-y-2">
               <input value={search} onChange={(e) => setSearch(e.target.value)}
                 placeholder="🔍 코드 또는 품목명…"
                 className="w-full border rounded-lg px-4 py-3 text-lg" />
-              {/* 단계 탭 */}
+              {/* 단계 탭 — 그날 있는 단계만 */}
               <div className="flex flex-wrap gap-2">
                 <button onClick={() => setStageFilter('')}
-                  className={`px-4 py-2.5 rounded-lg ${sz('pickerTab')} font-bold active:scale-95 transition ${stageFilter === '' ? 'bg-violet-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
+                  className={`px-4 py-2.5 rounded-lg ${sz('pickerTab')} font-bold active:scale-95 transition ${stageFilter === '' ? 'bg-violet-600 text-white' : 'bg-gray-100 text-gray-600'}`}>
                   전체
                 </button>
                 {presentStages.map((s) => (
                   <button key={s} onClick={() => setStageFilter(s)}
-                    className={`px-4 py-2.5 rounded-lg ${sz('pickerTab')} font-bold active:scale-95 transition ${stageFilter === s ? 'bg-violet-600 text-white' : 'bg-gray-100 text-gray-600 hover:bg-gray-200'}`}>
-                    {s === 'F500' ? 'F-500' : s}
+                    className={`px-4 py-2.5 rounded-lg ${sz('pickerTab')} font-bold active:scale-95 transition ${stageFilter === s ? 'bg-violet-600 text-white' : 'bg-gray-100 text-gray-600'}`}>
+                    {s}
                   </button>
                 ))}
               </div>
             </div>
-            <div className="flex-1 overflow-y-auto">
+            <div className="flex-1 overflow-y-auto overscroll-contain">
               {filtered.length === 0 ? (
                 <div className="p-12 text-center text-gray-400">{items.length === 0 ? '오늘 등록된 품목이 없습니다.' : '검색 결과가 없습니다.'}</div>
               ) : (
@@ -457,24 +499,24 @@ function TabletView({
                     const tg = it.totalQty || 0;
                     const pct = tg > 0 ? Math.min(100, (done / tg) * 100) : 0;
                     const workerCount = s?.byWorker.size || 0;
-                    // 현황판과 동일 색: 남음=빨강 / 완료=초록 / 초과=보라 (목표0=회색)
-                    const remain = tg - done;
+                    // 부족 빨강 · 딱 맞음 초록 · 초과 보라 (목표 0 = 회색)
+                    const r = tg - done;
                     const started = done > 0;
-                    const bar = tg <= 0 ? 'bg-gray-300' : remain > 0 ? 'bg-rose-500' : remain === 0 ? 'bg-emerald-500' : 'bg-violet-500';
-                    const numCls = !started ? 'text-gray-500' : remain > 0 ? 'text-rose-600' : remain === 0 ? 'text-emerald-700' : 'text-violet-700';
+                    const bar = tg <= 0 ? 'bg-gray-300' : r > 0 ? 'bg-rose-500' : r === 0 ? 'bg-emerald-500' : 'bg-violet-500';
+                    const numCls = !started ? 'text-gray-500' : r > 0 ? 'text-rose-600' : r === 0 ? 'text-emerald-700' : 'text-violet-700';
                     return (
                       <li key={it.code}>
                         <button onClick={() => { setPicked(it.code); setShowPicker(false); setSearch(''); }}
-                          className="w-full text-left px-4 py-4 hover:bg-violet-50 active:bg-violet-100 flex items-center gap-3">
+                          className={`w-full text-left px-4 py-4 active:bg-violet-100 flex items-center gap-4 ${it.code === picked ? 'bg-violet-50' : ''}`}>
                           <div className="flex-1 min-w-0">
-                            <div className={`${sz('pickerCode')} font-bold text-violet-600 font-mono`}>{it.code}</div>
-                            <div className={`${sz('pickerName')} font-semibold truncate`}>{it.name}</div>
+                            <div className={`${sz('pickerCode')} font-bold text-violet-600 tabular-nums`}>{it.code}</div>
+                            <div className={`${sz('pickerName')} font-bold text-gray-900 truncate`}>{cleanName(it.name)}</div>
                             <div className="mt-1.5 h-2 bg-gray-100 rounded-full overflow-hidden">
                               <div className={`h-full ${bar}`} style={{ width: `${pct}%` }} />
                             </div>
                           </div>
                           <div className="text-right whitespace-nowrap">
-                            <div className={sz('pickerQty')}>
+                            <div className={`${sz('pickerQty')} tabular-nums`}>
                               <span className={`font-bold ${numCls}`}>{done.toLocaleString()}</span>
                               <span className="text-gray-400"> / {tg.toLocaleString()}</span>
                             </div>
@@ -490,21 +532,56 @@ function TabletView({
           </div>
         </div>
       )}
+      {toastEl}
     </div>
   );
 }
 
+/** 작업자 이름 — 근태에 등록된 인원이 자동완성으로 뜬다. 근태에 없는 사람은 「외부인원」 체크 후 입력 */
 function WorkerSetup({ onSet }: { onSet: (w: string) => void }) {
   const [v, setV] = useState('');
+  const [outsider, setOutsider] = useState(false);
+  const [names, setNames] = useState<string[] | null>(null);   // null = 불러오는 중
+  useEffect(() => {
+    getDocs(collection(db, 'members')).then((snap) => {
+      const a: string[] = [];
+      snap.forEach((d) => { const m = d.data() as Member; if (m.name?.trim() && m.active !== false) a.push(m.name.trim()); });
+      setNames([...new Set(a)].sort((x, y) => x.localeCompare(y, 'ko')));
+    }).catch(() => setNames([]));
+  }, []);
+  const t = v.trim();
+  const known = !!names && names.includes(t);
+  // 근태 명단을 못 불러왔으면(인터넷 등) 막지 않는다
+  const noList = names !== null && names.length === 0;
+  const canStart = !!t && (outsider || known || noList);
+  const sugg = t && names ? names.filter((n) => n.includes(t) && n !== t).slice(0, 8) : [];
+  const start = () => { if (canStart) onSet(t); };
   return (
-    <div className="flex gap-2">
-      <input value={v} onChange={(e) => setV(e.target.value)} placeholder="이름"
-        className="flex-1 border rounded-lg px-4 py-3 text-lg" autoFocus
-        onKeyDown={(e) => { if (e.key === 'Enter' && v.trim()) onSet(v.trim()); }} />
-      <button onClick={() => v.trim() && onSet(v.trim())} disabled={!v.trim()}
-        className="px-5 py-3 bg-violet-600 text-white rounded-lg font-bold disabled:bg-gray-300">
-        시작
-      </button>
+    <div className="space-y-3">
+      <div className="flex gap-2">
+        <input value={v} onChange={(e) => setV(e.target.value)} placeholder="이름"
+          className="flex-1 min-w-0 border-2 rounded-lg px-4 py-3 text-lg" autoFocus
+          onKeyDown={(e) => { if (e.key === 'Enter' && !e.nativeEvent.isComposing) start(); }} />
+        <button onClick={start} disabled={!canStart}
+          className="px-5 py-3 bg-violet-600 text-white rounded-lg font-bold text-lg disabled:bg-gray-300">
+          시작
+        </button>
+      </div>
+      {sugg.length > 0 && (
+        <div className="grid grid-cols-2 gap-2">
+          {sugg.map((n) => (
+            <button key={n} onClick={() => setV(n)}
+              className="py-3 rounded-lg border-2 border-violet-200 bg-violet-50 text-violet-800 font-bold text-lg active:scale-95">{n}</button>
+          ))}
+        </div>
+      )}
+      {t && !known && !outsider && !noList && names !== null && sugg.length === 0 && (
+        <div className="text-sm text-rose-600">근태에 없는 이름입니다. 외부인원이면 아래를 체크하세요.</div>
+      )}
+      <label className="flex items-center gap-2 text-sm text-gray-700">
+        <input type="checkbox" checked={outsider} onChange={(e) => setOutsider(e.target.checked)} className="w-5 h-5" />
+        외부인원 (근태 미등록자도 입력 가능)
+      </label>
     </div>
   );
 }
