@@ -7,7 +7,7 @@ import {
   CART_COL, CHANNELS, CH_SHORT, CH_STYLE, cartMinutes, splitByDate, unlockAudio, chime, fmtLeft, hhmm, nextFreeSlot, slotLabel, useCoolingConfig,
 } from '../lib/cooling';
 import type { CartItem, Channel, CoolingCart, RoomConfig } from '../lib/cooling';
-import { useActiveCarts, useDayCarts, usePendingCards } from '../lib/coolingData';
+import { setCardsChannel, splitCard, unsplitCard, useActiveCarts, useDayCarts, usePendingCards } from '../lib/coolingData';
 import type { PendingCard } from '../lib/coolingData';
 import CoolingRoomMap from '../components/CoolingRoomMap';
 import WorkDateNav, { useWorkDate } from '../components/WorkDateNav';
@@ -29,7 +29,8 @@ export default function CoolingInput() {
   const { cards, loaded } = usePendingCards(date, dayCarts, sorted);
 
   const [sel, setSel] = useState<Set<string>>(new Set());
-  const [chFilter, setChFilter] = useState<Channel | '전체'>('전체');
+  // 미선택 = 추가 생산·나눈 카드 중 아직 채널을 안 고른 것
+  const [chFilter, setChFilter] = useState<Channel | '전체' | '미선택'>('전체');
   // 외포장 1·2·3 — 여러 개 고를 수 있고, 아무것도 안 고르면 전체
   const [packFilter, setPackFilter] = useState<Set<number>>(() => {
     try { return new Set(JSON.parse(localStorage.getItem('coolPackFilter') || '[]')); } catch { return new Set(); }
@@ -48,7 +49,15 @@ export default function CoolingInput() {
   const [sound, setSound] = useState(() => { try { return localStorage.getItem('coolSound') !== 'off'; } catch { return true; } });
 
   const selCards = cards.filter((c) => sel.has(c.key));
+  // 고른 카드들의 채널 (모두 같다) — null 이면 채널을 아직 안 고른 추가 생산·나눈 카드
   const selChannel = selCards[0]?.channel;
+  // 하단 바에서 고르는 채널 (추가 생산·나눈 카드) — 고른 카드가 바뀌면 그 카드의 채널로 다시 맞춘다
+  const [pickCh, setPickCh] = useState<Channel | null>(null);
+  const selSig = selCards.map((c) => c.key).join(',');
+  useEffect(() => { setPickCh(selChannel ?? null); }, [selSig]); // eslint-disable-line react-hooks/exhaustive-deps
+  const canPick = selCards.length > 0 && selCards.every((c) => c.kind !== 'plan');
+  const goChannel = canPick ? pickCh : (selChannel ?? null);   // 대차에 실을 채널
+  const [inCh, setInCh] = useState<Channel | null>(null);       // 입고 창을 연 채널
   // 카드가 사라지면(다른 태블릿에서 입고 등) 선택도 정리
   useEffect(() => {
     const keys = new Set(cards.map((c) => c.key));
@@ -59,8 +68,8 @@ export default function CoolingInput() {
     chime('tap');
     setSel((s) => {
       const n = new Set(s);
-      // 대차 1대 = 채널 1개 — 다른 채널을 누르면 그 채널로 새로 고른다
-      if (selChannel && selChannel !== c.channel) return new Set([c.key]);
+      // 대차 1대 = 채널 1개 — 다른 채널을 누르면 그 채널로 새로 고른다 (채널 미선택 카드끼리는 같이 고를 수 있다)
+      if (selCards.length > 0 && selChannel !== c.channel) return new Set([c.key]);
       if (n.has(c.key)) n.delete(c.key); else n.add(c.key);
       return n;
     });
@@ -156,7 +165,9 @@ export default function CoolingInput() {
   };
 
   const byPack = packFilter.size === 0 ? cards : cards.filter((c) => c.packs.some((p) => packFilter.has(p)));
-  const byCh = chFilter === '전체' ? byPack : byPack.filter((c) => c.channel === chFilter);
+  const byCh = chFilter === '전체' ? byPack
+    : chFilter === '미선택' ? byPack.filter((c) => c.channel === null) : byPack.filter((c) => c.channel === chFilter);
+  const unassignedN = byPack.filter((c) => c.channel === null).length;
   // 검색: 숫자만 → 코드 번호가 같은 것 (63 → E63, F63). 없으면 그 숫자로 시작하는 것. 글자가 섞이면 코드·이름 포함
   const filtered = (() => {
     const t = q.trim().toLowerCase();
@@ -238,6 +249,12 @@ export default function CoolingInput() {
                 {ch}{ch !== '전체' && ` ${byPack.filter((c) => c.channel === ch).length}`}
               </button>
             ))}
+            {(unassignedN > 0 || chFilter === '미선택') && (
+              <button onClick={() => setChFilter('미선택')}
+                className={`px-2.5 py-1 text-xs rounded-full border-2 border-dashed font-bold ${chFilter === '미선택' ? 'bg-amber-500 text-white border-amber-500' : 'bg-amber-50 border-amber-400 text-amber-800'}`}>
+                채널 미선택 {unassignedN}
+              </button>
+            )}
           </div>
         </div>
         <div className="px-3 pt-3 flex items-center gap-2 flex-wrap">
@@ -275,49 +292,78 @@ export default function CoolingInput() {
                 (() => {
                   const ORDER = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I'];
                   const letterOf = (code: string) => (code.match(/[A-Za-z]/)?.[0] || '#').toUpperCase();
-                  const byCode = new Map<string, typeof filtered>();
-                  filtered.forEach((c) => byCode.set(c.code, [...(byCode.get(c.code) || []), c]));   // 이미 번호순 → 채널순
-                  const cols = new Map<string, string[]>();
-                  [...byCode.keys()].forEach((code) => { const L = letterOf(code); cols.set(L, [...(cols.get(L) || []), code]); });
+                  // 카드 묶음(타일): 생산계획 카드는 코드당 하나(채널은 칩), 추가 생산·나눈 카드는 한 장씩 따로
+                  type Tile = { id: string; code: string; kind: PendingCard['kind']; list: typeof filtered };
+                  const tiles: Tile[] = [];
+                  const planTile = new Map<string, Tile>();
+                  filtered.forEach((c) => {                                  // 이미 번호순 → 생산계획 → 추가·나눔
+                    if (c.kind === 'plan') {
+                      const t = planTile.get(c.code);
+                      if (t) { t.list.push(c); return; }
+                      const nt: Tile = { id: c.code, code: c.code, kind: 'plan', list: [c] };
+                      planTile.set(c.code, nt); tiles.push(nt);
+                    } else tiles.push({ id: c.key, code: c.code, kind: c.kind, list: [c] });
+                  });
+                  const cols = new Map<string, Tile[]>();
+                  tiles.forEach((t) => { const L = letterOf(t.code); cols.set(L, [...(cols.get(L) || []), t]); });
                   const extra = [...cols.keys()].filter((L) => !ORDER.includes(L)).sort();
                   const letters = [...ORDER, ...extra];
+                  const dimOf = (c: PendingCard) => selCards.length > 0 && selChannel !== c.channel;
+                  const chip = (c: PendingCard, onClick?: (e: React.MouseEvent) => void) => {
+                    const on = sel.has(c.key);
+                    if (!c.channel) {
+                      return (
+                        <span key={c.key} onClick={onClick}
+                          className={`px-1.5 py-0.5 rounded-md text-[11px] font-bold leading-4 border border-dashed ${on ? 'bg-amber-500 text-white border-amber-500' : 'bg-amber-50 text-amber-800 border-amber-400'} ${dimOf(c) ? 'opacity-35' : ''}`}>
+                          {on ? '✔ ' : ''}채널 선택
+                        </span>
+                      );
+                    }
+                    const st = CH_STYLE[c.channel];
+                    return (
+                      <button key={c.key} type="button" onClick={onClick}
+                        className={`px-1.5 py-0.5 rounded-md text-[11px] font-bold leading-4 border transition
+                          ${on ? `${st.bg} text-white border-transparent` : `bg-white ${st.text} ${st.border}`} ${dimOf(c) ? 'opacity-35' : ''}`}>
+                        {on ? '✔ ' : ''}{CH_SHORT[c.channel]}
+                      </button>
+                    );
+                  };
                   return (
                     <div className="grid gap-x-2" style={{ gridTemplateColumns: `repeat(${letters.length}, minmax(6.5rem, 1fr))` }}>
                       {letters.map((L) => {
-                        const codes = cols.get(L) || [];
+                        const ts = cols.get(L) || [];
                         return (
                           <div key={L} className="min-w-0">
-                            <div className={`sticky top-0 z-10 bg-white pt-3 pb-1 mb-1.5 text-center border-b-2 ${codes.length ? 'border-gray-400' : 'border-gray-200'}`}>
-                              <span className={`text-lg font-extrabold ${codes.length ? 'text-gray-800' : 'text-gray-300'}`}>{L}</span>
-                              {codes.length > 0 && <span className="ml-1 text-[11px] text-gray-500">{codes.length}</span>}
+                            <div className={`sticky top-0 z-10 bg-white pt-3 pb-1 mb-1.5 text-center border-b-2 ${ts.length ? 'border-gray-400' : 'border-gray-200'}`}>
+                              <span className={`text-lg font-extrabold ${ts.length ? 'text-gray-800' : 'text-gray-300'}`}>{L}</span>
+                              {ts.length > 0 && <span className="ml-1 text-[11px] text-gray-500">{ts.length}</span>}
                             </div>
                             <div className="space-y-1.5">
-                              {codes.map((code) => {
-                                const list = byCode.get(code)!;
+                              {ts.map((t) => {
+                                const list = t.list;
                                 const anyOn = list.some((c) => sel.has(c.key));
                                 const single = list.length === 1;
+                                const one = list[0];
+                                // 추가 생산 = 연한 초록, 나눈 카드 = 연한 하늘색
+                                const tone = t.kind === 'add' ? 'bg-emerald-50' : t.kind === 'split' ? 'bg-sky-50' : 'bg-white';
+                                const edge = anyOn ? 'border-blue-500 ring-2 ring-blue-400'
+                                  : t.kind === 'add' ? 'border-emerald-300' : t.kind === 'split' ? 'border-sky-300' : 'border-gray-200';
                                 return (
-                                  <div key={code}
-                                    onClick={single ? () => toggle(list[0]) : undefined}
-                                    title={`${list[0].name} · ${list.map((c) => `${c.channel} ${c.remain.toLocaleString()}개`).join(' / ')}`}
-                                    className={`relative rounded-xl bg-white border shadow-sm px-1.5 pt-2 pb-1.5 text-center transition
-                                      ${anyOn ? 'border-blue-500 ring-2 ring-blue-400' : 'border-gray-200'} ${single ? 'cursor-pointer active:scale-[0.97]' : ''}`}>
+                                  <div key={t.id}
+                                    onClick={single ? () => toggle(one) : undefined}
+                                    title={`${one.name} · ${list.map((c) => `${c.channel || '채널 미선택'} ${c.remain.toLocaleString()}개`).join(' / ')}`}
+                                    className={`relative rounded-xl ${tone} border shadow-sm px-1.5 pt-2 pb-1.5 text-center transition ${edge} ${single ? 'cursor-pointer active:scale-[0.97]' : ''}`}>
                                     {anyOn && <span className="absolute left-1.5 top-0.5 text-blue-600 text-sm font-bold">✔</span>}
-                                    <div className="font-mono font-extrabold text-[26px] leading-none text-gray-900 tracking-tight">{code}</div>
+                                    <div className="font-mono font-extrabold text-[26px] leading-none text-gray-900 tracking-tight">{t.code}</div>
+                                    {t.kind !== 'plan' && (
+                                      <div className={`mt-1 text-[11px] font-bold ${t.kind === 'add' ? 'text-emerald-700' : 'text-sky-700'}`}>
+                                        {t.kind === 'add' ? '추가생산' : '나눔'} {one.remain.toLocaleString()}개
+                                      </div>
+                                    )}
                                     <div className="mt-1.5 flex flex-wrap justify-center gap-1">
-                                      {list.map((c) => {
-                                        const st = CH_STYLE[c.channel];
-                                        const on = sel.has(c.key);
-                                        const dim = !!selChannel && selChannel !== c.channel;
-                                        return (
-                                          <button key={c.key} type="button"
-                                            onClick={(e) => { e.stopPropagation(); toggle(c); }}
-                                            className={`px-1.5 py-0.5 rounded-md text-[11px] font-bold leading-4 border transition
-                                              ${on ? `${st.bg} text-white border-transparent` : `bg-white ${st.text} ${st.border}`} ${dim ? 'opacity-35' : ''}`}>
-                                            {on ? '✔ ' : ''}{CH_SHORT[c.channel]}
-                                          </button>
-                                        );
-                                      })}
+                                      {t.kind === 'plan'
+                                        ? list.map((c) => chip(c, (e) => { e.stopPropagation(); toggle(c); }))
+                                        : chip(one)}
                                     </div>
                                   </div>
                                 );
@@ -401,19 +447,74 @@ export default function CoolingInput() {
         );
       })()}
 
-      {/* 하단 고정 — 선택한 카드 입고 */}
-      {selCards.length > 0 && (
-        <div className="fixed bottom-0 inset-x-0 z-40 bg-white border-t shadow-2xl px-4 py-3 flex items-center gap-3">
-          <span className={`px-2 py-1 rounded text-white font-bold ${CH_STYLE[selChannel!].bg}`}>{selChannel}</span>
-          <span className="font-bold">{selCards.length}개 품목 선택</span>
-          <span className="text-sm text-gray-600 truncate">{selCards.map((c) => c.code).join(', ')}</span>
-          <button onClick={() => setSel(new Set())} className="ml-auto px-3 py-2 border rounded">선택 해제</button>
-          <button onClick={() => setShowIn(true)} className="px-6 py-3 bg-blue-600 text-white rounded-lg text-lg font-bold">대차에 실어 입고 →</button>
-        </div>
-      )}
+      {/* 하단 고정 — 선택한 카드 입고 · 채널 선택(추가 생산·나눈 카드) · 카드 나누기 */}
+      {selCards.length > 0 && (() => {
+        const one = selCards.length === 1 ? selCards[0] : null;
+        const canSplit = !!one && one.remain >= 2;
+        const canUnsplit = !!one && one.kind === 'split' && one.inQty === 0 && one.splitOut === 0;
+        const changing = canPick && !!pickCh && pickCh !== selChannel;
+        const label = (c: PendingCard) => (c.kind === 'plan' ? c.code : `${c.code}(${c.kind === 'add' ? '추가' : '나눔'} ${c.remain})`);
+        // 채널만 정한다 — 카드 아래 칩이 그 채널로 바뀌고, 나중에 같은 채널끼리 골라 한 대차로
+        const assign = () => {
+          if (!pickCh) return;
+          fire(setCardsChannel(date, selCards, pickCh), '채널 지정');
+          showToast(`${selCards.map(label).join(', ')} → ${pickCh}`);
+          setSel(new Set());
+        };
+        return (
+          <div className="fixed bottom-0 inset-x-0 z-40 bg-white border-t shadow-2xl px-4 py-3 flex items-center gap-2 flex-wrap">
+            {selChannel
+              ? <span className={`px-2 py-1 rounded text-white font-bold ${CH_STYLE[selChannel].bg}`}>{selChannel}</span>
+              : <span className="px-2 py-1 rounded border-2 border-dashed border-amber-400 bg-amber-50 text-amber-800 font-bold">채널 미선택</span>}
+            <span className="font-bold">{selCards.length}개 선택</span>
+            <span className="text-sm text-gray-600 truncate max-w-[28vw]">{selCards.map(label).join(', ')}</span>
+            <div className="ml-auto flex items-center gap-2 flex-wrap justify-end">
+              {canPick && (
+                <div className="flex items-center gap-1 px-2 py-1 rounded-lg bg-amber-50 border border-amber-300">
+                  <span className="text-xs font-bold text-amber-800 mr-0.5">채널 선택</span>
+                  {CHANNELS.map((ch) => (
+                    <button key={ch} onClick={() => { chime('tap'); setPickCh(ch); }}
+                      className={`px-2.5 py-1.5 rounded-md text-sm font-bold border-2 ${pickCh === ch ? `${CH_STYLE[ch].bg} text-white border-transparent` : `bg-white ${CH_STYLE[ch].text} ${CH_STYLE[ch].border}`}`}>
+                      {CH_SHORT[ch]}
+                    </button>
+                  ))}
+                  <button disabled={!changing} onClick={assign}
+                    className="ml-1 px-3 py-1.5 rounded-md bg-amber-500 text-white font-bold disabled:opacity-40">확인</button>
+                </div>
+              )}
+              {canUnsplit && (
+                <button onClick={() => {
+                  fire(unsplitCard(date, one!), '나누기 취소');
+                  setSel(new Set());
+                  showToast(`${one!.code} 나눈 카드 ${one!.remain}개 → 원래 카드로 되돌림`);
+                }} className="px-3 py-2 rounded border-2 border-sky-300 text-sky-700 font-bold">나누기 취소</button>
+              )}
+              {canSplit && (
+                <button onClick={() => {
+                  chime('tap');
+                  const r = splitCard(date, one!);
+                  fire(r.done, '카드 나누기');
+                  setSel(new Set([r.key]));                  // 새 카드를 골라 둔다 → 바로 채널 선택
+                  showToast(`${one!.code} 카드를 ${one!.remain - r.qty}개 + ${r.qty}개로 나눴습니다 — 새 카드(하늘색)의 채널을 고르세요`,
+                    () => { fire(r.undo(), '나누기 되돌리기'); setToast(null); });
+                }} className="px-3 py-2 rounded border-2 border-sky-400 text-sky-700 font-bold">✂ 카드 두 개로 나누기</button>
+              )}
+              <button onClick={() => setSel(new Set())} className="px-3 py-2 border rounded">선택 해제</button>
+              <button disabled={!goChannel} onClick={() => {
+                if (!goChannel) return;
+                if (changing) fire(setCardsChannel(date, selCards, goChannel), '채널 지정');
+                setInCh(goChannel);
+                setShowIn(true);
+              }} className="px-6 py-3 bg-blue-600 text-white rounded-lg text-lg font-bold disabled:bg-gray-300">
+                {goChannel ? '대차에 실어 입고 →' : '채널을 먼저 고르세요'}
+              </button>
+            </div>
+          </div>
+        );
+      })()}
 
-      {showIn && selChannel && (
-        <InboundModal cards={selCards} channel={selChannel} rooms={cfg.rooms} active={active} waiting={waitingAll}
+      {showIn && inCh && (
+        <InboundModal cards={selCards} channel={inCh} rooms={cfg.rooms} active={active} waiting={waitingAll}
           minutes={cartMinutes(cfg, selCards.map((c) => c.code))}
           onClose={() => setShowIn(false)}
           onSubmit={async (cartNo, room) => {
@@ -421,8 +522,8 @@ export default function CoolingInput() {
               // 대기 — 냉각실·타이머 없이 대차 내용만 저장
               const ref = doc(collection(db, CART_COL));
               fire(setDoc(ref, {
-                date, cartNo, room: 0, slot: -1, channel: selChannel,
-                items: selCards.map((c) => ({ code: c.code, name: c.name, qty: c.remain })),
+                date, cartNo, room: 0, slot: -1, channel: inCh,
+                items: selCards.map((c) => ({ code: c.code, name: c.name, qty: c.remain, src: c.key })),
                 startAt: 0, endAt: 0, durationMin: 0, out: false, waiting: true, waitAt: Date.now(),
               }), '대기');
               setShowIn(false); setSel(new Set());
@@ -435,8 +536,8 @@ export default function CoolingInput() {
             const slot = nextFreeSlot(r, active);
             const ref = doc(collection(db, CART_COL));
             fire(setDoc(ref, {
-              date, cartNo, room, slot, channel: selChannel,
-              items: selCards.map((c) => ({ code: c.code, name: c.name, qty: c.remain })),
+              date, cartNo, room, slot, channel: inCh,
+              items: selCards.map((c) => ({ code: c.code, name: c.name, qty: c.remain, src: c.key })),
               startAt: start, endAt: start + min * 60_000, durationMin: min, out: false,
             }), '입고');
             setShowIn(false); setSel(new Set());
@@ -482,10 +583,10 @@ export default function CoolingInput() {
             setAsk({ title: `${c.cartNo}번 대차 출고`, msg: `아직 냉각 중입니다 (${fmtLeft(c.endAt - now)} 남음).\n그래도 출고할까요?`, ok: '출고', danger: true, onOk: () => release(c) });
           }}
           onMove={() => { setMoving(detail); setDetail(null); }}
-          onRemoveItems={(codes) => {
+          onRemoveItems={(keys) => {
             const c = active.find((x) => x.id === detail.id) || detail;
-            const gone = c.items.filter((i) => codes.includes(i.code));
-            const rest = c.items.filter((i) => !codes.includes(i.code));
+            const gone = c.items.filter((i) => keys.includes(itemKey(i)));
+            const rest = c.items.filter((i) => !keys.includes(itemKey(i)));
             if (gone.length === 0) return;
             if (rest.length === 0) {
               // 다 빼면 빈 대차가 되므로 입고 취소와 같다
@@ -617,10 +718,19 @@ function RoomPick({ rooms, active, room, setRoom, allowWait }: {
   );
 }
 
+/** 대차 품목 한 줄의 key — 같은 품목이 추가 생산·나눈 카드로 두 줄 실릴 수 있어 출처 카드(src)로 구분한다 */
+const itemKey = (i: { code: string; src?: string }) => i.src || i.code;
+/** 출처 카드 표시 (추가 생산 · 나눈 카드) */
+function SrcTag({ src }: { src?: string }) {
+  if (src?.startsWith('add:')) return <span className="px-1 rounded bg-emerald-100 text-emerald-800 text-[10px] font-bold shrink-0">추가생산</span>;
+  if (src?.startsWith('split:')) return <span className="px-1 rounded bg-sky-100 text-sky-800 text-[10px] font-bold shrink-0">나눔</span>;
+  return null;
+}
+
 function ItemList({ items, title, selected, onToggle, hint }: {
-  items: { code: string; name: string; qty: number }[]; title: string;
-  /** 주면 줄을 눌러 고를 수 있다 (냉각 중 품목 빼기) */
-  selected?: Set<string>; onToggle?: (code: string) => void; hint?: string;
+  items: { code: string; name: string; qty: number; src?: string }[]; title: string;
+  /** 주면 줄을 눌러 고를 수 있다 (냉각 중 품목 빼기) — 줄 key(itemKey)로 고른다 */
+  selected?: Set<string>; onToggle?: (key: string) => void; hint?: string;
 }) {
   return (
     <div>
@@ -629,16 +739,17 @@ function ItemList({ items, title, selected, onToggle, hint }: {
       </div>
       <div className="border rounded-lg divide-y max-h-48 overflow-y-auto overscroll-contain">
         {items.map((i) => {
-          const on = !!selected?.has(i.code);
+          const k = itemKey(i);
+          const on = !!selected?.has(k);
           const row = (
             <>
               {onToggle && <span className={`w-5 h-5 rounded border-2 flex items-center justify-center text-xs font-bold ${on ? 'bg-rose-600 border-rose-600 text-white' : 'border-gray-300'}`}>{on ? '✓' : ''}</span>}
-              <b className="font-mono w-14">{i.code}</b><span className="flex-1 truncate">{i.name}</span><b className="tabular-nums">{i.qty}</b>
+              <b className="font-mono w-14">{i.code}</b><SrcTag src={i.src} /><span className="flex-1 truncate">{i.name}</span><b className="tabular-nums">{i.qty}</b>
             </>
           );
           return onToggle
-            ? <button key={i.code} type="button" onClick={() => onToggle(i.code)} className={`w-full text-left px-3 py-2 flex items-center gap-2 text-sm ${on ? 'bg-rose-50' : 'active:bg-gray-50'}`}>{row}</button>
-            : <div key={i.code} className="px-3 py-1.5 flex items-center gap-2 text-sm">{row}</div>;
+            ? <button key={k} type="button" onClick={() => onToggle(k)} className={`w-full text-left px-3 py-2 flex items-center gap-2 text-sm ${on ? 'bg-rose-50' : 'active:bg-gray-50'}`}>{row}</button>
+            : <div key={k} className="px-3 py-1.5 flex items-center gap-2 text-sm">{row}</div>;
         })}
       </div>
     </div>
@@ -672,7 +783,7 @@ function InboundModal({ cards, channel, rooms, active, waiting, minutes, onClose
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
         <CartNoPad no={no} setNo={setNo} warn={warn} />
         <div className="space-y-3">
-          <ItemList title="실을 품목" items={cards.map((c) => ({ code: c.code, name: c.name, qty: c.remain }))} />
+          <ItemList title="실을 품목" items={cards.map((c) => ({ code: c.code, name: c.name, qty: c.remain, src: c.key }))} />
           <RoomPick rooms={rooms} active={active} room={room} setRoom={setRoom} allowWait />
         </div>
       </div>
@@ -690,10 +801,11 @@ function WaitingModal({ cart, cards, rooms, active, minutesOf, onClose, onSave, 
   const [room, setRoom] = useState<number | null>(null);
   const [q, setQ] = useState('');
   const merged = useMemo(() => {
-    const m = new Map<string, CartItem>(cart.items.map((i) => [i.code, { ...i }]));
+    // 출처 카드별로 따로 센다 (예전 대차 품목은 src 가 없어 '품목코드|대차채널' 생산계획 카드로 본다)
+    const m = new Map<string, CartItem>(cart.items.map((i) => [i.src || `${i.code}|${cart.channel}`, { ...i }]));
     cards.filter((c) => add.has(c.key)).forEach((c) => {
-      const e = m.get(c.code);
-      if (e) e.qty += c.remain; else m.set(c.code, { code: c.code, name: c.name, qty: c.remain });
+      const e = m.get(c.key);
+      if (e) e.qty += c.remain; else m.set(c.key, { code: c.code, name: c.name, qty: c.remain, src: c.key });
     });
     return [...m.values()];
   }, [cart.items, cards, add]);
@@ -738,6 +850,7 @@ function WaitingModal({ cart, cards, rooms, active, minutesOf, onClose, onSave, 
                   className={`w-full h-14 px-3 rounded-lg border-2 flex items-center gap-2 text-left ${on ? 'border-blue-500 bg-blue-50' : 'border-gray-200 bg-white'}`}>
                   <span className={`w-6 h-6 rounded border-2 flex items-center justify-center shrink-0 ${on ? 'bg-blue-600 border-blue-600 text-white' : 'border-gray-400'}`}>{on ? '✔' : ''}</span>
                   <b className="font-mono w-14 shrink-0">{c.code}</b>
+                  <SrcTag src={c.key} />
                   <span className="flex-1 truncate">{c.name}</span>
                   <b className="tabular-nums">{c.remain}</b>
                 </button>
@@ -753,16 +866,16 @@ function WaitingModal({ cart, cards, rooms, active, minutesOf, onClose, onSave, 
 function CartDetail({ cart, room, now, onClose, onRelease, onMove, onCancel, onRemoveItems }: {
   cart: CoolingCart; room?: RoomConfig; now: number;
   onClose: () => void; onRelease: () => void; onMove: () => void; onCancel: () => void;
-  /** 냉각 중에 고른 품목만 대차에서 뺀다 (입고 대기로 돌아감) */
-  onRemoveItems: (codes: string[]) => void;
+  /** 냉각 중에 고른 품목만 대차에서 뺀다 (입고 대기로 돌아감) — 줄 key(itemKey) 목록 */
+  onRemoveItems: (keys: string[]) => void;
 }) {
   const left = cart.endAt - now;
   const [sel, setSel] = useState<Set<string>>(new Set());
   // 대차 품목이 바뀌면(뺀 뒤, 다른 기기에서 수정) 없는 품목 선택은 지운다
-  const itemKey = cart.items.map((i) => i.code).join('|');
-  useEffect(() => { setSel((p) => new Set([...p].filter((c) => cart.items.some((i) => i.code === c)))); }, [itemKey]); // eslint-disable-line react-hooks/exhaustive-deps
-  const toggle = (code: string) => setSel((p) => { const n = new Set(p); if (n.has(code)) n.delete(code); else n.add(code); return n; });
-  const selQty = cart.items.filter((i) => sel.has(i.code)).reduce((s2, i) => s2 + i.qty, 0);
+  const itemsSig = cart.items.map(itemKey).join('|');
+  useEffect(() => { setSel((p) => new Set([...p].filter((k) => cart.items.some((i) => itemKey(i) === k)))); }, [itemsSig]); // eslint-disable-line react-hooks/exhaustive-deps
+  const toggle = (k: string) => setSel((p) => { const n = new Set(p); if (n.has(k)) n.delete(k); else n.add(k); return n; });
+  const selQty = cart.items.filter((i) => sel.has(itemKey(i))).reduce((s2, i) => s2 + i.qty, 0);
   return (
     <Shell onClose={onClose}
       head={<>

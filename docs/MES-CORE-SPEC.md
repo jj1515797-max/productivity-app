@@ -2574,9 +2574,9 @@ recipesYield, subRecipesYield, ambientRecipesYield, materialInput, materialCateg
 productBarcodes, coolingCarts, coolingConfig, containerStock, purchaseChat
 ```
 
-**서브컬렉션 `GROUP_COLLECTIONS` (11개, `collectionGroup` 으로 전량 수집)**
+**서브컬렉션 `GROUP_COLLECTIONS` (12개, `collectionGroup` 으로 전량 수집)**
 ```
-items, logistics, ambient, scoop, scoopFlags, entries, records, movements, requests, packSorted, logs
+items, logistics, ambient, scoop, scoopFlags, entries, records, movements, requests, packSorted, logs, coolCards
 ```
 같은 이름이면 부모가 달라도 다 모인다 — `items` 에는 `remix/{날짜}/items`(재배합), `entries` 에는 `waste/{날짜}/entries`(폐기),
 `logs` 는 `barcodeScans/{날짜}/logs`(바코드 검수). SQL 테이블은 경로로 나뉜다(`days__items` / `remix__items`).
@@ -2596,7 +2596,7 @@ items, logistics, ambient, scoop, scoopFlags, entries, records, movements, reque
   - `docCount >= maxReads` → `incomplete = '{컬렉션} (읽기 상한 도달)'` 후 반환
 - 컬렉션 단위 실패는 `try/catch` → `console.warn('[백업] {name} 건너뜀:', e)` 하고 `skipped` 에 이름을 남긴 뒤 **다음 컬렉션으로 진행**(권한 없는 컬렉션이 있어도 전체가 죽지 않는다). 설정 화면은 `skipped` 가 있으면 경고를 띄우고 파일명에 `_불완전` 을 붙인다.
 - `incomplete` 가 생기면 **바깥 루프를 즉시 중단**하고, 그룹 컬렉션 단계 자체를 건너뛴다.
-- 진행 보고 `BackupProgress { phase, docs, done, total }`, `total = 34 + 11 = 45`.
+- 진행 보고 `BackupProgress { phase, docs, done, total }`, `total = 34 + 12 = 46`.
 - 반환 `BackupResult { sql, stats, docCount, validation, incomplete, skipped, sizeBytes }`. `sizeBytes` 는 `new Blob([sql]).size`.
 
 헤더 문자열: 정상 `` `generated: ${ISO}` ``, 중단 시 `` `generated: ${ISO}  ⚠ 불완전 (중단: ${incomplete})` ``.
@@ -2909,7 +2909,7 @@ BEGIN;
 - appMeta/dailyProgress·scoopProgress 쓰기는 viewDate/date 가 todayKey() 일 때만, 그리고 pct|completed|itemCount(|totalQty) 서명이 바뀔 때만 일어난다(merge:true, catch 묵살). 이 가드를 빼면 쓰기 폭주한다.
 - Scoop 의 100% 직접 푸시 중복방지 키는 localStorage['scoopNotified:'+date] 라 기기별이다. 여러 기기가 열려 있으면 기기 수만큼 신호가 나가며, 중복 제거는 Apps Script 쪽 책임이다.
 - NotifySettingsPanel 은 webAppUrl 을 편집하지 않는다. setDoc 에 merge:true 를 써야 기존 webAppUrl 이 날아가지 않는다.
-- DB 백업의 컬렉션 목록은 하드코딩 상수다 (웹 SDK 는 listCollections() 불가). ROOT 34개 + GROUP 11개 = 45 단위이며, 앱에 새 컬렉션을 추가하면 ROOT_COLLECTIONS/GROUP_COLLECTIONS 에도 반드시 추가해야 백업에 들어간다.
+- DB 백업의 컬렉션 목록은 하드코딩 상수다 (웹 SDK 는 listCollections() 불가). ROOT 34개 + GROUP 12개 = 46 단위이며, 앱에 새 컬렉션을 추가하면 ROOT_COLLECTIONS/GROUP_COLLECTIONS 에도 반드시 추가해야 백업에 들어간다.
 - 백업 페이징은 orderBy(documentId()) + startAfter + limit(500) 이고, 탈출은 snap.empty 또는 snap.size < PAGE. 중단/상한 도달 시 incomplete 문자열('{컬렉션} (사용자 중단)' / '{컬렉션} (읽기 상한 도달)')을 세팅하고 바깥 루프까지 즉시 끊어 그룹 단계를 건너뛴다.
 - runBackup 의 maxReads 기본값은 40000 이지만 설정 화면은 Infinity 로 호출한다. 기본값을 그대로 쓰면 큰 DB 에서 조용히 불완전 백업이 된다.
 - SQL 테이블명은 경로의 짝수 인덱스 세그먼트만 남겨 '__' 로 잇는다 (days/{d}/machines/{호기}/entries → days__machines__entries). 단 최상위가 appMeta/settings/_config 인 문서는 전부 config_docs 한 테이블에 doc_id/doc_path/data(JSONB) 형태로 들어간다.

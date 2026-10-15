@@ -28,7 +28,8 @@ export const CH_STYLE: Record<Channel, { bg: string; soft: string; text: string;
 /** 도면 칸처럼 좁은 곳에 쓰는 짧은 이름 */
 export const CH_SHORT: Record<Channel, string> = { 주문: '주문', 쿠팡: '쿠팡', 마켓컬리: '컬리', 오아시스: '오아시스', 샘플: '샘플' };
 
-export interface CartItem { code: string; name: string; qty: number }
+/** src = 어느 입고 대기 카드에서 실었는지 (카드 key). 예전 대차엔 없다 → 품목코드|대차채널 카드로 센다 */
+export interface CartItem { code: string; name: string; qty: number; src?: string }
 export interface CoolingCart {
   id: string;
   date: string;

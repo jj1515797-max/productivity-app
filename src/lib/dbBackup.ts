@@ -38,6 +38,7 @@ export const GROUP_COLLECTIONS = [
   'items', 'logistics', 'ambient', 'scoop', 'scoopFlags', 'entries', 'records', 'movements', 'requests',
   'packSorted',   // days/{날짜}/packSorted — 외포장 정렬
   'logs',         // barcodeScans/{날짜}/logs — 바코드 검수 기록
+  'coolCards',    // days/{날짜}/coolCards — 외포장 입력 추가 생산 카드 채널 · 나눈 카드
 ];
 
 export interface BackupProgress {

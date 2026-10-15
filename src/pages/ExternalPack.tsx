@@ -6,6 +6,7 @@ import { todayKey, effectiveTodayKey } from '../lib/dateUtil';
 import { loadViewDate, saveViewDate } from '../lib/viewDate';
 import type { Item, MachineEntry } from '../types';
 import { markSorted, unmarkSorted, useSorted } from '../lib/packSort';
+import { useActiveCarts } from '../lib/coolingData';
 
 const MACHINES = ['1호기', '2호기', '3호기'] as const;
 
@@ -49,6 +50,9 @@ export default function ExternalPack() {
 
   /* 실시간 시계 (클라이언트만, Firestore 비용 X) */
   const [now, setNow] = useState(new Date());
+  // 냉각실에서 냉각이 끝났는데 아직 출고 안 한 대차 수 (대기 대차 제외, 날짜 무관 — 냉각실에 있는 것 전부)
+  const activeCarts = useActiveCarts();
+  const coolDone = activeCarts.filter((c) => !c.waiting && c.endAt > 0 && now.getTime() >= c.endAt).length;
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(id);
@@ -190,8 +194,16 @@ export default function ExternalPack() {
           <span className="text-xs text-orange-600 font-medium">⚠ 과거 날짜 보는 중</span>
         )}
         <span className="text-sm text-gray-600">분류 완료 <b className="text-emerald-700">{doneCount}</b> / {rows.length} <span className="text-xs text-gray-400">· 행을 누르면 분류 완료</span></span>
+        {/* 냉각 종료 경고등 — 냉각실에 냉각이 끝나 출고를 기다리는 대차가 하나라도 있으면 빨간 불.
+            외포장 입력에서 출고하면 꺼진다. 누르는 버튼이 아니라 보고 알아채기만 하는 표시 */}
+        <span className="ml-auto inline-flex items-center justify-center w-10 h-10" aria-label={coolDone > 0 ? '냉각 종료된 대차 있음' : '냉각 종료된 대차 없음'}
+          title={coolDone > 0 ? '냉각 종료 — 외포장 입력에서 출고해 주세요' : '냉각 종료된 대차 없음'}>
+          {coolDone > 0
+            ? <span className="w-7 h-7 rounded-full bg-red-600 ring-4 ring-red-300 shadow-[0_0_14px_4px_rgba(220,38,38,0.75)] animate-pulse" />
+            : <span className="w-7 h-7 rounded-full bg-gray-300 ring-4 ring-gray-200" />}
+        </span>
         {/* 실시간 시계 (초 제외, 크게) */}
-        <span className="ml-auto text-3xl font-mono font-bold text-gray-800 tabular-nums" aria-label="현재 시각">
+        <span className="text-3xl font-mono font-bold text-gray-800 tabular-nums" aria-label="현재 시각">
           🕐 {now.toLocaleTimeString('ko-KR', { hour: '2-digit', minute: '2-digit', hour12: false })}
         </span>
         {/* 표 글자 크기 (이 기기에만 적용) */}
