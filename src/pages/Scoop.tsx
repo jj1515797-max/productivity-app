@@ -393,8 +393,8 @@ function TabletView({
           )}
 
           <div className={`grid grid-cols-1 ${twoCol} gap-4`}>
-            {/* 왼쪽 — 품목 · 숫자 · 진행 막대 · 작업자 */}
-            <div className="space-y-3 min-w-0">
+            {/* 왼쪽 — 품목 · 숫자 · 진행 막대 · 작업자. 내 합계는 맨 아래(오른쪽 낱개 칸과 같은 줄) */}
+            <div className="flex flex-col gap-3 min-w-0">
               <div>
                 <div className={`${sz('code')} text-violet-600 font-bold tabular-nums`}>{cur.code}</div>
                 <div className={`${sz('name')} font-bold text-gray-900 leading-tight truncate`}>{cleanName(cur.name || cur.code)}</div>
@@ -429,20 +429,20 @@ function TabletView({
                     ))}
                 </div>
               )}
-              <div className={`${sz('mine')} text-gray-600`}>
+              <div className={`mt-auto bg-slate-50 border rounded-xl py-3 text-center ${sz('mine')} text-gray-600`}>
                 내 합계(<span className="font-bold text-violet-700">{worker}</span>): <span className="font-bold text-violet-700 tabular-nums">{myCount.toLocaleString()}</span>개
               </div>
             </div>
 
-            {/* 오른쪽 — 큰 버튼 (손 쪽) */}
-            <div className="space-y-3">
-              <div className="grid grid-cols-2 gap-3">
+            {/* 오른쪽 — 큰 버튼 (손 쪽). 왼쪽 단 높이만큼 세로로 꽉 채우고, 낱개는 맨 아래 */}
+            <div className="flex flex-col gap-3">
+              <div className="flex-1 grid grid-cols-2 gap-3 min-h-[200px]">
                 <button onClick={() => addQty(20)}
-                  className={`min-h-[120px] bg-violet-600 text-white rounded-2xl ${sz('bigBtn')} font-bold active:scale-95 active:bg-violet-700 transition shadow tabular-nums`}>
+                  className={`h-full bg-violet-600 text-white rounded-2xl ${sz('bigBtn')} font-bold active:scale-95 active:bg-violet-700 transition shadow tabular-nums`}>
                   + 20
                 </button>
                 <button onClick={undoLast}
-                  className={`min-h-[120px] px-2 bg-white border-2 border-rose-400 text-rose-600 rounded-2xl ${sz('undoBtn')} leading-tight font-bold active:scale-95 active:bg-rose-50 transition`}>
+                  className={`h-full px-2 bg-white border-2 border-rose-400 text-rose-600 rounded-2xl ${sz('undoBtn')} leading-tight font-bold active:scale-95 active:bg-rose-50 transition`}>
                   ↶ 직전 취소
                 </button>
               </div>
