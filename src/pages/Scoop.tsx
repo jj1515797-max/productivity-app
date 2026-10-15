@@ -11,7 +11,7 @@ import { db } from '../firebase';
 import type { Item, Member, ProductSetting } from '../types';
 import { todayKey, effectiveTodayKey } from '../lib/dateUtil';
 import { getStage, STAGE_LETTERS } from '../lib/monthlyProduction';
-import { canonicalShort } from '../lib/codeUtil';
+import { canonicalShort, normalizeCode } from '../lib/codeUtil';
 
 interface ScoopEvent {
   id: string;
@@ -64,8 +64,29 @@ export default function Scoop({ board }: { board?: boolean }) {
     s.forEach((d) => { if ((d.data() as any).remix) set.add(d.id); });
     setRemixSet(set);
   }), [date]);
-  const toggleRemix = async (code: string, on: boolean) => {
-    await setDoc(doc(db, 'days', date, 'scoopFlags', code), { code, remix: on, ts: Date.now() }, { merge: true });
+  /** 재배합 체크 — 체크하는 순간의 부족 수량(목표 − 현재)을 그날 그 품목의 재배합 수량으로 기록한다
+   *  (잔여량/재배합 화면과 같은 문서 remix/{날짜}/items/{코드}). 마지막에 넣은 값이 기준:
+   *  · 체크하면 있던 값(손으로 쓴 것 포함)을 덮어쓴다. 부족이 0 이하면 기록하지 않는다
+   *  · 나중에 잔여량/재배합 화면에서 손으로 고치면 그 값이 기준 (그 화면은 src 없이 저장 → 자동 표시가 사라진다)
+   *  · 체크를 풀면 내포장이 자동으로 넣은 값(src: 'scoop')일 때만 지운다. 손으로 고친 값은 그대로
+   *  쓰기는 서버 응답을 기다리지 않는다 — msg 는 바로 알림, done 은 실패 알림용 */
+  const toggleRemix = async (code: string, on: boolean): Promise<{ msg: string; done: Promise<unknown> }> => {
+    const flag = setDoc(doc(db, 'days', date, 'scoopFlags', code), { code, remix: on, ts: Date.now() }, { merge: true });
+    const col = collection(db, 'remix', date, 'items');
+    // 잔여량/재배합 화면이 다른 표기(대소문자 등)로 저장해 둔 문서가 있으면 그 문서를 쓴다
+    const snap = await getDocs(col).catch(() => null);
+    const hit = snap?.docs.find((d) => normalizeCode(d.id) === normalizeCode(code));
+    if (on) {
+      const target = items.find((i) => i.code === code)?.totalQty || 0;
+      const short = target - (byCode.get(code)?.total || 0);
+      if (short <= 0) return { msg: '재배합 체크 (부족 수량이 없어 재배합 수량은 기록하지 않음)', done: flag };
+      const w = setDoc(hit ? hit.ref : doc(col, code), { code: hit ? ((hit.data() as { code?: string }).code || hit.id) : code, qty: short, count: 1, date, src: 'scoop', at: Date.now() });
+      return { msg: `재배합 체크 — 부족 ${short.toLocaleString()}개를 재배합 수량으로 기록했습니다`, done: Promise.all([flag, w]) };
+    }
+    if (hit && (hit.data() as { src?: string }).src === 'scoop') {
+      return { msg: '재배합 해제 — 자동으로 기록한 재배합 수량을 지웠습니다', done: Promise.all([flag, deleteDoc(hit.ref)]) };
+    }
+    return { msg: hit ? '재배합 해제 (잔여량/재배합에서 손으로 넣은 수량은 그대로 둠)' : '재배합 해제', done: flag };
   };
 
   // 품목별 합계 + 작업자별 합계 집계
@@ -160,7 +181,7 @@ function TabletView({
   byCode: Map<string, { total: number; byWorker: Map<string, number>; events: ScoopEvent[] }>;
   events: ScoopEvent[];
   remixSet: Set<string>;
-  toggleRemix: (code: string, on: boolean) => void;
+  toggleRemix: (code: string, on: boolean) => Promise<{ msg: string; done: Promise<unknown> }>;
 }) {
   // 작업자 이름은 그날만 — 어제 이름이 태블릿에 남아 있으면 지우고 매일 새로 받는다
   const [worker, setWorkerState] = useState<string>(() => {
@@ -328,7 +349,12 @@ function TabletView({
         {cur && (
           <>
             <span className="text-gray-300">|</span>
-            <button onClick={() => toggleRemix(cur.code, !remixSet.has(cur.code))}
+            <button onClick={() => {
+              const fail = (e: any) => showToast({ msg: `⚠ 재배합 저장 실패 — 다시 눌러 주세요 (${e?.message || e})`, err: true });
+              toggleRemix(cur.code, !remixSet.has(cur.code))
+                .then(({ msg, done }) => { showToast({ msg }); done.catch(fail); })
+                .catch(fail);
+            }}
               className={`px-3 py-2 rounded-lg text-sm font-bold border-2 whitespace-nowrap transition active:scale-95 ${
                 remixSet.has(cur.code) ? 'bg-rose-500 text-white border-rose-500' : 'bg-white text-gray-500 border-gray-300'}`}>
               {remixSet.has(cur.code) ? '☑ 재배합' : '☐ 재배합'}
