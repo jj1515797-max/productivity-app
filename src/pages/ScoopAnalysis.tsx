@@ -6,7 +6,7 @@ import { collection, getDocs } from 'firebase/firestore';
 import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
 
-interface ScoopRow { code: string; name: string; worker: string; qty: number; ts: number; }
+interface ScoopRow { code: string; name: string; worker: string; qty: number; ts: number; day: string; }
 
 const WEEKDAYS = ['일', '월', '화', '수', '목', '금', '토'];
 
@@ -15,7 +15,7 @@ async function fetchScoop(date: string): Promise<ScoopRow[]> {
   const list: ScoopRow[] = [];
   snap.forEach((d) => {
     const e = d.data() as any;
-    list.push({ code: e.code || '', name: e.name || '', worker: e.worker || '미지정', qty: Number(e.qty) || 0, ts: Number(e.ts) || 0 });
+    list.push({ code: e.code || '', name: e.name || '', worker: e.worker || '미지정', qty: Number(e.qty) || 0, ts: Number(e.ts) || 0, day: date });
   });
   return list;
 }
@@ -99,16 +99,33 @@ export default function ScoopAnalysis() {
     return Array.from(m.entries()).map(([code, v]) => ({ code, name: v.name, qty: v.qty, workerCount: v.workers.size })).sort((a, b) => b.qty - a.qty);
   }, [rows]);
 
-  // 시간대별 (ts 있는 것만)
+  // 시간대별 (ts 있는 것만) + 그 시간 인원 = 그 시간에 한 번이라도 카운팅을 누른 작업자 수.
+  // 월별은 날마다 센 인원의 평균 (그 시간에 작업한 날 기준)
   const byHour = useMemo(() => {
-    const arr = new Array(24).fill(0);
-    rows.forEach((r) => { if (r.ts > 0) arr[new Date(r.ts).getHours()] += r.qty; });
-    const hours = arr.map((qty, hour) => ({ hour, qty }));
+    const qty = new Array(24).fill(0);
+    const people = Array.from({ length: 24 }, () => new Map<string, Set<string>>());   // 시 → 날짜 → 작업자
+    rows.forEach((r) => {
+      if (r.ts <= 0) return;
+      const h = new Date(r.ts).getHours();
+      qty[h] += r.qty;
+      const byDay = people[h];
+      if (!byDay.has(r.day)) byDay.set(r.day, new Set());
+      byDay.get(r.day)!.add(r.worker);
+    });
+    const hours = qty.map((q, hour) => {
+      const days = [...people[hour].values()];
+      const heads = days.length ? days.reduce((sum, w) => sum + w.size, 0) / days.length : 0;
+      const names = days.length === 1 ? [...days[0]].sort((a, b) => a.localeCompare(b, 'ko')) : [];
+      // 1인당 = 하루 평균 수량 ÷ 평균 인원 (일별이면 그냥 수량 ÷ 인원)
+      const perDayQty = days.length ? q / days.length : 0;
+      return { hour, qty: q, heads, perHead: heads > 0 ? Math.round(perDayQty / heads) : 0, names };
+    });
     const active = hours.filter((h) => h.qty > 0);
     if (active.length === 0) return [];
     const min = active[0].hour, max = active[active.length - 1].hour;
     return hours.slice(min, max + 1);
   }, [rows]);
+  const fmtHeads = (n: number) => (Number.isInteger(n) ? String(n) : n.toFixed(1));
 
   // 작업자 × 품목 교차 (품목 행 × 작업자 열)
   const matrix = useMemo(() => {
@@ -242,14 +259,17 @@ export default function ScoopAnalysis() {
 
           {/* 시간대별 */}
           {byHour.length > 0 && (
-            <Card title="시간대별 내포장량 (피크타임)">
-              <div className="p-4 flex items-end gap-1.5" style={{ height: 160 }}>
+            <Card title={`시간대별 내포장량 (피크타임) · 인원 = 그 시간에 카운팅한 작업자${mode === 'month' ? ' (일 평균)' : ''}`}>
+              <div className="p-4 flex items-end gap-1.5" style={{ height: 200 }}>
                 {byHour.map((h) => (
-                  <div key={h.hour} className="flex-1 flex flex-col items-center justify-end gap-1 h-full">
+                  <div key={h.hour} className="flex-1 flex flex-col items-center justify-end gap-1 h-full"
+                    title={h.names.length ? `${h.hour}시 작업자 ${h.names.length}명: ${h.names.join(', ')}` : undefined}>
                     <div className="text-[10px] text-gray-500 tabular-nums">{h.qty > 0 ? h.qty.toLocaleString() : ''}</div>
                     <div className={`w-full rounded-t ${h.qty === maxHour ? 'bg-rose-500' : 'bg-cyan-400'}`}
                       style={{ height: `${(h.qty / maxHour) * 100}%`, minHeight: h.qty > 0 ? 3 : 0 }} />
                     <div className="text-[10px] text-gray-400 tabular-nums">{h.hour}시</div>
+                    <div className="text-xs font-bold text-gray-700 tabular-nums">{h.heads > 0 ? `👤 ${fmtHeads(h.heads)}명` : ''}</div>
+                    <div className="text-[10px] text-gray-500 tabular-nums">{h.perHead > 0 ? `1인 ${h.perHead.toLocaleString()}` : ''}</div>
                   </div>
                 ))}
               </div>
