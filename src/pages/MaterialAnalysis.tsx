@@ -6,7 +6,7 @@ import type { AmbientEntry, Item, MachineEntry } from '../types';
 import type { AmbientRecipe, Recipe } from '../lib/wasteCompute';
 import { CODE_KEY_PREFIX, monthPriceKey, normalizeCode, normalizeMaterialName } from '../lib/wasteCompute';
 import { canonicalShort } from '../lib/codeUtil';
-import { computeFlexedDiff, computeMonthlyUsage, diffUsage } from '../lib/materialUsage';
+import { computeFlexedDiff, computeMonthlyUsage, diffUsage, computeProductCostLines } from '../lib/materialUsage';
 import type { DiffRow, FlexedRow, UsageResult } from '../lib/materialUsage';
 import { computeMonthlyProduction, filterProduction, STAGE_COLOR, STAGE_LETTERS } from '../lib/monthlyProduction';
 import type { MonthlyProduction } from '../lib/monthlyProduction';
@@ -20,6 +20,7 @@ import { buildCategoryIndex, categoryOf } from '../lib/materialCategory';
 import type { CategoryDoc } from '../lib/materialCategory';
 import { buildDecompMaterials, buildDecompProducts, computeCostDecomp } from '../lib/costDecomp';
 import CostDecompPanel from '../components/CostDecompPanel';
+import ProductCostPanel from '../components/ProductCostPanel';
 import type { DecompView } from '../components/CostDecompPanel';
 
 /* ===== 캐시 ===== */
@@ -371,6 +372,15 @@ export default function MaterialAnalysis() {
     if (!aResultBPrice || !bResult) { setFlexed([]); return; }
     setFlexed(computeFlexedDiff(aResultBPrice.rows, bResult.rows, aQty, bQty));
   }, [aResultBPrice, bResult, aQty, bQty]);
+
+  // 품목별 원재료비 (맨 아래 표) — 분석한 두 달 기준. 원재료별 표와 같은 레시피·생산량·단가
+  const productCosts = useMemo(() => {
+    if (!aRaw || !bRaw || !decompSrc) return null;
+    const { a: mA, b: mB } = decompSrc.months;
+    const calc = (m: string, raw: RawMonth) => computeProductCostLines(m, raw.entries, raw.items, raw.ambient, raw.logistics,
+      effRecipeMap, effAmbientRecipeMap, priceMap, raw.logisticsByCode);
+    return { monthA: mA, monthB: mB, a: calc(mA, aRaw), b: calc(mB, bRaw) };
+  }, [aRaw, bRaw, decompSrc, effRecipeMap, effAmbientRecipeMap, priceMap]);
 
   const clearAll = () => {
     if (!confirm('분석 결과와 캐시를 모두 삭제할까요?')) return;
@@ -958,6 +968,11 @@ export default function MaterialAnalysis() {
             )}
           </div>
         )}
+
+      {/* 맨 아래 — 품목별 원재료비 */}
+      {productCosts && (
+        <ProductCostPanel monthA={productCosts.monthA} monthB={productCosts.monthB} a={productCosts.a} b={productCosts.b} recipeLabel={recipeLabel} />
+      )}
 
       {!aResult && !bResult && !running && (
         <div className="bg-white border border-dashed border-gray-300 rounded-lg p-16 text-center text-gray-400 text-sm">

@@ -234,6 +234,71 @@ export function computeMonthlyUsage(
   };
 }
 
+/** 품목별 원재료비 한 줄 */
+export interface ProductCostLine {
+  key: string;              // 냉장: canonicalShort 코드 / 실온: amb:정규화 제품명
+  code: string;             // 냉장 코드 (실온은 '')
+  label: string;
+  kind: 'cold' | 'ambient';
+  qty: number;              // 생산 EA
+  cost: number;             // 원재료비 ₩ (단가 있는 원재료만)
+  unitCost: number;         // EA당 ₩
+  hasRecipe: boolean;
+  missingPriceGrams: number; // 단가가 없어 금액에서 빠진 원재료 g
+}
+
+/** 품목별 원재료비 — computeMonthlyUsage 의 원재료×제품 근거(onContrib)를 그 원재료 단가로 묶는다.
+ *  생산량·레시피·단가 규칙이 원재료별 표와 완전히 같아서, 품목 합계 = 원재료별 원재료비 합계. */
+export function computeProductCostLines(
+  month: string,
+  entries: MachineEntry[],
+  items: Item[],
+  ambient: AmbientEntry[],
+  logisticsByDay: Record<string, number>,
+  recipeMap: Map<string, Recipe>,
+  ambientRecipeMap: Map<string, AmbientRecipe>,
+  priceMap: Map<string, number>,
+  logisticsByDayCode?: Record<string, Record<string, number>>,
+): { lines: ProductCostLine[]; total: number; qty: number } {
+  const contribs: UsageContrib[] = [];
+  const res = computeMonthlyUsage(month, entries, items, ambient, logisticsByDay, recipeMap, ambientRecipeMap, priceMap,
+    undefined, logisticsByDayCode, (c) => contribs.push(c));
+  const price = new Map(res.rows.map((r) => [r.key, r]));
+  const nameByCode = new Map<string, string>();
+  items.forEach((it) => { const k = canonicalShort(it.code || ''); if (k && it.name && !nameByCode.has(k)) nameByCode.set(k, it.name); });
+  const lines = new Map<string, ProductCostLine>();
+  const line = (key: string, init: () => ProductCostLine) => {
+    if (!lines.has(key)) lines.set(key, init());
+    return lines.get(key)!;
+  };
+  // 생산량 — 원재료별 계산과 같은 원천 (냉장: 코드별 실제 생산, 실온: 제품명별 합)
+  computeColdProductionByCode(entries, items, logisticsByDay, logisticsByDayCode).forEach((count, code) => {
+    if (count <= 0) return;
+    line(code, () => ({ key: code, code, label: nameByCode.get(code) || code, kind: 'cold', qty: 0, cost: 0, unitCost: 0, hasRecipe: false, missingPriceGrams: 0 })).qty = count;
+  });
+  ambient.forEach((a) => {
+    const pname = a.productName || '';
+    if (!pname) return;
+    const k = `amb:${normalizeMaterialName(pname)}`;
+    line(k, () => ({ key: k, code: '', label: pname, kind: 'ambient', qty: 0, cost: 0, unitCost: 0, hasRecipe: false, missingPriceGrams: 0 })).qty += a.qty || 0;
+  });
+  // 원재료비
+  contribs.forEach((c) => {
+    const k = c.kind === 'cold' ? c.product : `amb:${normalizeMaterialName(c.product)}`;
+    const l = line(k, () => ({ key: k, code: c.kind === 'cold' ? c.product : '', label: c.label, kind: c.kind, qty: c.qty, cost: 0, unitCost: 0, hasRecipe: true, missingPriceGrams: 0 }));
+    l.hasRecipe = true;
+    if (c.kind === 'cold' && !nameByCode.has(c.product) && c.label) l.label = c.label;
+    const p = price.get(c.key);
+    if (p && p.hasPrice) l.cost += c.grams * p.pricePerGram;
+    else l.missingPriceGrams += c.grams;
+  });
+  // 레시피 유무는 원재료별 계산의 '레시피 없음' 목록 그대로
+  const missing = new Set(res.missingProducts.map((m) => (m.kind === 'cold' ? m.product : `amb:${normalizeMaterialName(m.product)}`)));
+  const out = [...lines.values()].filter((l) => l.qty > 0);
+  out.forEach((l) => { l.hasRecipe = !missing.has(l.key); l.unitCost = l.qty > 0 ? l.cost / l.qty : 0; });
+  return { lines: out, total: out.reduce((s, l) => s + l.cost, 0), qty: out.reduce((s, l) => s + l.qty, 0) };
+}
+
 /** 두 월 결과 합치기 (원재료별 비교 row) */
 export interface DiffRow {
   key: string;
