@@ -285,8 +285,9 @@ export default function Dashboard() {
           >
             + 데이터 입력
           </button>
+          {/* 전체 삭제는 PC(마우스)에서만 — 태블릿·휴대폰(주 입력이 터치)에서는 아예 숨긴다 (현장 작업자 실수 방지) */}
           {items.length > 0 && (
-            <button onClick={clearAll} className="text-sm text-red-500 hover:underline">전체 삭제</button>
+            <button onClick={clearAll} className="text-sm text-red-500 hover:underline [@media(pointer:coarse)]:hidden">전체 삭제</button>
           )}
         </div>
       </div>
