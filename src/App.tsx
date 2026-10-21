@@ -40,6 +40,15 @@ import { useEffect, useRef, useState } from 'react';
 export default function App() {
   useTrackVisit();
   useCompletionAlert();
+  const path = useLocation().pathname;
+  // 내포장 입력 전용 주소 (/kiosk/scoop) — 위쪽 메뉴·탭 없이 내포장 카운팅 화면만. 다른 화면으로 가는 링크가 없다
+  if (path === '/kiosk/scoop' || path === '/kiosk/scoop/') {
+    return (
+      <div className="min-h-screen bg-gray-100">
+        <main className="max-w-screen-xl w-full mx-auto px-4 py-4"><Scoop /></main>
+      </div>
+    );
+  }
   return (
     <div className="min-h-screen bg-gray-100 flex flex-col">
       <Header />
