@@ -8,15 +8,18 @@
  *    · 그 외            → 큰용기  210ml   (예: F-043-01)
  *
  *  사용량 = 그 달 냉장 생산량(EA). 1EA = 용기 1개.
+ *  일별 = 같은 계산의 날짜별 확정 수량(byDateCode)을 용기 구분으로 묶은 것 — 일별 합 = 월 합계
  *  생산량은 잔여량(물류) 보정이 들어간 computeMonthlyProduction 결과를 그대로 사용한다.
  */
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import ExcelJS from 'exceljs';
 import { todayKey } from '../lib/dateUtil';
 import { loadContainerMonth, isPastMonth, type ContainerRow } from '../lib/containerLoad';
 import ContainerStockTab from '../components/ContainerStockTab';
 
 const SMALL_ML = 185, LARGE_ML = 210;
+const WD = ['일', '월', '화', '수', '목', '금', '토'];
+const wdOf = (d: string) => { const [y, m, dd] = d.split('-').map(Number); return new Date(y, m - 1, dd).getDay(); };
 
 function shiftMonth(m: string, delta: number): string {
   const [y, mm] = m.split('-').map(Number);
@@ -52,15 +55,19 @@ function MonthlyUsageTab() {
   const [rows, setRows] = useState<Row[]>([]);
   const [ambiguous, setAmbiguous] = useState<string[]>([]);
   const [monthlyTotal, setMonthlyTotal] = useState(0);   // 월별현황 공식으로 재계산한 냉장 총량(교차검증용)
+  const [byDateCode, setByDateCode] = useState<Record<string, Record<string, number>>>({});   // 날짜 → 코드 → 수량
+  const [view, setView] = useState<'item' | 'day'>('item');
+  const [openDay, setOpenDay] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
     setLoading(true); setErr('');
     const cached = tick === 0 ? getCache(month) : null;
-    if (cached) {
+    // 일별 조회를 넣기 전에 저장된 캐시는 날짜별 수량이 없어 한 번 다시 계산한다
+    if (cached && cached.byDateCode) {
       setRows(cached.rows); setAmbiguous(cached.ambiguous || []);
-      setMonthlyTotal(cached.monthlyTotal || 0); setLoading(false); return;
+      setMonthlyTotal(cached.monthlyTotal || 0); setByDateCode(cached.byDateCode); setLoading(false); return;
     }
 
     (async () => {
@@ -70,7 +77,8 @@ function MonthlyUsageTab() {
         setRows(r.rows);
         setAmbiguous(r.ambiguous);
         setMonthlyTotal(r.monthlyTotal);
-        setCache(month, { rows: r.rows, ambiguous: r.ambiguous, monthlyTotal: r.monthlyTotal });
+        setByDateCode(r.byDateCode);
+        setCache(month, { rows: r.rows, ambiguous: r.ambiguous, monthlyTotal: r.monthlyTotal, byDateCode: r.byDateCode });
       } catch (e) {
         if (!cancelled) setErr(e instanceof Error ? e.message : String(e));
       } finally {
@@ -95,6 +103,26 @@ function MonthlyUsageTab() {
     };
   }, [rows]);
   const total = Math.round(sum.rawTotal);
+
+  // 일별 — 날짜마다 용기 구분별 합 + 그날 품목 (용기 구분·품목명은 월 표와 같은 제품 DB 기준)
+  const daily = useMemo(() => {
+    const info = new Map(rows.map((r) => [r.code, r]));
+    return Object.keys(byDateCode).sort().map((date) => {
+      const raw = { small: 0, large: 0, unknown: 0 };
+      const items = Object.entries(byDateCode[date])
+        .map(([code, qty]) => {
+          const r = info.get(code);
+          const size: Row['size'] = r?.size || 'unknown';
+          raw[size] += qty;
+          return { code, name: r?.name || code, size, qty };
+        })
+        .filter((i) => Math.round(i.qty) !== 0)
+        .sort((a, b) => b.qty - a.qty);
+      return { date, raw, small: Math.round(raw.small), large: Math.round(raw.large), unknown: Math.round(raw.unknown),
+        total: Math.round(raw.small + raw.large + raw.unknown), items };
+    }).filter((d) => d.total !== 0);
+  }, [byDateCode, rows]);
+  const dailyHasUnknown = daily.some((d) => d.unknown !== 0);
   // 월별현황(일자 단위 공식) 대비 차이 — 1개 이상 벌어지면 화면에 드러냄
   const diff = monthlyTotal ? total - monthlyTotal : 0;
 
@@ -123,6 +151,26 @@ function MonthlyUsageTab() {
         r.size === 'small' ? `작은 ${SMALL_ML}ml` : r.size === 'large' ? `큰 ${LARGE_ML}ml` : '미분류', Math.round(r.qty)]);
       row.eachCell((c, i) => { c.border = border; c.alignment = { horizontal: i === 3 ? 'left' : 'center' }; });
     });
+    // 일별 합계 · 일별 품목
+    const sizeLabel = (z: Row['size']) => (z === 'small' ? `작은 ${SMALL_ML}ml` : z === 'large' ? `큰 ${LARGE_ML}ml` : '미분류');
+    const styleHead = (r: ExcelJS.Row) => r.eachCell((c) => {
+      c.font = { bold: true }; c.alignment = { horizontal: 'center' };
+      c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8EEF7' } }; c.border = border;
+    });
+    const wd = wb.addWorksheet('일별 합계');
+    wd.columns = [{ width: 14 }, { width: 6 }, { width: 14 }, { width: 14 }, { width: 10 }, { width: 12 }];
+    styleHead(wd.addRow(['날짜', '요일', `작은용기 ${SMALL_ML}ml`, `큰용기 ${LARGE_ML}ml`, '미분류', '합계']));
+    daily.forEach((d) => wd.addRow([d.date, WD[wdOf(d.date)], d.small, d.large, d.unknown, d.total]).eachCell((c) => { c.border = border; c.alignment = { horizontal: 'center' }; }));
+    const tr = wd.addRow(['합계', '', sum.small, sum.large, sum.unknown, total]);
+    tr.font = { bold: true }; tr.eachCell((c) => { c.border = border; c.alignment = { horizontal: 'center' }; });
+    wd.views = [{ state: 'frozen', ySplit: 1 }];
+    const wi = wb.addWorksheet('일별 품목');
+    wi.columns = [{ width: 14 }, { width: 6 }, { width: 10 }, { width: 30 }, { width: 14 }, { width: 10 }];
+    styleHead(wi.addRow(['날짜', '요일', '코드', '품목명', '용기', '수량(개)']));
+    daily.forEach((d) => d.items.forEach((i) => wi.addRow([d.date, WD[wdOf(d.date)], i.code, i.name, sizeLabel(i.size), Math.round(i.qty)])
+      .eachCell((c, n) => { c.border = border; c.alignment = { horizontal: n === 4 ? 'left' : 'center' }; })));
+    wi.views = [{ state: 'frozen', ySplit: 1 }];
+    wi.autoFilter = { from: 'A1', to: 'F1' };
     const buf = await wb.xlsx.writeBuffer();
     const url = URL.createObjectURL(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
     const a = document.createElement('a'); a.href = url; a.download = `용기사용량_${month}.xlsx`; a.click();
@@ -198,12 +246,96 @@ function MonthlyUsageTab() {
         </div>
       )}
 
-      {/* 품목별 */}
+      {/* 품목별 / 일별 */}
       <div className="bg-white border rounded-lg overflow-hidden">
-        <div className="px-4 py-2.5 border-b bg-slate-50 font-bold text-gray-800 text-sm">
-          품목별 사용량 <span className="text-xs text-gray-500 font-normal">· 수량 많은 순</span>
+        <div className="px-4 py-2 border-b bg-slate-50 flex items-center gap-3 flex-wrap">
+          <div className="flex rounded-md border overflow-hidden text-sm">
+            {([['item', '품목별'], ['day', '일별']] as const).map(([k, t]) => (
+              <button key={k} onClick={() => setView(k)}
+                className={`px-3.5 py-1.5 font-bold ${view === k ? 'bg-gray-800 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>{t}</button>
+            ))}
+          </div>
+          <span className="text-xs text-gray-500">
+            {view === 'item' ? '그 달 품목별 · 수량 많은 순' : '날짜별 용기 사용량 · 날짜를 누르면 그날 품목별 내역'}
+          </span>
         </div>
-        {loading ? (
+        {view === 'day' ? (
+          loading ? (
+            <div className="p-12 text-center text-gray-400 text-sm">불러오는 중…</div>
+          ) : daily.length === 0 ? (
+            <div className="p-12 text-center text-gray-400 text-sm">{month} 생산 데이터가 없습니다.</div>
+          ) : (
+            <div className="max-h-[640px] overflow-y-auto">
+              <table className="w-full text-sm">
+                <thead className="bg-slate-50 text-xs text-gray-600 sticky top-0 z-10">
+                  <tr>
+                    <th className="px-3 py-2 text-left w-36">날짜</th>
+                    <th className="px-3 py-2 text-right text-cyan-700">작은용기 {SMALL_ML}ml</th>
+                    <th className="px-3 py-2 text-right text-violet-700">큰용기 {LARGE_ML}ml</th>
+                    {dailyHasUnknown && <th className="px-3 py-2 text-right text-amber-700">미분류</th>}
+                    <th className="px-3 py-2 text-right">합계</th>
+                    <th className="px-3 py-2 text-right w-20">품목</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {daily.map((d) => {
+                    const open = openDay === d.date;
+                    const w = wdOf(d.date);
+                    return (
+                      <Fragment key={d.date}>
+                        <tr onClick={() => setOpenDay(open ? null : d.date)}
+                          className={`border-t cursor-pointer ${open ? 'bg-blue-50' : 'hover:bg-slate-50'}`}>
+                          <td className="px-3 py-2 font-semibold text-gray-800 tabular-nums">
+                            <span className="text-gray-400 mr-1">{open ? '▾' : '▸'}</span>{d.date.slice(5)}
+                            <span className={`ml-1.5 text-xs ${w === 0 ? 'text-rose-500' : w === 6 ? 'text-blue-500' : 'text-gray-400'}`}>({WD[w]})</span>
+                          </td>
+                          <td className="px-3 py-2 text-right tabular-nums text-cyan-700 font-bold">{d.small.toLocaleString()}</td>
+                          <td className="px-3 py-2 text-right tabular-nums text-violet-700 font-bold">{d.large.toLocaleString()}</td>
+                          {dailyHasUnknown && <td className="px-3 py-2 text-right tabular-nums text-amber-700">{d.unknown ? d.unknown.toLocaleString() : ''}</td>}
+                          <td className="px-3 py-2 text-right tabular-nums font-extrabold text-gray-900">{d.total.toLocaleString()}</td>
+                          <td className="px-3 py-2 text-right tabular-nums text-gray-500">{d.items.length}</td>
+                        </tr>
+                        {open && (
+                          <tr className="bg-slate-50/70">
+                            <td colSpan={dailyHasUnknown ? 6 : 5} className="px-4 py-2">
+                              <table className="w-full text-xs">
+                                <tbody className="divide-y divide-slate-200">
+                                  {d.items.map((i) => (
+                                    <tr key={i.code}>
+                                      <td className="py-1 pr-2 font-mono font-bold text-gray-700 w-16">{i.code}</td>
+                                      <td className="py-1 pr-2 text-gray-800">{i.name}</td>
+                                      <td className="py-1 pr-2 text-center w-24">
+                                        <span className={`px-2 py-0.5 rounded-full font-bold ${
+                                          i.size === 'small' ? 'bg-cyan-100 text-cyan-700' : i.size === 'large' ? 'bg-violet-100 text-violet-700' : 'bg-amber-100 text-amber-700'}`}>
+                                          {i.size === 'small' ? `작은 ${SMALL_ML}` : i.size === 'large' ? `큰 ${LARGE_ML}` : '미분류'}
+                                        </span>
+                                      </td>
+                                      <td className="py-1 text-right font-bold tabular-nums w-20">{Math.round(i.qty).toLocaleString()}</td>
+                                    </tr>
+                                  ))}
+                                </tbody>
+                              </table>
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    );
+                  })}
+                </tbody>
+                <tfoot className="sticky bottom-0 bg-slate-100 font-bold text-gray-800">
+                  <tr className="border-t-2">
+                    <td className="px-3 py-2">합계 ({daily.length}일)</td>
+                    <td className="px-3 py-2 text-right tabular-nums text-cyan-700">{sum.small.toLocaleString()}</td>
+                    <td className="px-3 py-2 text-right tabular-nums text-violet-700">{sum.large.toLocaleString()}</td>
+                    {dailyHasUnknown && <td className="px-3 py-2 text-right tabular-nums text-amber-700">{sum.unknown.toLocaleString()}</td>}
+                    <td className="px-3 py-2 text-right tabular-nums">{total.toLocaleString()}</td>
+                    <td className="px-3 py-2" />
+                  </tr>
+                </tfoot>
+              </table>
+            </div>
+          )
+        ) : loading ? (
           <div className="p-12 text-center text-gray-400 text-sm">불러오는 중…</div>
         ) : rows.length === 0 ? (
           <div className="p-12 text-center text-gray-400 text-sm">{month} 생산 데이터가 없습니다.</div>
