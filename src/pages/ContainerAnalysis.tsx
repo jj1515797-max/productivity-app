@@ -9,6 +9,7 @@
  *
  *  사용량 = 그 달 냉장 생산량(EA). 1EA = 용기 1개.
  *  일별 = 같은 계산의 날짜별 확정 수량(byDateCode)을 용기 구분으로 묶은 것 — 일별 합 = 월 합계
+ *  계획 = 그날 생산하기로 한 수량(생산계획 총수량, 현황판 총수량)을 같은 용기 구분으로. 실제 − 계획 = 잔여량 등으로 늘어난 몫
  *  생산량은 잔여량(물류) 보정이 들어간 computeMonthlyProduction 결과를 그대로 사용한다.
  */
 import { Fragment, useEffect, useMemo, useState } from 'react';
@@ -48,6 +49,15 @@ const setCache = (m: string, data: unknown) => {
 
 type Row = ContainerRow;
 
+/** 차이(실제 − 계획) 칸 — 늘었으면 초록 +, 줄었으면 빨강 */
+function DiffCell({ v }: { v: number }) {
+  return (
+    <td className={`px-3 py-2 text-right tabular-nums font-bold border-r ${v > 0 ? 'text-emerald-700' : v < 0 ? 'text-rose-600' : 'text-gray-400'}`}>
+      {v > 0 ? `+${v.toLocaleString()}` : v.toLocaleString()}
+    </td>
+  );
+}
+
 function MonthlyUsageTab() {
   const [month, setMonth] = useState(todayKey().slice(0, 7));
   const [loading, setLoading] = useState(true);
@@ -55,7 +65,10 @@ function MonthlyUsageTab() {
   const [rows, setRows] = useState<Row[]>([]);
   const [ambiguous, setAmbiguous] = useState<string[]>([]);
   const [monthlyTotal, setMonthlyTotal] = useState(0);   // 월별현황 공식으로 재계산한 냉장 총량(교차검증용)
-  const [byDateCode, setByDateCode] = useState<Record<string, Record<string, number>>>({});   // 날짜 → 코드 → 수량
+  const [byDateCode, setByDateCode] = useState<Record<string, Record<string, number>>>({});   // 날짜 → 코드 → 실제 수량
+  const [planByDateCode, setPlanByDateCode] = useState<Record<string, Record<string, number>>>({});   // 날짜 → 코드 → 계획 수량
+  const [sizeByShort, setSizeByShort] = useState<Record<string, 'small' | 'large'>>({});
+  const [nameByShort, setNameByShort] = useState<Record<string, string>>({});
   const [view, setView] = useState<'item' | 'day'>('item');
   const [openDay, setOpenDay] = useState<string | null>(null);
   const [tick, setTick] = useState(0);
@@ -64,10 +77,12 @@ function MonthlyUsageTab() {
     let cancelled = false;
     setLoading(true); setErr('');
     const cached = tick === 0 ? getCache(month) : null;
-    // 일별 조회를 넣기 전에 저장된 캐시는 날짜별 수량이 없어 한 번 다시 계산한다
-    if (cached && cached.byDateCode) {
+    // 일별(계획·실제) 조회를 넣기 전에 저장된 캐시는 날짜별 수량이 없어 한 번 다시 계산한다
+    if (cached && cached.byDateCode && cached.planByDateCode) {
       setRows(cached.rows); setAmbiguous(cached.ambiguous || []);
-      setMonthlyTotal(cached.monthlyTotal || 0); setByDateCode(cached.byDateCode); setLoading(false); return;
+      setMonthlyTotal(cached.monthlyTotal || 0); setByDateCode(cached.byDateCode);
+      setPlanByDateCode(cached.planByDateCode); setSizeByShort(cached.sizeByShort || {}); setNameByShort(cached.nameByShort || {});
+      setLoading(false); return;
     }
 
     (async () => {
@@ -78,7 +93,9 @@ function MonthlyUsageTab() {
         setAmbiguous(r.ambiguous);
         setMonthlyTotal(r.monthlyTotal);
         setByDateCode(r.byDateCode);
-        setCache(month, { rows: r.rows, ambiguous: r.ambiguous, monthlyTotal: r.monthlyTotal, byDateCode: r.byDateCode });
+        setPlanByDateCode(r.planByDateCode); setSizeByShort(r.sizeByShort); setNameByShort(r.nameByShort);
+        setCache(month, { rows: r.rows, ambiguous: r.ambiguous, monthlyTotal: r.monthlyTotal, byDateCode: r.byDateCode,
+          planByDateCode: r.planByDateCode, sizeByShort: r.sizeByShort, nameByShort: r.nameByShort });
       } catch (e) {
         if (!cancelled) setErr(e instanceof Error ? e.message : String(e));
       } finally {
@@ -104,25 +121,35 @@ function MonthlyUsageTab() {
   }, [rows]);
   const total = Math.round(sum.rawTotal);
 
-  // 일별 — 날짜마다 용기 구분별 합 + 그날 품목 (용기 구분·품목명은 월 표와 같은 제품 DB 기준)
+  // 일별 — 날짜마다 계획(생산하기로 한 것)·실제(완료) 용기 수 + 그날 품목
+  //   용기 구분·품목명은 월 표와 같은 제품 DB 기준 (생산 안 한 품목도 제품 DB 에서 찾는다)
+  type Sz = Row['size'];
   const daily = useMemo(() => {
     const info = new Map(rows.map((r) => [r.code, r]));
-    return Object.keys(byDateCode).sort().map((date) => {
-      const raw = { small: 0, large: 0, unknown: 0 };
-      const items = Object.entries(byDateCode[date])
-        .map(([code, qty]) => {
-          const r = info.get(code);
-          const size: Row['size'] = r?.size || 'unknown';
-          raw[size] += qty;
-          return { code, name: r?.name || code, size, qty };
-        })
-        .filter((i) => Math.round(i.qty) !== 0)
-        .sort((a, b) => b.qty - a.qty);
-      return { date, raw, small: Math.round(raw.small), large: Math.round(raw.large), unknown: Math.round(raw.unknown),
-        total: Math.round(raw.small + raw.large + raw.unknown), items };
-    }).filter((d) => d.total !== 0);
-  }, [byDateCode, rows]);
-  const dailyHasUnknown = daily.some((d) => d.unknown !== 0);
+    const sizeOf = (code: string): Sz => info.get(code)?.size || sizeByShort[code] || 'unknown';
+    const nameOf = (code: string) => info.get(code)?.name || nameByShort[code] || code;
+    const dates = [...new Set([...Object.keys(byDateCode), ...Object.keys(planByDateCode)])].sort();
+    return dates.map((date) => {
+      const act = { small: 0, large: 0, unknown: 0 };
+      const plan = { small: 0, large: 0, unknown: 0 };
+      const codes = new Set([...Object.keys(byDateCode[date] || {}), ...Object.keys(planByDateCode[date] || {})]);
+      const items = [...codes].map((code) => {
+        const size = sizeOf(code);
+        const a = byDateCode[date]?.[code] || 0;
+        const p = planByDateCode[date]?.[code] || 0;
+        act[size] += a; plan[size] += p;
+        return { code, name: nameOf(code), size, qty: a, plan: p };
+      }).filter((i) => Math.round(i.qty) !== 0 || Math.round(i.plan) !== 0)
+        .sort((x, y) => y.qty - x.qty || y.plan - x.plan);
+      const r = (o: typeof act) => ({ small: Math.round(o.small), large: Math.round(o.large), unknown: Math.round(o.unknown), total: Math.round(o.small + o.large + o.unknown) });
+      const A = r(act), P = r(plan);
+      return { date, ...A, plan: P, items };
+    }).filter((d) => d.total !== 0 || d.plan.total !== 0);
+  }, [byDateCode, planByDateCode, rows, sizeByShort, nameByShort]);
+  const dailyHasUnknown = daily.some((d) => d.unknown !== 0 || d.plan.unknown !== 0);
+  const planSum = useMemo(() => daily.reduce((s2, d) => ({
+    small: s2.small + d.plan.small, large: s2.large + d.plan.large, unknown: s2.unknown + d.plan.unknown, total: s2.total + d.plan.total,
+  }), { small: 0, large: 0, unknown: 0, total: 0 }), [daily]);
   // 월별현황(일자 단위 공식) 대비 차이 — 1개 이상 벌어지면 화면에 드러냄
   const diff = monthlyTotal ? total - monthlyTotal : 0;
 
@@ -158,19 +185,24 @@ function MonthlyUsageTab() {
       c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8EEF7' } }; c.border = border;
     });
     const wd = wb.addWorksheet('일별 합계');
-    wd.columns = [{ width: 14 }, { width: 6 }, { width: 14 }, { width: 14 }, { width: 10 }, { width: 12 }];
-    styleHead(wd.addRow(['날짜', '요일', `작은용기 ${SMALL_ML}ml`, `큰용기 ${LARGE_ML}ml`, '미분류', '합계']));
-    daily.forEach((d) => wd.addRow([d.date, WD[wdOf(d.date)], d.small, d.large, d.unknown, d.total]).eachCell((c) => { c.border = border; c.alignment = { horizontal: 'center' }; }));
-    const tr = wd.addRow(['합계', '', sum.small, sum.large, sum.unknown, total]);
+    wd.columns = [{ width: 12 }, { width: 6 }, { width: 13 }, { width: 13 }, { width: 10 }, { width: 11 }, { width: 13 }, { width: 13 }, { width: 10 }, { width: 11 }, { width: 11 }];
+    styleHead(wd.addRow(['날짜', '요일',
+      `계획 작은 ${SMALL_ML}ml`, `계획 큰 ${LARGE_ML}ml`, '계획 미분류', '계획 합계',
+      `실제 작은 ${SMALL_ML}ml`, `실제 큰 ${LARGE_ML}ml`, '실제 미분류', '실제 합계', '차이(실제−계획)']));
+    daily.forEach((d) => wd.addRow([d.date, WD[wdOf(d.date)],
+      d.plan.small, d.plan.large, d.plan.unknown, d.plan.total,
+      d.small, d.large, d.unknown, d.total, d.total - d.plan.total]).eachCell((c) => { c.border = border; c.alignment = { horizontal: 'center' }; }));
+    const tr = wd.addRow(['합계', '', planSum.small, planSum.large, planSum.unknown, planSum.total, sum.small, sum.large, sum.unknown, total, total - planSum.total]);
     tr.font = { bold: true }; tr.eachCell((c) => { c.border = border; c.alignment = { horizontal: 'center' }; });
     wd.views = [{ state: 'frozen', ySplit: 1 }];
     const wi = wb.addWorksheet('일별 품목');
-    wi.columns = [{ width: 14 }, { width: 6 }, { width: 10 }, { width: 30 }, { width: 14 }, { width: 10 }];
-    styleHead(wi.addRow(['날짜', '요일', '코드', '품목명', '용기', '수량(개)']));
-    daily.forEach((d) => d.items.forEach((i) => wi.addRow([d.date, WD[wdOf(d.date)], i.code, i.name, sizeLabel(i.size), Math.round(i.qty)])
+    wi.columns = [{ width: 12 }, { width: 6 }, { width: 10 }, { width: 30 }, { width: 14 }, { width: 10 }, { width: 10 }, { width: 10 }];
+    styleHead(wi.addRow(['날짜', '요일', '코드', '품목명', '용기', '계획(개)', '실제(개)', '차이']));
+    daily.forEach((d) => d.items.forEach((i) => wi.addRow([d.date, WD[wdOf(d.date)], i.code, i.name, sizeLabel(i.size),
+      Math.round(i.plan), Math.round(i.qty), Math.round(i.qty) - Math.round(i.plan)])
       .eachCell((c, n) => { c.border = border; c.alignment = { horizontal: n === 4 ? 'left' : 'center' }; })));
     wi.views = [{ state: 'frozen', ySplit: 1 }];
-    wi.autoFilter = { from: 'A1', to: 'F1' };
+    wi.autoFilter = { from: 'A1', to: 'H1' };
     const buf = await wb.xlsx.writeBuffer();
     const url = URL.createObjectURL(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
     const a = document.createElement('a'); a.href = url; a.download = `용기사용량_${month}.xlsx`; a.click();
@@ -205,18 +237,19 @@ function MonthlyUsageTab() {
         <div className="bg-white border-2 border-cyan-300 rounded-xl p-4">
           <div className="text-xs text-cyan-700 font-semibold">작은용기 {SMALL_ML}ml <span className="text-gray-400 font-normal">(코드 -51)</span></div>
           <div className="text-4xl font-extrabold text-cyan-700 tabular-nums mt-1">{sum.small.toLocaleString()}<span className="text-base font-normal text-gray-400 ml-1">개</span></div>
-          <div className="text-xs text-gray-500 mt-0.5">{sum.smallCnt}품목</div>
+          <div className="text-xs text-gray-500 mt-0.5">{sum.smallCnt}품목{planSum.total > 0 && <> · 계획 <b className="tabular-nums">{planSum.small.toLocaleString()}</b>개</>}</div>
         </div>
         <div className="bg-white border-2 border-violet-300 rounded-xl p-4">
           <div className="text-xs text-violet-700 font-semibold">큰용기 {LARGE_ML}ml <span className="text-gray-400 font-normal">(그 외)</span></div>
           <div className="text-4xl font-extrabold text-violet-700 tabular-nums mt-1">{sum.large.toLocaleString()}<span className="text-base font-normal text-gray-400 ml-1">개</span></div>
-          <div className="text-xs text-gray-500 mt-0.5">{sum.largeCnt}품목</div>
+          <div className="text-xs text-gray-500 mt-0.5">{sum.largeCnt}품목{planSum.total > 0 && <> · 계획 <b className="tabular-nums">{planSum.large.toLocaleString()}</b>개</>}</div>
         </div>
         <div className="bg-slate-50 border rounded-xl p-4">
           <div className="text-xs text-gray-500 font-semibold">합계</div>
           <div className="text-4xl font-extrabold text-gray-800 tabular-nums mt-1">{total.toLocaleString()}<span className="text-base font-normal text-gray-400 ml-1">개</span></div>
           <div className="text-xs text-gray-500 mt-0.5">
             {rows.length}품목
+            {planSum.total > 0 && <> · 계획 <b className="tabular-nums">{planSum.total.toLocaleString()}</b>개</>}
             {!loading && monthlyTotal > 0 && (
               <span className={diff === 0 ? 'text-emerald-600 ml-1.5 font-semibold' : 'text-red-600 ml-1.5 font-semibold'}>
                 · 월별현황 {monthlyTotal.toLocaleString()} {diff === 0 ? '일치 ✓' : `(${diff > 0 ? '+' : ''}${diff})`}
@@ -256,7 +289,7 @@ function MonthlyUsageTab() {
             ))}
           </div>
           <span className="text-xs text-gray-500">
-            {view === 'item' ? '그 달 품목별 · 수량 많은 순' : '날짜별 용기 사용량 · 날짜를 누르면 그날 품목별 내역'}
+            {view === 'item' ? '그 달 품목별 · 수량 많은 순' : '날짜별 계획(생산하기로 한 것) · 실제(완료) 용기 수 · 차이 = 실제 − 계획 (잔여량 등) · 날짜를 누르면 그날 품목별'}
           </span>
         </div>
         {view === 'day' ? (
@@ -269,12 +302,21 @@ function MonthlyUsageTab() {
               <table className="w-full text-sm">
                 <thead className="bg-slate-50 text-xs text-gray-600 sticky top-0 z-10">
                   <tr>
-                    <th className="px-3 py-2 text-left w-36">날짜</th>
-                    <th className="px-3 py-2 text-right text-cyan-700">작은용기 {SMALL_ML}ml</th>
-                    <th className="px-3 py-2 text-right text-violet-700">큰용기 {LARGE_ML}ml</th>
-                    {dailyHasUnknown && <th className="px-3 py-2 text-right text-amber-700">미분류</th>}
-                    <th className="px-3 py-2 text-right">합계</th>
-                    <th className="px-3 py-2 text-right w-20">품목</th>
+                    <th rowSpan={2} className="px-3 py-2 text-left w-32 border-r">날짜</th>
+                    <th colSpan={dailyHasUnknown ? 4 : 3} className="px-3 py-1 text-center text-gray-700 bg-slate-100 border-r">계획 <span className="font-normal text-gray-500">(생산하기로 한 수량)</span></th>
+                    <th colSpan={dailyHasUnknown ? 4 : 3} className="px-3 py-1 text-center text-gray-800 bg-emerald-50 border-r">실제 <span className="font-normal text-gray-500">(완료 · 잔여량 반영)</span></th>
+                    <th rowSpan={2} className="px-3 py-2 text-right border-r">차이</th>
+                    <th rowSpan={2} className="px-3 py-2 text-right w-16">품목</th>
+                  </tr>
+                  <tr>
+                    {[0, 1].map((k) => (
+                      <Fragment key={k}>
+                        <th className="px-3 py-1.5 text-right text-cyan-700">작은 {SMALL_ML}</th>
+                        <th className="px-3 py-1.5 text-right text-violet-700">큰 {LARGE_ML}</th>
+                        {dailyHasUnknown && <th className="px-3 py-1.5 text-right text-amber-700">미분류</th>}
+                        <th className="px-3 py-1.5 text-right border-r">합계</th>
+                      </Fragment>
+                    ))}
                   </tr>
                 </thead>
                 <tbody>
@@ -285,20 +327,31 @@ function MonthlyUsageTab() {
                       <Fragment key={d.date}>
                         <tr onClick={() => setOpenDay(open ? null : d.date)}
                           className={`border-t cursor-pointer ${open ? 'bg-blue-50' : 'hover:bg-slate-50'}`}>
-                          <td className="px-3 py-2 font-semibold text-gray-800 tabular-nums">
+                          <td className="px-3 py-2 font-semibold text-gray-800 tabular-nums border-r whitespace-nowrap">
                             <span className="text-gray-400 mr-1">{open ? '▾' : '▸'}</span>{d.date.slice(5)}
                             <span className={`ml-1.5 text-xs ${w === 0 ? 'text-rose-500' : w === 6 ? 'text-blue-500' : 'text-gray-400'}`}>({WD[w]})</span>
                           </td>
+                          <td className="px-3 py-2 text-right tabular-nums text-cyan-700/80">{d.plan.small.toLocaleString()}</td>
+                          <td className="px-3 py-2 text-right tabular-nums text-violet-700/80">{d.plan.large.toLocaleString()}</td>
+                          {dailyHasUnknown && <td className="px-3 py-2 text-right tabular-nums text-amber-700">{d.plan.unknown ? d.plan.unknown.toLocaleString() : ''}</td>}
+                          <td className="px-3 py-2 text-right tabular-nums font-bold text-gray-700 border-r">{d.plan.total.toLocaleString()}</td>
                           <td className="px-3 py-2 text-right tabular-nums text-cyan-700 font-bold">{d.small.toLocaleString()}</td>
                           <td className="px-3 py-2 text-right tabular-nums text-violet-700 font-bold">{d.large.toLocaleString()}</td>
                           {dailyHasUnknown && <td className="px-3 py-2 text-right tabular-nums text-amber-700">{d.unknown ? d.unknown.toLocaleString() : ''}</td>}
-                          <td className="px-3 py-2 text-right tabular-nums font-extrabold text-gray-900">{d.total.toLocaleString()}</td>
+                          <td className="px-3 py-2 text-right tabular-nums font-extrabold text-gray-900 border-r">{d.total.toLocaleString()}</td>
+                          <DiffCell v={d.total - d.plan.total} />
                           <td className="px-3 py-2 text-right tabular-nums text-gray-500">{d.items.length}</td>
                         </tr>
                         {open && (
                           <tr className="bg-slate-50/70">
-                            <td colSpan={dailyHasUnknown ? 6 : 5} className="px-4 py-2">
+                            <td colSpan={dailyHasUnknown ? 11 : 9} className="px-4 py-2">
                               <table className="w-full text-xs">
+                                <thead className="text-gray-500">
+                                  <tr>
+                                    <th className="py-1 text-left w-16">코드</th><th className="py-1 text-left">품목명</th><th className="py-1 w-24">용기</th>
+                                    <th className="py-1 text-right w-20">계획</th><th className="py-1 text-right w-20">실제</th><th className="py-1 text-right w-20">차이</th>
+                                  </tr>
+                                </thead>
                                 <tbody className="divide-y divide-slate-200">
                                   {d.items.map((i) => (
                                     <tr key={i.code}>
@@ -310,7 +363,12 @@ function MonthlyUsageTab() {
                                           {i.size === 'small' ? `작은 ${SMALL_ML}` : i.size === 'large' ? `큰 ${LARGE_ML}` : '미분류'}
                                         </span>
                                       </td>
+                                      <td className="py-1 text-right tabular-nums w-20 text-gray-600">{Math.round(i.plan).toLocaleString()}</td>
                                       <td className="py-1 text-right font-bold tabular-nums w-20">{Math.round(i.qty).toLocaleString()}</td>
+                                      {(() => {
+                                        const dv = Math.round(i.qty) - Math.round(i.plan);
+                                        return <td className={`py-1 text-right tabular-nums w-20 ${dv > 0 ? 'text-emerald-700' : dv < 0 ? 'text-rose-600' : 'text-gray-400'}`}>{dv > 0 ? `+${dv.toLocaleString()}` : dv.toLocaleString()}</td>;
+                                      })()}
                                     </tr>
                                   ))}
                                 </tbody>
@@ -324,11 +382,16 @@ function MonthlyUsageTab() {
                 </tbody>
                 <tfoot className="sticky bottom-0 bg-slate-100 font-bold text-gray-800">
                   <tr className="border-t-2">
-                    <td className="px-3 py-2">합계 ({daily.length}일)</td>
+                    <td className="px-3 py-2 border-r">합계 ({daily.length}일)</td>
+                    <td className="px-3 py-2 text-right tabular-nums text-cyan-700/80">{planSum.small.toLocaleString()}</td>
+                    <td className="px-3 py-2 text-right tabular-nums text-violet-700/80">{planSum.large.toLocaleString()}</td>
+                    {dailyHasUnknown && <td className="px-3 py-2 text-right tabular-nums text-amber-700">{planSum.unknown.toLocaleString()}</td>}
+                    <td className="px-3 py-2 text-right tabular-nums border-r">{planSum.total.toLocaleString()}</td>
                     <td className="px-3 py-2 text-right tabular-nums text-cyan-700">{sum.small.toLocaleString()}</td>
                     <td className="px-3 py-2 text-right tabular-nums text-violet-700">{sum.large.toLocaleString()}</td>
                     {dailyHasUnknown && <td className="px-3 py-2 text-right tabular-nums text-amber-700">{sum.unknown.toLocaleString()}</td>}
-                    <td className="px-3 py-2 text-right tabular-nums">{total.toLocaleString()}</td>
+                    <td className="px-3 py-2 text-right tabular-nums border-r">{total.toLocaleString()}</td>
+                    <DiffCell v={total - planSum.total} />
                     <td className="px-3 py-2" />
                   </tr>
                 </tfoot>

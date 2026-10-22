@@ -25,6 +25,10 @@ export interface ContainerMonth {
   mUnassigned: number;
   /** 날짜 → 코드 → 확정 수량 (제품별 생산 이력용) */
   byDateCode: Record<string, Record<string, number>>;
+  /** 날짜 → 코드 → 생산하기로 한 수량 (그날 생산계획 총수량 = 현황판 총수량) */
+  planByDateCode: Record<string, Record<string, number>>;
+  /** 단축코드 → 용기 구분 (제품 DB 기준, 생산 안 한 품목 포함) */
+  sizeByShort: Record<string, 'small' | 'large'>;
   /** 그 달 실온 생산 기록 (제품명·수량·날짜) */
   ambientRows: { productName: string; qty: number; date: string }[];
   /** 단축코드 → 제품명 (제품 DB 기준) */
@@ -121,6 +125,16 @@ export async function loadContainerMonth(month: string): Promise<ContainerMonth>
   const raw = { small: 0, large: 0, unknown: 0 };
   rows.forEach((r) => { raw[r.size] += r.qty; });
 
+  // 생산계획 (그날 품목 총수량) — 날짜 → 코드
+  const planByDateCode: Record<string, Record<string, number>> = {};
+  items.forEach((it) => {
+    const k = canonicalShort(it.code || '');
+    const q = it.totalQty || 0;
+    if (!k || !it.date || q === 0) return;
+    const day = planByDateCode[it.date] || (planByDateCode[it.date] = {});
+    day[k] = (day[k] || 0) + q;
+  });
+
   return {
     rows, ambiguous: [...conflict], monthlyTotal,
     small: Math.round(raw.small), large: Math.round(raw.large), unknown: Math.round(raw.unknown),
@@ -130,6 +144,8 @@ export async function loadContainerMonth(month: string): Promise<ContainerMonth>
     m3: Math.round(prod.coldByMachine['3호기'] || 0),
     mUnassigned: Math.round(prod.coldMachineUnassigned),
     byDateCode: prod.coldByDateCode,
+    planByDateCode,
+    sizeByShort: Object.fromEntries(sizeByShort),
     ambientRows: ambient.map((a) => ({ productName: a.productName || '', qty: a.qty || 0, date: a.date })),
     nameByShort: Object.fromEntries(nameByShort),
     erpByShort: Object.fromEntries(erpByShort),
