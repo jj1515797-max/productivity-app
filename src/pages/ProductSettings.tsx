@@ -134,6 +134,40 @@ export default function ProductSettings() {
     await deleteDoc(doc(db, 'productSettings', code));
   };
 
+  /** 제품 DB 엑셀 다운로드 — 화면에 보이는 목록 그대로 (검색 중이면 검색 결과만) */
+  const downloadProducts = async () => {
+    const ExcelJS = (await import('exceljs')).default;
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('제품 DB');
+    ws.columns = [
+      { header: 'ERP코드', key: 'code', width: 14 },
+      { header: '단축코드', key: 'short', width: 10 },
+      { header: '품목명', key: 'name', width: 36 },
+      { header: '포장중량(g)', key: 'w', width: 12 },
+      { header: '완바트 수량', key: 'v', width: 12 },
+      { header: '구분', key: 't', width: 10 },
+    ];
+    filtered.forEach((p) => ws.addRow({
+      code: p.code, short: convertErpCode(p.code), name: p.name || '',
+      w: p.packWeight ?? null, v: p.vatMaxQty ?? null, t: p.type || '미분류',
+    }));
+    const head = ws.getRow(1);
+    head.font = { bold: true };
+    head.alignment = { horizontal: 'center' };
+    head.eachCell((c) => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8EEF7' } }; });
+    ws.views = [{ state: 'frozen', ySplit: 1 }];
+    ws.autoFilter = { from: 'A1', to: 'F1' };
+    const buf = await wb.xlsx.writeBuffer();
+    const url = URL.createObjectURL(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+    const d = new Date();
+    const ymd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const a = document.createElement('a');
+    a.href = url; a.download = `제품DB_${ymd}${search.trim() ? '_검색결과' : ''}.xlsx`;
+    document.body.appendChild(a); a.click(); a.remove();
+    // 바로 지우면 일부 브라우저에서 파일 이름이 사라지거나 받기가 끊긴다 — 잠시 뒤에 정리
+    window.setTimeout(() => URL.revokeObjectURL(url), 2000);
+  };
+
   return (
     <div className="space-y-4">
       {/* 제품 DB 섹션 */}
@@ -170,6 +204,12 @@ export default function ProductSettings() {
               onClick={() => setShowVatBulk(true)}
               className="px-3 py-2 border rounded-md font-medium text-sm hover:bg-gray-100"
             >🪣 완바트 일괄</button>
+            <button
+              onClick={() => { void downloadProducts(); }}
+              disabled={filtered.length === 0}
+              title={search.trim() ? `검색 결과 ${filtered.length}개만 받습니다` : `전체 ${filtered.length}개`}
+              className="px-3 py-2 border border-emerald-300 text-emerald-700 rounded-md font-medium text-sm hover:bg-emerald-50 disabled:opacity-40"
+            >📥 엑셀 다운로드</button>
             <button
               onClick={() => {
                 const code = prompt('새 제품 코드 (예: A-01)');
