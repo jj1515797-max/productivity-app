@@ -12,6 +12,8 @@ import type { Item, Member, ProductSetting } from '../types';
 import { todayKey, effectiveTodayKey } from '../lib/dateUtil';
 import { getStage, STAGE_LETTERS } from '../lib/monthlyProduction';
 import { canonicalShort, normalizeCode } from '../lib/codeUtil';
+import { LIVE_LABEL, useLiveGuard } from '../lib/liveGuard';
+import type { LiveStatus } from '../lib/liveGuard';
 
 interface ScoopEvent {
   id: string;
@@ -51,11 +53,21 @@ export default function Scoop({ board }: { board?: boolean }) {
     setItems(list);
   }), [date]);
 
-  useEffect(() => onSnapshot(collection(db, 'days', date, 'scoop'), (s) => {
+  // 서버에 저장 확인된 개수 · 캐시 여부도 같이 본다 (연결 지킴이가 '다른 사람 입력이 안 들어오는' 상태를 잡는 데 쓴다)
+  const [confirmedCount, setConfirmedCount] = useState(0);
+  const [fromCache, setFromCache] = useState(false);
+  useEffect(() => onSnapshot(collection(db, 'days', date, 'scoop'), { includeMetadataChanges: true }, (s) => {
     const list: ScoopEvent[] = [];
-    s.forEach((d) => list.push({ ...(d.data() as Omit<ScoopEvent, 'id'>), id: d.id }));
+    let confirmed = 0;
+    s.forEach((d) => {
+      list.push({ ...(d.data() as Omit<ScoopEvent, 'id'>), id: d.id });
+      if (!d.metadata.hasPendingWrites) confirmed += 1;
+    });
     setEvents(list);
+    setConfirmedCount(confirmed);
+    setFromCache(s.metadata.fromCache);
   }), [date]);
+  const live = useLiveGuard(date, () => collection(db, 'days', date, 'scoop'), confirmedCount, fromCache);
 
   // 재배합 플래그 (날짜별, 실시간 공유): days/{date}/scoopFlags/{code} = { remix: bool }
   const [remixSet, setRemixSet] = useState<Set<string>>(new Set());
@@ -148,8 +160,8 @@ export default function Scoop({ board }: { board?: boolean }) {
     }
   }, [items, byCode, date, notifyCfg]);
 
-  if (board) return <BoardView date={date} setDate={setDate} items={items} byCode={byCode} remixSet={remixSet} />;
-  return <TabletView date={date} items={items} byCode={byCode} events={events} remixSet={remixSet} toggleRemix={toggleRemix} />;
+  if (board) return <BoardView date={date} setDate={setDate} items={items} byCode={byCode} remixSet={remixSet} live={live} />;
+  return <TabletView live={live} date={date} items={items} byCode={byCode} events={events} remixSet={remixSet} toggleRemix={toggleRemix} />;
 }
 
 /* ============================= 자리 태블릿 ============================= */
@@ -173,9 +185,21 @@ function Info({ text, right }: { text: string; right?: boolean }) {
   );
 }
 
+/** 실시간 연결 상태 칩 — 누르면 바로 다시 연결 */
+function LiveChip({ live }: { live: { status: LiveStatus; reconnect: () => void } }) {
+  const l = LIVE_LABEL[live.status];
+  return (
+    <button type="button" onClick={live.reconnect} title="누르면 서버에 다시 연결합니다"
+      className={`px-2.5 py-1.5 rounded-lg border text-xs font-bold flex items-center gap-1.5 whitespace-nowrap active:scale-95 ${l.cls}`}>
+      <span className={`w-2 h-2 rounded-full ${l.dot}`} />{l.text}
+    </button>
+  );
+}
+
 function TabletView({
-  date, items, byCode, events, remixSet, toggleRemix,
+  live, date, items, byCode, events, remixSet, toggleRemix,
 }: {
+  live: { status: LiveStatus; reconnect: () => void };
   date: string;
   items: Item[];
   byCode: Map<string, { total: number; byWorker: Map<string, number>; events: ScoopEvent[] }>;
@@ -366,7 +390,8 @@ function TabletView({
           </>
         )}
         <span className="ml-auto flex items-center gap-2">
-          <Info right text={'실시간 공유 — 같은 품목을 여러 명이 동시에 세도 바로 합쳐집니다.\n날짜는 오늘로 고정 (새벽 2시에 바뀜).\n잘못 눌렀으면 「직전 취소」 (내가 넣은 마지막 1건).'} />
+          <LiveChip live={live} />
+          <Info right text={'실시간 공유 — 같은 품목을 여러 명이 동시에 세도 바로 합쳐집니다.\n왼쪽 「실시간」 이 주황·빨강이면 연결이 끊긴 것 — 눌러서 다시 연결 (저절로도 다시 붙습니다).\n날짜는 오늘로 고정 (새벽 2시에 바뀜).\n잘못 눌렀으면 「직전 취소」 (내가 넣은 마지막 1건).'} />
           <button onClick={() => setTextScale((textScale + 1) % 4)}
             className="px-3 py-2 rounded-lg text-sm font-bold border-2 border-gray-300 bg-white text-gray-600 whitespace-nowrap active:scale-95 transition">
             🔍 글씨 {['보통', '크게', '아주크게', '최대'][textScale]}
@@ -614,8 +639,9 @@ function WorkerSetup({ onSet }: { onSet: (w: string) => void }) {
 
 /* =============================== 현황판 ============================== */
 function BoardView({
-  date, setDate, items, byCode, remixSet,
+  date, setDate, items, byCode, remixSet, live,
 }: {
+  live: { status: LiveStatus; reconnect: () => void };
   date: string;
   setDate: (d: string) => void;
   items: Item[];
@@ -666,7 +692,7 @@ function BoardView({
         <span className="text-lg font-bold">📺 내포장 현황판</span>
         <input type="date" value={date} onChange={(e) => e.target.value && setDate(e.target.value)}
           className="border rounded px-2 py-1 text-sm font-bold" />
-        <span className="ml-auto text-sm text-gray-500">실시간 자동 갱신</span>
+        <span className="ml-auto"><LiveChip live={live} /></span>
       </div>
 
       {/* 재배합 필요 — 최우선 표시 */}
