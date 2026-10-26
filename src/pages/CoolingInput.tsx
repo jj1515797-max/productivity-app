@@ -1,7 +1,7 @@
 /** 입력 › 외포장 입력 — 태블릿 들고 다니는 사람용
  *  ① 냉각 종료 알림(누르면 출고) ② 입고 대기 카드(내포장 입력된 품목×채널) ③ 냉각실 도면 */
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { collection, deleteDoc, doc, setDoc, updateDoc } from 'firebase/firestore';
+import { collection, deleteDoc, doc, setDoc, updateDoc, writeBatch } from 'firebase/firestore';
 import { db } from '../firebase';
 import {
   CART_COL, CHANNELS, CH_SHORT, CH_STYLE, cartMinutes, splitByDate, unlockAudio, chime, fmtLeft, hhmm, nextFreeSlot, slotLabel, useCoolingConfig,
@@ -10,6 +10,7 @@ import type { CartItem, Channel, CoolingCart, RoomConfig } from '../lib/cooling'
 import { setCardsChannel, splitCard, unsplitCard, useActiveCarts, useDayCarts, usePendingCards } from '../lib/coolingData';
 import type { PendingCard } from '../lib/coolingData';
 import CoolingRoomMap from '../components/CoolingRoomMap';
+import StaleCarts from '../components/StaleCarts';
 import WorkDateNav, { useWorkDate } from '../components/WorkDateNav';
 import { useSorted } from '../lib/packSort';
 
@@ -182,6 +183,26 @@ export default function CoolingInput() {
   })();
   const { shown: waiting } = splitByDate(waitingAll, date, today);
   const roomOf = (id: number) => cfg.rooms.find((r) => r.id === id);
+  // 지난 날짜에 넣고 출고·대기 정리를 안 한 대차 — 오늘 화면 위에 따로, 한 번에 출고 처리
+  const { stale } = splitByDate(activeAll, date, today);
+  const releaseStale = () => setAsk({
+    title: `지난 날짜 대차 ${stale.length}대 출고 처리`,
+    msg: `${[...new Set(stale.map((c) => c.date.slice(5)))].join(', ')} 에 넣은 대차를 모두 출고로 정리합니다.\n실제로 다 뺀 경우에만 눌러 주세요. 기록은 그대로 남습니다.`,
+    ok: '모두 출고',
+    onOk: () => {
+      const ids = stale.map((c) => c.id);
+      const t = Date.now();
+      const b = writeBatch(db);
+      ids.forEach((id) => b.update(doc(db, CART_COL, id), { out: true, outAt: t }));
+      fire(b.commit(), '지난 날짜 대차 출고');
+      showToast(`지난 날짜 대차 ${ids.length}대 출고 처리`, () => {
+        const u = writeBatch(db);
+        ids.forEach((id) => u.update(doc(db, CART_COL, id), { out: false, outAt: null }));
+        fire(u.commit(), '출고 되돌리기');
+        setToast(null);
+      });
+    },
+  });
 
   return (
     <div className="space-y-4 pb-24">
@@ -199,6 +220,8 @@ export default function CoolingInput() {
           <b>{date}</b> 에 넣은 대차만 보고 있습니다 (입고 대기·냉각실·알림·출고 기록 모두). 다른 날짜에 넣고 아직 안 뺀 대차는 도면에 회색 「다른 날」로 자리만 표시됩니다.
         </div>
       )}
+
+      {isToday && <StaleCarts stale={stale} roomName={(id) => roomOf(id)?.name || `냉각실 ${id}`} onReleaseAll={releaseStale} />}
 
       {/* ① 냉각 종료 — 누르면 출고 */}
       {done.length > 0 && (

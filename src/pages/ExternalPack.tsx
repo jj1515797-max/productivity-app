@@ -50,9 +50,11 @@ export default function ExternalPack() {
 
   /* 실시간 시계 (클라이언트만, Firestore 비용 X) */
   const [now, setNow] = useState(new Date());
-  // 냉각실에서 냉각이 끝났는데 아직 출고 안 한 대차 수 (대기 대차 제외, 날짜 무관 — 냉각실에 있는 것 전부)
+  // 냉각실에서 냉각이 끝났는데 아직 출고 안 한 오늘(생산일) 대차 수 — 대기 대차·지난 날짜 미처리 대차는 빼고
+  //   (외포장 입력의 종료 알람과 같은 기준. 지난 날짜 대차는 외포장 입력 위 칸에서 따로 정리)
   const activeCarts = useActiveCarts();
-  const coolDone = activeCarts.filter((c) => !c.waiting && c.endAt > 0 && now.getTime() >= c.endAt).length;
+  const workDay = effectiveTodayKey();
+  const coolDone = activeCarts.filter((c) => !c.waiting && c.date === workDay && c.endAt > 0 && now.getTime() >= c.endAt).length;
   useEffect(() => {
     const id = setInterval(() => setNow(new Date()), 1000);
     return () => clearInterval(id);

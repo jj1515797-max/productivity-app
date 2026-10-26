@@ -5,6 +5,7 @@ import { CH_STYLE, DEFAULT_CONFIG, fmtLeft, hhmm, slotLabel, splitByDate, useCoo
 import type { CoolingCart, CoolingConfig } from '../lib/cooling';
 import { useActiveCarts, useDayCarts } from '../lib/coolingData';
 import CoolingRoomMap from '../components/CoolingRoomMap';
+import StaleCarts from '../components/StaleCarts';
 import WorkDateNav, { useWorkDate } from '../components/WorkDateNav';
 
 export default function CoolingBoard() {
@@ -22,6 +23,7 @@ export default function CoolingBoard() {
   const roomOf = (id: number) => cfg.rooms.find((r) => r.id === id);
   const { shown, ghosts } = splitByDate(active, date, today);
   const { shown: waiting } = splitByDate(activeAll.filter((c) => c.waiting), date, today);
+  const { stale } = splitByDate(activeAll, date, today);   // 지난 날짜 미처리 — 따로 표시 (정리는 외포장 입력에서)
   const doneCnt = shown.filter((c) => now >= c.endAt).length;
 
   return (
@@ -33,6 +35,8 @@ export default function CoolingBoard() {
         <button onClick={() => setShowCfg(!showCfg)} className="ml-auto px-3 py-1.5 text-sm border rounded bg-white">⚙ 설정</button>
         <span className="text-3xl font-mono font-bold text-gray-800 tabular-nums">{hhmm(now)}</span>
       </div>
+
+      {isToday && <StaleCarts stale={stale} roomName={(id) => roomOf(id)?.name || `냉각실 ${id}`} />}
 
       <ItemSearch date={date} isToday={isToday} now={now}
         carts={[...new Map([...day, ...activeAll].map((c) => [c.id, c])).values()]}

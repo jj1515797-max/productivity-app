@@ -106,11 +106,15 @@ export function slotLabel(room: RoomConfig, slot: number): string {
   return `오른쪽 ${room.cols - c}줄 · 안쪽부터 ${r + 1}번째`;
 }
 
-/** 보고 있는 날짜의 대차만 정상 표시, 나머지는 '다른 날' 로 흐리게.
- *  생산 당일을 볼 때는 전날 넣고 아직 안 뺀 대차도 실제로 냉각실에 있으니 같이 보여 준다. */
+/** 보고 있는 날짜의 대차만 정상 표시(shown), 나머지는 도면에 '다른 날' 로 흐리게(ghosts).
+ *  생산 당일을 볼 때 지난 날짜에 넣고 출고(또는 대기 정리)를 안 한 대차는 stale 로 따로 돌려준다 —
+ *  오늘 대수·종료 알람·외포장 경고등에 섞지 않고, 화면 위 「지난 날짜 미처리 대차」 칸에서 한 번에 정리한다. */
 export function splitByDate(carts: CoolingCart[], date: string, today: string) {
-  const mine = (c: CoolingCart) => c.date === date || (date === today && c.date < today);
-  return { shown: carts.filter(mine), ghosts: carts.filter((c) => !mine(c)) };
+  return {
+    shown: carts.filter((c) => c.date === date),
+    ghosts: carts.filter((c) => c.date !== date),
+    stale: date === today ? carts.filter((c) => c.date < today) : [],
+  };
 }
 
 export function fmtLeft(ms: number): string {
