@@ -29,6 +29,33 @@ export default function ProductBarcodePanel({ onCountChange }: { onCountChange?:
     if (!confirm(`바코드 ${bc} 를 삭제할까요?`)) return;
     await deleteDoc(doc(db, BARCODE_COL, bc));
   };
+  /** 엑셀 다운로드 — 화면 목록 그대로 (검색 중이면 검색 결과만). 열 순서는 붙여넣기 형식과 같아 그대로 다시 붙여넣을 수 있다.
+   *  바코드는 글자로 저장 (앞자리 0 이 사라지거나 8.8E+12 처럼 바뀌지 않게) */
+  const download = async () => {
+    const ExcelJS = (await import('exceljs')).default;
+    const wb = new ExcelJS.Workbook();
+    const ws = wb.addWorksheet('제품 바코드');
+    ws.columns = [
+      { header: '제품코드', key: 'code', width: 14 },
+      { header: '제품명', key: 'name', width: 36 },
+      { header: '제품바코드', key: 'bc', width: 18, style: { numFmt: '@' } },
+    ];
+    filtered.forEach((r) => ws.addRow({ code: r.code, name: r.name || '', bc: String(r.barcode) }));
+    const head = ws.getRow(1);
+    head.font = { bold: true };
+    head.alignment = { horizontal: 'center' };
+    head.eachCell((c) => { c.fill = { type: 'pattern', pattern: 'solid', fgColor: { argb: 'FFE8EEF7' } }; });
+    ws.views = [{ state: 'frozen', ySplit: 1 }];
+    ws.autoFilter = { from: 'A1', to: 'C1' };
+    const buf = await wb.xlsx.writeBuffer();
+    const url = URL.createObjectURL(new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }));
+    const d = new Date();
+    const ymd = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    const a = document.createElement('a');
+    a.href = url; a.download = `제품바코드_${ymd}${search.trim() ? '_검색결과' : ''}.xlsx`;
+    document.body.appendChild(a); a.click(); a.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 2000);
+  };
   const deleteAll = async () => {
     if (rows.length === 0) return;
     if (prompt(`⚠️ 바코드 ${rows.length}개를 모두 삭제합니다. 되돌릴 수 없습니다.\n진행하려면 "삭제" 를 입력하세요.`) !== '삭제') return;
@@ -55,6 +82,9 @@ export default function ProductBarcodePanel({ onCountChange }: { onCountChange?:
           className="flex-1 min-w-[240px] border rounded-md px-3 py-2 text-sm" />
         <span className="text-xs text-gray-500">{filtered.length}/{rows.length}개</span>
         <button onClick={() => setShowBulk(true)} className="px-3 py-2 bg-indigo-600 text-white rounded text-sm font-medium hover:bg-indigo-700">📋 붙여넣기</button>
+        <button onClick={() => { void download(); }} disabled={filtered.length === 0}
+          title={search.trim() ? `검색 결과 ${filtered.length}개만 받습니다` : `전체 ${filtered.length}개`}
+          className="px-3 py-2 border border-emerald-300 text-emerald-700 rounded text-sm font-medium hover:bg-emerald-50 disabled:opacity-40">📥 엑셀 다운로드</button>
         {rows.length > 0 && (
           <button onClick={deleteAll} disabled={deleting}
             className="px-3 py-2 bg-red-600 text-white rounded text-sm font-medium hover:bg-red-700 disabled:bg-gray-300">
