@@ -3,6 +3,7 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import type { DecompMatRow, DecompProdRow, DecompResult } from '../lib/costDecomp';
 import { DECOMP_SWING, ratioDecomp, statusLabel } from '../lib/costDecomp';
+import { saveProductionAmount, useProductionAmounts } from '../lib/monthlyAmount';
 
 export interface DecompView {
   result: DecompResult;
@@ -45,14 +46,6 @@ function Diverge({ v, max, neutral }: { v: number; max: number; neutral?: boolea
   );
 }
 
-// 캐시 접두사(matAnalysis:) 밖에 둔다 — 「분석결과 삭제」가 사용자가 넣은 생산금액까지 지우지 않게
-const AMT_KEY = (m: string) => `matDecompAmt:${m}`;
-const readAmt = (m: string) => {
-  try {
-    const v = localStorage.getItem(AMT_KEY(m)) ?? localStorage.getItem(`matAnalysis:amt:${m}`);
-    return Number(v) || 0;
-  } catch { return 0; }
-};
 
 export default function CostDecompPanel({
   monthA, monthB, view, alt, recipeSrc, onRecipeSrc, yieldDbReady,
@@ -67,13 +60,14 @@ export default function CostDecompPanel({
   yieldDbReady: boolean;
 }) {
   const { rows, products, totals: t } = view.result;
-  // 생산금액은 민감 수치라 이 브라우저에만 둔다 (서버 저장 안 함)
-  const [amtA, setAmtA] = useState(() => readAmt(monthA));
-  const [amtB, setAmtB] = useState(() => readAmt(monthB));
-  useEffect(() => { setAmtA(readAmt(monthA)); setAmtB(readAmt(monthB)); }, [monthA, monthB]);
-  const saveAmt = (m: string, v: number, set: (x: number) => void) => {
-    set(v);
-    try { if (v > 0) localStorage.setItem(AMT_KEY(m), String(v)); else localStorage.removeItem(AMT_KEY(m)); } catch { /* noop */ }
+  // 생산금액은 서버(monthlyMeta)에 저장 — 다른 PC·휴대폰에서도 같은 값. 용기분석 원가율과 같은 값을 쓴다
+  const amounts = useProductionAmounts([monthA, monthB]);
+  const amtA = amounts[monthA] || 0;
+  const amtB = amounts[monthB] || 0;
+  const [amtErr, setAmtErr] = useState('');
+  const saveAmt = (m: string, v: number) => {
+    setAmtErr('');
+    saveProductionAmount(m, v).catch((e) => setAmtErr(`생산금액 저장 실패: ${e?.message || e}`));
   };
   const ratio = ratioDecomp(t, amtA, amtB);
 
@@ -251,9 +245,10 @@ export default function CostDecompPanel({
       <div className="p-4 border-b bg-slate-50">
         <div className="flex items-center gap-2 flex-wrap mb-2">
           <span className="text-xs font-bold text-gray-600">🧮 원가율로 보기</span>
-          <span className="text-[11px] text-gray-400">생산금액(원)은 이 브라우저에만 저장됩니다</span>
-          <AmtInput label={monthA} value={amtA} onChange={(v) => saveAmt(monthA, v, setAmtA)} />
-          <AmtInput label={monthB} value={amtB} onChange={(v) => saveAmt(monthB, v, setAmtB)} />
+          <span className="text-[11px] text-gray-400">생산금액(원)은 저장하면 모든 기기에 반영됩니다</span>
+          <AmtInput label={monthA} value={amtA} onChange={(v) => saveAmt(monthA, v)} />
+          <AmtInput label={monthB} value={amtB} onChange={(v) => saveAmt(monthB, v)} />
+          {amtErr && <span className="text-[11px] text-rose-600">{amtErr}</span>}
         </div>
         {ratio ? (
           <div className="grid grid-cols-1 sm:grid-cols-[14rem_1fr] gap-3 items-start">
@@ -394,7 +389,7 @@ function parseWon(text: string): number | null {
   }
   return Math.round(total);
 }
-function AmtInput({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
+export function AmtInput({ label, value, onChange }: { label: string; value: number; onChange: (v: number) => void }) {
   const [text, setText] = useState(value ? value.toLocaleString() : '');
   useEffect(() => { setText(value ? value.toLocaleString() : ''); }, [value]);
   return (

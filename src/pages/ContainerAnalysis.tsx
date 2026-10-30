@@ -17,6 +17,7 @@ import ExcelJS from 'exceljs';
 import { todayKey } from '../lib/dateUtil';
 import { loadContainerMonth, isPastMonth, type ContainerRow } from '../lib/containerLoad';
 import ContainerStockTab from '../components/ContainerStockTab';
+import ContainerCostTab from '../components/ContainerCostTab';
 
 const SMALL_ML = 185, LARGE_ML = 210;
 const WD = ['일', '월', '화', '수', '목', '금', '토'];
@@ -441,12 +442,13 @@ function MonthlyUsageTab() {
 }
 
 const TABS = [
+  { id: 'cost', label: '💰 용기분석', sub: '단가 · 사용 구성(Mix) · 원가율' },
   { id: 'usage', label: '📦 월별 사용량', sub: '생산량 기준 용기 사용량' },
   { id: 'stock', label: '🧮 재고 정합성', sub: '재고조사 투입량 검증' },
 ] as const;
 
 export default function ContainerAnalysis() {
-  const [tab, setTab] = useState<'usage' | 'stock'>('usage');
+  const [tab, setTab] = useState<'cost' | 'usage' | 'stock'>('cost');
   return (
     <div className="space-y-4">
       <div className="bg-white border rounded-lg px-3 pt-3 flex items-end gap-1 flex-wrap">
@@ -462,7 +464,7 @@ export default function ContainerAnalysis() {
           </button>
         ))}
       </div>
-      {tab === 'usage' ? <MonthlyUsageTab /> : <ContainerStockTab />}
+      {tab === 'cost' ? <ContainerCostTab /> : tab === 'usage' ? <MonthlyUsageTab /> : <ContainerStockTab />}
     </div>
   );
 }

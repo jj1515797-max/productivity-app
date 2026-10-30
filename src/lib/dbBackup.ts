@@ -30,6 +30,7 @@ export const ROOT_COLLECTIONS = [
   'productBarcodes',      // 제품 바코드 DB
   'coolingCarts', 'coolingConfig',   // 냉각 대차 입출고 · 냉각실 설정
   'containerStock',       // 용기 재고
+  'containerCost',        // 용기 월별 단가 (용기분석 원가)
   'purchaseChat',         // 구매팀 채팅
 ];
 /** 서브컬렉션 ID (collectionGroup 으로 전량 수집 — 같은 이름이면 부모가 달라도 다 모인다:
