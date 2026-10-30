@@ -1,7 +1,12 @@
 /** 용기분석 › 용기분석(원가) — 전월 대비 용기비 변동을 물량 · 구성(Mix) · 단가로 나누고 보고서 문구까지
- *  수량은 재고 정합성 탭의 실제 투입량, 단가·생산금액은 여기서 넣으면 서버에 저장(모든 기기 공통). */
+ *  수량 기준 (전환):
+ *   · 생산량 기준(기본) — 월별 사용량 탭과 같은 값. 작은·큰용기 = 제품 DB 용기 구분별 냉장 생산량, 레토르트 = 실온 생산량.
+ *     재고 정합성 탭이 계산해 서버(containerStock/_theory)에 올려 둔 값을 같이 쓰고, 없으면 여기서 계산해 올린다.
+ *   · 재고조사 기준 — 재고 정합성 탭의 실제 투입량 (직접입력, 없으면 기초+입고−기말). 생산량 기준과의 차이 = 로스·시점 차이
+ *  단가·생산금액은 여기서 넣으면 서버에 저장(모든 기기 공통). */
 import { useEffect, useMemo, useState } from 'react';
 import { doc, onSnapshot, setDoc } from 'firebase/firestore';
+import { isPastMonth, loadContainerMonth } from '../lib/containerLoad';
 import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
 import { effectiveInput } from '../lib/containerStock';
@@ -41,6 +46,16 @@ function PriceInput({ value, onSave }: { value: number | null | undefined; onSav
   );
 }
 
+type TheoryCell = { small: number; large: number; ambient: number; unknown: number; ts: number };
+/** 재고 정합성 탭과 같은 규칙 — 지난달은 그 달이 끝난 뒤 계산된 값만, 이번 달은 5분 이내 값만 */
+const usableTheory = (m: string, c: TheoryCell | undefined) => {
+  if (!c || typeof c.small !== 'number') return false;
+  if (!isPastMonth(m)) return Date.now() - c.ts < 5 * 60 * 1000;
+  const [y, mm] = m.split('-').map(Number);
+  return c.ts >= new Date(y, mm, 1).getTime();
+};
+type Basis = 'prod' | 'stock';
+
 function useDoc<T>(col: string, id: string): T | undefined {
   const [v, setV] = useState<T | undefined>(undefined);
   useEffect(() => {
@@ -70,7 +85,40 @@ export default function ContainerCostTab() {
   const costA = useDoc<{ prices?: Partial<Record<ContainerId, number>> }>(CONTAINER_COST_COL, monthA);
   const costB = useDoc<{ prices?: Partial<Record<ContainerId, number>> }>(CONTAINER_COST_COL, monthB);
   const amounts = useProductionAmounts([monthA, monthB]);
-  const loading = stockA === undefined || stockB === undefined || costA === undefined || costB === undefined;
+  const theoryDoc = useDoc<Record<string, TheoryCell>>('containerStock', '_theory');
+  const [basis, setBasisState] = useState<Basis>(() => { try { return localStorage.getItem('containerCost:basis') === 'stock' ? 'stock' : 'prod'; } catch { return 'prod'; } });
+  const setBasis = (b: Basis) => { setBasisState(b); try { localStorage.setItem('containerCost:basis', b); } catch { /* noop */ } };
+
+  // 생산량 기준 값이 없거나 오래된 달은 계산해서 서버에 올린다 (재고 정합성 탭과 같은 저장 자리 — 서로 다시 계산하지 않게)
+  const [calc, setCalc] = useState('');
+  const [calcTheory, setCalcTheory] = useState<Record<string, TheoryCell>>({});
+  const theoryOf = (m: string): TheoryCell | undefined => (usableTheory(m, theoryDoc?.[m]) ? theoryDoc![m] : calcTheory[m]);
+  useEffect(() => {
+    if (theoryDoc === undefined) return;
+    const need = [monthA, monthB].filter((m) => !usableTheory(m, theoryDoc[m]) && !calcTheory[m]);
+    if (need.length === 0) return;
+    let cancelled = false;
+    (async () => {
+      for (const m of need) {
+        if (cancelled) return;
+        setCalc(`${m} 생산량 계산 중…`);
+        try {
+          const r = await loadContainerMonth(m);
+          const t: TheoryCell = { small: r.small, large: r.large, ambient: r.ambient, unknown: r.unknown, ts: Date.now() };
+          setCalcTheory((p) => ({ ...p, [m]: t }));
+          setDoc(doc(db, 'containerStock', '_theory'), {
+            [m]: { small: r.small, large: r.large, ambient: r.ambient, unknown: r.unknown, m1: r.m1, m2: r.m2, m3: r.m3, mUnassigned: r.mUnassigned, ts: t.ts },
+          }, { merge: true }).catch(() => {});
+        } catch (e) {
+          setErr(`${m} 생산량 계산 실패: ${e instanceof Error ? e.message : String(e)}`);
+        }
+      }
+      if (!cancelled) setCalc('');
+    })();
+    return () => { cancelled = true; };
+  }, [theoryDoc, monthA, monthB]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const loading = stockA === undefined || stockB === undefined || costA === undefined || costB === undefined || theoryDoc === undefined;
 
   const [err, setErr] = useState('');
   const savePrice = (m: string, id: ContainerId, v: number | null) => {
@@ -83,15 +131,26 @@ export default function ContainerCostTab() {
     saveProductionAmount(m, v).catch((e) => setErr(`생산금액 저장 실패: ${e?.message || e}`));
   };
 
+  const prodQty = (m: string): Record<ContainerId, number | null> => {
+    const t = theoryOf(m);
+    return { c185: t ? t.small : null, c210: t ? t.large : null, retort: t ? t.ambient : null };
+  };
+  const stockQty = (stock: Record<string, StockEntry> | undefined): Record<ContainerId, number | null> =>
+    Object.fromEntries(CONTAINER_ITEMS.map((it) => [it.id, effectiveInput(stock?.[it.id])])) as Record<ContainerId, number | null>;
+  const qtyView = {
+    prod: { A: prodQty(monthA), B: prodQty(monthB) },
+    stock: { A: stockQty(stockA), B: stockQty(stockB) },
+  };
   const monthData = (stock: Record<string, StockEntry> | undefined, cost: { prices?: Partial<Record<ContainerId, number>> } | undefined, m: string): CCMonth => ({
-    qty: Object.fromEntries(CONTAINER_ITEMS.map((it) => [it.id, effectiveInput(stock?.[it.id])])),
+    qty: basis === 'prod' ? prodQty(m) : stockQty(stock),
     price: Object.fromEntries(CONTAINER_ITEMS.map((it) => [it.id, typeof cost?.prices?.[it.id] === 'number' ? cost!.prices![it.id]! : null])),
     amount: amounts[m] || 0,
   });
   const A = monthData(stockA, costA, monthA);
   const B = monthData(stockB, costB, monthB);
-  const r = useMemo(() => (loading ? null : analyzeContainerCost(A, B, monthA, monthB)),
-    [loading, JSON.stringify(A), JSON.stringify(B), monthA, monthB]); // eslint-disable-line react-hooks/exhaustive-deps
+  const r = useMemo(() => (loading || calc ? null : analyzeContainerCost(A, B, monthA, monthB)),
+    [loading, calc, JSON.stringify(A), JSON.stringify(B), monthA, monthB]); // eslint-disable-line react-hooks/exhaustive-deps
+  const unknownQty = basis === 'prod' ? (theoryOf(monthA)?.unknown || 0) + (theoryOf(monthB)?.unknown || 0) : 0;
   const ready = r && r.missing.length === 0;
   const c = ready ? containerComments(r!) : null;
 
@@ -106,8 +165,16 @@ export default function ContainerCostTab() {
         <button onClick={() => setB(shiftMonth(monthB, -1))} className="w-8 h-8 rounded hover:bg-gray-100">◀</button>
         <input type="month" value={monthB} onChange={(e) => e.target.value && setB(e.target.value)} className="border rounded px-2 py-1 text-sm font-bold" />
         <button onClick={() => setB(shiftMonth(monthB, 1))} className="w-8 h-8 rounded hover:bg-gray-100">▶</button>
-        {loading && <span className="text-xs text-blue-600">불러오는 중…</span>}
-        <span className="ml-auto text-xs text-gray-500">용기 3종 · 수량 = 재고 정합성 탭 실제 투입량 · 단가·생산금액은 저장하면 모든 기기에 반영</span>
+        {(loading || calc) && <span className="text-xs text-blue-600">{calc || '불러오는 중…'}</span>}
+        <div className="ml-auto flex items-center gap-2">
+          <span className="text-xs text-gray-500">수량 기준</span>
+          <div className="flex rounded-md border overflow-hidden text-xs">
+            {([['prod', '생산량 기준 (월별 사용량)'], ['stock', '재고조사 기준 (투입량)']] as const).map(([k, t]) => (
+              <button key={k} onClick={() => setBasis(k)}
+                className={`px-3 py-1.5 font-bold ${basis === k ? 'bg-gray-800 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>{t}</button>
+            ))}
+          </div>
+        </div>
       </div>
 
       {/* 입력 */}
@@ -120,8 +187,8 @@ export default function ContainerCostTab() {
                 <th className="px-3 py-2 text-left">용기</th>
                 <th className="px-3 py-2 text-right text-blue-700">{monthA} 단가(원)</th>
                 <th className="px-3 py-2 text-right text-rose-700">{monthB} 단가(원)</th>
-                <th className="px-3 py-2 text-right text-blue-700">{monthA} 투입량</th>
-                <th className="px-3 py-2 text-right text-rose-700">{monthB} 투입량</th>
+                <th className={`px-3 py-2 text-right ${basis === 'prod' ? 'text-gray-900 bg-amber-50' : 'text-gray-400'}`}>생산량 {monthA} → {monthB}</th>
+                <th className={`px-3 py-2 text-right ${basis === 'stock' ? 'text-gray-900 bg-amber-50' : 'text-gray-400'}`}>재고조사 투입량 {monthA} → {monthB}</th>
               </tr>
             </thead>
             <tbody className="divide-y">
@@ -130,15 +197,22 @@ export default function ContainerCostTab() {
                   <td className="px-3 py-2 font-semibold text-gray-800">{it.label}</td>
                   <td className="px-3 py-2 text-right"><PriceInput value={A.price[it.id]} onSave={(v) => savePrice(monthA, it.id, v)} /></td>
                   <td className="px-3 py-2 text-right"><PriceInput value={B.price[it.id]} onSave={(v) => savePrice(monthB, it.id, v)} /></td>
-                  <td className="px-3 py-2 text-right tabular-nums">{A.qty[it.id] != null ? nf(A.qty[it.id]!) : <span className="text-rose-500 text-xs">미입력</span>}</td>
-                  <td className="px-3 py-2 text-right tabular-nums">{B.qty[it.id] != null ? nf(B.qty[it.id]!) : <span className="text-rose-500 text-xs">미입력</span>}</td>
+                  {(['prod', 'stock'] as const).map((k) => {
+                    const a = qtyView[k].A[it.id], b = qtyView[k].B[it.id];
+                    const cell = (v: number | null) => (v != null ? nf(v) : <span className="text-rose-500 text-xs">{k === 'prod' ? '계산 전' : '미입력'}</span>);
+                    return (
+                      <td key={k} className={`px-3 py-2 text-right tabular-nums whitespace-nowrap ${basis === k ? 'font-bold text-gray-900 bg-amber-50/60' : 'text-gray-400'}`}>
+                        {cell(a)} → {cell(b)}
+                      </td>
+                    );
+                  })}
                 </tr>
               ))}
               <tr className="bg-slate-50/60">
                 <td className="px-3 py-2 font-semibold text-gray-800">생산금액(원) <span className="text-[11px] font-normal text-gray-500">원재료분석과 같은 값</span></td>
                 <td className="px-3 py-2 text-right"><AmtInput label="" value={A.amount} onChange={(v) => saveAmt(monthA, v)} /></td>
                 <td className="px-3 py-2 text-right"><AmtInput label="" value={B.amount} onChange={(v) => saveAmt(monthB, v)} /></td>
-                <td colSpan={2} className="px-3 py-2 text-xs text-gray-500">투입량은 「재고 정합성」 탭 값 (직접입력 투입량, 없으면 기초+입고−기말)</td>
+                <td colSpan={2} className="px-3 py-2 text-xs text-gray-500">생산량 = 월별 사용량 탭과 같은 값 · 재고조사 = 「재고 정합성」 탭 투입량 (둘의 차이 = 로스·월말 시점 차이)</td>
               </tr>
             </tbody>
           </table>
@@ -149,7 +223,13 @@ export default function ContainerCostTab() {
       {!loading && r && r.missing.length > 0 && (
         <div className="bg-amber-50 border border-amber-300 rounded-lg p-3 text-sm text-amber-800">
           ⚠ 아래 값이 없어 아직 계산할 수 없습니다: <b>{r.missing.join(', ')}</b>
-          <div className="text-xs mt-1">단가는 위 표에서, 투입량은 「재고 정합성」 탭에서 넣어 주세요.</div>
+          <div className="text-xs mt-1">단가는 위 표에서{basis === 'stock' ? ', 투입량은 「재고 정합성」 탭에서' : ''} 넣어 주세요.</div>
+        </div>
+      )}
+
+      {unknownQty > 0 && (
+        <div className="bg-amber-50 border border-amber-300 rounded-lg p-3 text-sm text-amber-800">
+          ⚠ 제품 DB 에 없어 용기 구분을 못 한 생산량 {nf(unknownQty)}개는 계산에서 빠졌습니다 — 설정 › 제품 DB 에 코드를 등록하면 반영됩니다.
         </div>
       )}
 
