@@ -11,8 +11,8 @@ import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
 import { effectiveInput } from '../lib/containerStock';
 import type { StockEntry } from '../lib/containerStock';
-import { CONTAINER_COST_COL, CONTAINER_ITEMS, analyzeContainerCost, analyzeContainerFull, containerComments, containerFullComments, containerNarrative, moneyText } from '../lib/containerCost';
-import type { CCFull, CCMonth, ContainerId } from '../lib/containerCost';
+import { CONTAINER_COST_COL, CONTAINER_ITEMS, FILM_ITEMS, analyzeContainerCost, analyzeContainerFull, analyzeFilm, containerComments, containerFullComments, containerNarrative, filmNarrative, moneyText } from '../lib/containerCost';
+import type { CCFull, CCMonth, ContainerId, FilmId } from '../lib/containerCost';
 import { saveProductionAmount, useProductionAmounts } from '../lib/monthlyAmount';
 import { AmtInput } from './CostDecompPanel';
 
@@ -27,14 +27,14 @@ const sgn = (n: number, d = 1) => `${n >= 0 ? '+' : '−'}${Math.abs(n).toLocale
 const sgnInt = (n: number) => `${n >= 0 ? '+' : '−'}${Math.abs(Math.round(n)).toLocaleString()}`;
 
 /** 단가 입력 (소수 가능) — 칸을 벗어나면 저장 */
-function PriceInput({ value, onSave }: { value: number | null | undefined; onSave: (v: number | null) => void }) {
+function PriceInput({ value, onSave, placeholder = '단가' }: { value: number | null | undefined; onSave: (v: number | null) => void; placeholder?: string }) {
   // ERP 평균단가는 소수가 길다 — 소수 둘째 자리까지만 보여 주고, 손대지 않으면 저장값(원래 값)은 그대로 둔다
   const r2 = (v: number) => Math.round(v * 100) / 100;
   const show = (v: number | null | undefined) => (typeof v === 'number' ? String(r2(v)) : '');
   const [t, setT] = useState(show(value));
   useEffect(() => { setT(show(value)); }, [value]);
   return (
-    <input value={t} inputMode="decimal" placeholder="단가"
+    <input value={t} inputMode="decimal" placeholder={placeholder}
       onChange={(e) => setT(e.target.value)}
       onBlur={() => {
         const s = t.replace(/[,\s원]/g, '');
@@ -49,10 +49,10 @@ function PriceInput({ value, onSave }: { value: number | null | undefined; onSav
   );
 }
 
-type TheoryCell = { small: number; large: number; ambient: number; unknown: number; ts: number };
+type TheoryCell = { small: number; large: number; ambient: number; unknown: number; m1?: number; m2?: number; m3?: number; mUnassigned?: number; ts: number };
 /** 재고 정합성 탭과 같은 규칙 — 지난달은 그 달이 끝난 뒤 계산된 값만, 이번 달은 5분 이내 값만 */
 const usableTheory = (m: string, c: TheoryCell | undefined) => {
-  if (!c || typeof c.small !== 'number') return false;
+  if (!c || typeof c.small !== 'number' || c.m1 == null) return false;   // 호기별 값이 없는 옛 저장분은 다시 계산 (필름용)
   if (!isPastMonth(m)) return Date.now() - c.ts < 5 * 60 * 1000;
   const [y, mm] = m.split('-').map(Number);
   return c.ts >= new Date(y, mm, 1).getTime();
@@ -85,8 +85,8 @@ export default function ContainerCostTab() {
 
   const stockA = useDoc<Record<string, StockEntry>>('containerStock', monthA);
   const stockB = useDoc<Record<string, StockEntry>>('containerStock', monthB);
-  const costA = useDoc<{ prices?: Partial<Record<ContainerId, number>> }>(CONTAINER_COST_COL, monthA);
-  const costB = useDoc<{ prices?: Partial<Record<ContainerId, number>> }>(CONTAINER_COST_COL, monthB);
+  const costA = useDoc<{ prices?: Partial<Record<ContainerId | FilmId, number>> }>(CONTAINER_COST_COL, monthA);
+  const costB = useDoc<{ prices?: Partial<Record<ContainerId | FilmId, number>> }>(CONTAINER_COST_COL, monthB);
   const amounts = useProductionAmounts([monthA, monthB]);
   const theoryDoc = useDoc<Record<string, TheoryCell>>('containerStock', '_theory');
   // 처음엔 재고조사 기준(투입량 = 제조원가와 같은 기준). 생산량 기준을 고르면 그 기기에서 기억
@@ -108,7 +108,7 @@ export default function ContainerCostTab() {
         setCalc(`${m} 생산량 계산 중…`);
         try {
           const r = await loadContainerMonth(m);
-          const t: TheoryCell = { small: r.small, large: r.large, ambient: r.ambient, unknown: r.unknown, ts: Date.now() };
+          const t: TheoryCell = { small: r.small, large: r.large, ambient: r.ambient, unknown: r.unknown, m1: r.m1, m2: r.m2, m3: r.m3, mUnassigned: r.mUnassigned, ts: Date.now() };
           setCalcTheory((p) => ({ ...p, [m]: t }));
           setDoc(doc(db, 'containerStock', '_theory'), {
             [m]: { small: r.small, large: r.large, ambient: r.ambient, unknown: r.unknown, m1: r.m1, m2: r.m2, m3: r.m3, mUnassigned: r.mUnassigned, ts: t.ts },
@@ -125,7 +125,7 @@ export default function ContainerCostTab() {
   const loading = stockA === undefined || stockB === undefined || costA === undefined || costB === undefined || theoryDoc === undefined;
 
   const [err, setErr] = useState('');
-  const savePrice = (m: string, id: ContainerId, v: number | null) => {
+  const savePrice = (m: string, id: ContainerId | FilmId, v: number | null) => {
     setErr('');
     setDoc(doc(db, CONTAINER_COST_COL, m), { prices: { [id]: v }, updatedAt: new Date().toISOString() }, { merge: true })
       .catch((e) => setErr(`단가 저장 실패: ${e?.message || e}`));
@@ -145,7 +145,7 @@ export default function ContainerCostTab() {
     prod: { A: prodQty(monthA), B: prodQty(monthB) },
     stock: { A: stockQty(stockA), B: stockQty(stockB) },
   };
-  const monthData = (stock: Record<string, StockEntry> | undefined, cost: { prices?: Partial<Record<ContainerId, number>> } | undefined, m: string): CCMonth => ({
+  const monthData = (stock: Record<string, StockEntry> | undefined, cost: { prices?: Partial<Record<ContainerId | FilmId, number>> } | undefined, m: string): CCMonth => ({
     qty: basis === 'prod' ? prodQty(m) : stockQty(stock),
     price: Object.fromEntries(CONTAINER_ITEMS.map((it) => [it.id, typeof cost?.prices?.[it.id] === 'number' ? cost!.prices![it.id]! : null])),
     amount: amounts[m] || 0,
@@ -164,6 +164,36 @@ export default function ContainerCostTab() {
   const stockMode = basis === 'stock' && !!F?.hasStock;
   const story = F ? containerNarrative(F, basis, monthA, monthB, { A: A.amount, B: B.amount }) : null;
   const c = ready ? (stockMode && F ? containerFullComments(F, monthA, monthB) : containerComments(r!)) : null;
+  /* ── 필름 ── 롤 수량은 재고 정합성과 같은 자리(containerStock/{월}.{f2|f4|fr}.input), 롤 단가는 containerCost */
+  const filmProd = (m: string): Record<FilmId, number | null> => {
+    const t = theoryOf(m);
+    return {
+      f2: t && t.m1 != null && t.m2 != null ? t.m1 + t.m2 + (t.mUnassigned || 0) : null,
+      f4: t && t.m3 != null ? t.m3 : null,
+      fr: t ? t.ambient : null,
+    };
+  };
+  const filmRolls = (stock: Record<string, StockEntry> | undefined): Record<FilmId, number | null> =>
+    Object.fromEntries(FILM_ITEMS.map((it) => [it.id, effectiveInput(stock?.[it.id])])) as Record<FilmId, number | null>;
+  const filmPrice = (cost: { prices?: Partial<Record<ContainerId | FilmId, number>> } | undefined): Record<FilmId, number | null> =>
+    Object.fromEntries(FILM_ITEMS.map((it) => [it.id, typeof cost?.prices?.[it.id] === 'number' ? cost!.prices![it.id]! : null])) as Record<FilmId, number | null>;
+  const FA = { prod: filmProd(monthA), rolls: filmRolls(stockA), price: filmPrice(costA), amount: A.amount };
+  const FB = { prod: filmProd(monthB), rolls: filmRolls(stockB), price: filmPrice(costB), amount: B.amount };
+  const film = loading || calc ? null : analyzeFilm(FA, FB, monthA, monthB);
+  const filmReady = !!film && film.missing.length === 0;
+  const filmStory = filmReady ? filmNarrative(film!, monthA, monthB) : null;
+  const saveRolls = (m: string, id: FilmId, v: number | null) => {
+    setErr('');
+    setDoc(doc(db, 'containerStock', m), { [id]: { input: v } }, { merge: true })
+      .catch((e) => setErr(`필름 롤 저장 실패: ${e?.message || e}`));
+  };
+  // 부재료(용기 + 필름) 합계 — 보고서 부재료 줄과 견주는 용
+  const subTotal = (() => {
+    if (!filmReady || !ready || !(A.amount > 0 && B.amount > 0)) return null;
+    const cA = (stockMode && F ? F.CsA : r!.CA) + film!.CA, cB = (stockMode && F ? F.CsB : r!.CB) + film!.CB;
+    return { cA, cB, rA: (cA / A.amount) * 100, rB: (cB / B.amount) * 100 };
+  })();
+
   // 원가율 나누기 (생산량 기준일 땐 로스 없이)
   const ratioView = (() => {
     if (!F || !(A.amount > 0 && B.amount > 0)) return null;
@@ -429,6 +459,103 @@ export default function ContainerCostTab() {
             </div>
           </div>
         </>
+      )}
+
+      {/* 5. 필름 (리드필름) — 롤 단위라 두 달 누적으로 판단 */}
+      <div className="bg-white border rounded-lg overflow-hidden">
+        <div className="px-4 py-2.5 border-b bg-slate-50 font-bold text-gray-800 text-sm">
+          5. 필름 (리드필름) <span className="text-xs font-normal text-gray-500">— 이론 롤 = 생산량 ÷ 롤당 개수(업체 기준) · 노란 칸은 칸을 벗어나면 저장 · 투입 롤은 재고 정합성과 같은 값</span>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead className="text-xs text-gray-600 bg-slate-50">
+              <tr>
+                <th className="px-3 py-2 text-left">필름 (쓰는 곳 · 롤당 개수)</th>
+                <th className="px-3 py-2 text-right text-blue-700">{monthA} 롤 단가</th>
+                <th className="px-3 py-2 text-right text-rose-700">{monthB} 롤 단가</th>
+                <th className="px-3 py-2 text-right text-blue-700">{monthA} 투입 롤</th>
+                <th className="px-3 py-2 text-right text-rose-700">{monthB} 투입 롤</th>
+                <th className="px-3 py-2 text-right">이론 롤 {monthA} → {monthB}</th>
+                <th className="px-3 py-2 text-right">로스 {monthA} → {monthB}</th>
+                <th className="px-3 py-2 text-right">두 달 누적 로스</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {FILM_ITEMS.map((it) => {
+                const row = filmReady ? film!.rows.find((x) => x.id === it.id) : undefined;
+                const pa = FA.prod[it.id], pb = FB.prod[it.id];
+                const lossCell = (l: number) => <span className={l < 0 ? 'text-rose-600 font-bold' : l > 0.3 ? 'text-amber-700 font-bold' : ''}>{l >= 0 ? '+' : '−'}{Math.abs(l * 100).toFixed(0)}%</span>;
+                return (
+                  <tr key={it.id}>
+                    <td className="px-3 py-2"><b className="text-gray-800">{it.label}</b><div className="text-[11px] text-gray-500">{it.line} · 롤당 {it.perRoll.toLocaleString()}개</div></td>
+                    <td className="px-3 py-2 text-right"><PriceInput value={FA.price[it.id]} onSave={(v) => savePrice(monthA, it.id, v)} /></td>
+                    <td className="px-3 py-2 text-right"><PriceInput value={FB.price[it.id]} onSave={(v) => savePrice(monthB, it.id, v)} /></td>
+                    <td className="px-3 py-2 text-right"><PriceInput placeholder="롤" value={FA.rolls[it.id]} onSave={(v) => saveRolls(monthA, it.id, v)} /></td>
+                    <td className="px-3 py-2 text-right"><PriceInput placeholder="롤" value={FB.rolls[it.id]} onSave={(v) => saveRolls(monthB, it.id, v)} /></td>
+                    <td className="px-3 py-2 text-right tabular-nums text-gray-600 whitespace-nowrap">
+                      {pa != null ? (pa / it.perRoll).toFixed(1) : '—'} → {pb != null ? (pb / it.perRoll).toFixed(1) : '—'}
+                    </td>
+                    <td className="px-3 py-2 text-right tabular-nums whitespace-nowrap">{row ? <>{lossCell(row.lossA)} → {lossCell(row.lossB)}</> : '—'}</td>
+                    <td className="px-3 py-2 text-right tabular-nums font-bold">{row ? lossCell(row.lossCum) : '—'}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        {film && film.missing.length > 0 && (
+          <div className="px-4 py-2.5 text-sm bg-amber-50 text-amber-800 border-t">⚠ 아래 값을 넣으면 필름 분석이 나옵니다: <b>{film.missing.join(', ')}</b></div>
+        )}
+        {filmReady && filmStory && (
+          <div className="p-4 border-t space-y-3">
+            <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+              {[
+                { t: '① 물량', s: '생산량 변화 (원가율 영향 거의 없음)', v: film!.vol, neutral: true },
+                { t: '② 사용량 (로스)', s: '개당 쓴 필름이 늘고 줄어서', v: film!.use },
+                { t: '③ 단가', s: '롤을 비싸게·싸게 사서', v: film!.price },
+              ].map((k) => (
+                <div key={k.t} className="border rounded-lg p-3">
+                  <div className="text-sm font-bold text-gray-800">{k.t}</div>
+                  <div className="text-[11px] text-gray-500">{k.s}</div>
+                  <div className={`text-xl font-extrabold tabular-nums mt-1 ${'neutral' in k && k.neutral ? 'text-gray-700' : k.v < 0 ? 'text-emerald-700' : k.v > 0 ? 'text-rose-600' : 'text-gray-500'}`}>{sgnInt(k.v)}원</div>
+                </div>
+              ))}
+              <div className="border-2 border-indigo-200 rounded-lg p-3 bg-indigo-50/40">
+                <div className="text-sm font-bold text-gray-800">필름 원가율</div>
+                {film!.ratio ? (
+                  <>
+                    <div className="text-xl font-extrabold tabular-nums mt-1">{film!.ratio.rA.toFixed(2)}% → {film!.ratio.rB.toFixed(2)}%</div>
+                    <div className={`text-sm font-bold tabular-nums ${film!.ratio.d <= 0 ? 'text-emerald-700' : 'text-rose-600'}`}>{sgn(film!.ratio.d, 2)}%p</div>
+                    <div className="text-[11px] text-gray-600 tabular-nums">사용량 {sgn(film!.ratio.use, 2)}%p · 단가 {sgn(film!.ratio.price, 2)}%p · 생산 {sgn(film!.ratio.prod, 2)}%p</div>
+                  </>
+                ) : <div className="text-xs text-gray-500 mt-1">생산금액을 넣으면 원가율로 봅니다</div>}
+              </div>
+            </div>
+            <div className="text-[15px] leading-relaxed text-gray-800 space-y-1.5">
+              {filmStory.lines.map((l, i) => <p key={i}>{l}</p>)}
+            </div>
+            {filmStory.warnings.length > 0 && (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-1 text-sm text-amber-900">
+                {filmStory.warnings.map((w, i) => <div key={i}>⚠ {w}</div>)}
+              </div>
+            )}
+            <div className="border rounded-lg">
+              <div className="px-3 py-2 border-b bg-gray-50 flex items-center gap-2"><span className="font-bold text-gray-700">필름 보고서 문구</span><span className="ml-auto"><CopyBtn text={filmStory.comment} /></span></div>
+              <div className="px-3 py-2 text-sm text-gray-800">{filmStory.comment}</div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* 6. 부재료(용기 + 필름) 합계 */}
+      {subTotal && (
+        <div className="bg-white border-2 border-slate-300 rounded-lg p-4 flex items-center gap-4 flex-wrap">
+          <div className="font-bold text-gray-800">6. 용기 + 필름 원가율</div>
+          <div className="text-xl font-extrabold tabular-nums">{subTotal.rA.toFixed(2)}% → {subTotal.rB.toFixed(2)}%</div>
+          <div className={`font-bold tabular-nums ${subTotal.rB - subTotal.rA <= 0 ? 'text-emerald-700' : 'text-rose-600'}`}>{sgn(subTotal.rB - subTotal.rA, 2)}%p</div>
+          <div className="text-sm text-gray-600 tabular-nums">{nf(subTotal.cA)}원 → {nf(subTotal.cB)}원</div>
+          <div className="w-full text-xs text-gray-500">보고서의 부재료 원가율과 견줘 보세요 — 남는 차이는 박스·라벨 등 그 밖의 부자재입니다. ({stockMode ? '용기는 재고조사 기준' : '용기는 생산량 기준'}, 필름은 ERP 투입 롤 기준)</div>
+        </div>
       )}
     </div>
   );

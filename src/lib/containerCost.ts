@@ -316,3 +316,93 @@ export function containerNarrative(f: CCFull, basis: 'stock' | 'prod', monthA: s
   }
   return { lines, warnings };
 }
+
+/* ───────── 필름 (리드필름) ─────────
+ *  롤 단위라 한 달씩 보면 월말에 롤을 언제 꺼냈는지에 따라 1~2롤씩 출렁인다 → 두 달 누적 로스율을 같이 본다.
+ *  이론 롤 = 그 필름을 쓰는 생산량 ÷ 롤당 포장 개수(업체 기준).  로스율 = ERP 투입 롤 ÷ 이론 롤 − 1
+ *  필름비 증감 = ① 물량(생산량 변화, 전월 롤/개·단가) + ② 사용량(개당 롤 변화 = 로스 변화) + ③ 단가   (합 = 증감) */
+export const FILM_ITEMS = [
+  { id: 'f2', label: '리드필름 2열 (베이비본죽)', short: '2열', line: '1·2호기 생산', perRoll: 6450 },
+  { id: 'f4', label: '리드필름 냉장 4열 (베이비본죽)', short: '냉장 4열', line: '3호기 생산', perRoll: 12900 },
+  { id: 'fr', label: '리드필름 4열 (베이비본 togo)', short: 'togo 4열', line: '실온 생산', perRoll: 12900 },
+] as const;
+export type FilmId = typeof FILM_ITEMS[number]['id'];
+
+export interface FilmMonth {
+  prod: Partial<Record<FilmId, number | null>>;
+  rolls: Partial<Record<FilmId, number | null>>;
+  price: Partial<Record<FilmId, number | null>>;
+  amount: number;
+}
+export interface FilmRow {
+  id: FilmId; label: string; short: string; line: string; perRoll: number;
+  prodA: number; prodB: number; rollsA: number; rollsB: number; theoA: number; theoB: number;
+  lossA: number; lossB: number; lossCum: number;
+  pA: number; pB: number; costA: number; costB: number;
+  vol: number; use: number; price: number;
+}
+export interface FilmResult {
+  missing: string[];
+  rows: FilmRow[];
+  CA: number; CB: number; vol: number; use: number; price: number;
+  rollsA: number; rollsB: number; theoA: number; theoB: number;
+  /** %p (×100) — prod = 생산량·생산금액이 같이 움직이고 남는 몫, use = 사용량(로스), price = 단가 */
+  ratio: { rA: number; rB: number; d: number; prod: number; use: number; price: number } | null;
+}
+
+export function analyzeFilm(a: FilmMonth, b: FilmMonth, monthA: string, monthB: string): FilmResult {
+  const missing: string[] = [];
+  const get = (m: FilmMonth, k: 'prod' | 'rolls' | 'price', id: FilmId, month: string, what: string) => {
+    const v = m[k][id];
+    if (typeof v !== 'number' || !Number.isFinite(v)) { missing.push(`${month} ${FILM_ITEMS.find((x) => x.id === id)!.label} ${what}`); return 0; }
+    return v;
+  };
+  const rows: FilmRow[] = FILM_ITEMS.map((it) => {
+    const prodA = get(a, 'prod', it.id, monthA, '생산량'), prodB = get(b, 'prod', it.id, monthB, '생산량');
+    const rollsA = get(a, 'rolls', it.id, monthA, '투입 롤'), rollsB = get(b, 'rolls', it.id, monthB, '투입 롤');
+    const pA = get(a, 'price', it.id, monthA, '롤 단가'), pB = get(b, 'price', it.id, monthB, '롤 단가');
+    const theoA = prodA / it.perRoll, theoB = prodB / it.perRoll;
+    const uA = prodA > 0 ? rollsA / prodA : 0, uB = prodB > 0 ? rollsB / prodB : 0;
+    return {
+      id: it.id, label: it.label, short: it.short, line: it.line, perRoll: it.perRoll,
+      prodA, prodB, rollsA, rollsB, theoA, theoB,
+      lossA: theoA > 0 ? rollsA / theoA - 1 : 0, lossB: theoB > 0 ? rollsB / theoB - 1 : 0,
+      lossCum: theoA + theoB > 0 ? (rollsA + rollsB) / (theoA + theoB) - 1 : 0,
+      pA, pB, costA: rollsA * pA, costB: rollsB * pB,
+      vol: (prodB - prodA) * uA * pA, use: prodB * (uB - uA) * pA, price: rollsB * (pB - pA),
+    };
+  });
+  const s = (f: (r: FilmRow) => number) => rows.reduce((t, r) => t + f(r), 0);
+  const CA = s((r) => r.costA), CB = s((r) => r.costB);
+  const vol = s((r) => r.vol), use = s((r) => r.use), price = s((r) => r.price);
+  let ratio: FilmResult['ratio'] = null;
+  if (!missing.length && a.amount > 0 && b.amount > 0) {
+    const rA = CA / a.amount, rB = CB / b.amount;
+    const u = use / b.amount, p = price / b.amount;
+    ratio = { rA: rA * 100, rB: rB * 100, d: (rB - rA) * 100, prod: (rB - rA - u - p) * 100, use: u * 100, price: p * 100 };
+  }
+  return { missing, rows, CA, CB, vol, use, price, rollsA: s((r) => r.rollsA), rollsB: s((r) => r.rollsB), theoA: s((r) => r.theoA), theoB: s((r) => r.theoB), ratio };
+}
+
+/** 필름 분석 문단 + 보고서 한 줄 */
+export function filmNarrative(f: FilmResult, monthA: string, monthB: string): { lines: string[]; warnings: string[]; comment: string } {
+  const mA = `${Number(monthA.slice(5))}월`, mB = `${Number(monthB.slice(5))}월`;
+  const lr = (x: number) => `${x >= 0 ? '+' : '−'}${Math.abs(x * 100).toFixed(0)}%`;
+  const lines: string[] = [];
+  lines.push(`필름비(ERP 투입 롤 × 롤 단가)는 ${man(f.CA)} → ${man(f.CB)}(${sman(f.CB - f.CA)})이고, 투입 롤은 ${f.rollsA.toLocaleString()}롤 → ${f.rollsB.toLocaleString()}롤(이론 ${f.theoA.toFixed(1)} → ${f.theoB.toFixed(1)}롤)입니다.`
+    + (f.ratio ? ` 필름 원가율은 ${f.ratio.rA.toFixed(2)}% → ${f.ratio.rB.toFixed(2)}%(${pp2(f.ratio.d)}%p)입니다.` : ''));
+  lines.push(`나누면 ① 물량 ${sman(f.vol)}, ② 사용량(로스) ${sman(f.use)}, ③ 단가 ${sman(f.price)}입니다.`);
+  lines.push(`이론 대비 로스(${mA} → ${mB}, 두 달 누적): ${f.rows.map((r) => `${r.short} ${lr(r.lossA)} → ${lr(r.lossB)} (누적 ${lr(r.lossCum)})`).join(' · ')}.`);
+  lines.push('필름은 롤 단위라 월말에 롤을 언제 꺼냈는지에 따라 한 달 값이 크게 출렁입니다 — 판단은 두 달 누적 로스율로 하세요.');
+  const warnings: string[] = [];
+  f.rows.forEach((r) => {
+    ([[mA, r.lossA, r.rollsA, r.theoA], [mB, r.lossB, r.rollsB, r.theoB]] as const).forEach(([m, l, ro, th]) => {
+      if (l < 0) warnings.push(`${m} ${r.label}: 이론 ${th.toFixed(1)}롤인데 ${ro}롤 투입 — 생산한 것보다 필름을 덜 쓴 것으로 나옵니다(롤을 미리·늦게 꺼낸 시점 차이 가능). 다음 달과 합쳐서 보세요.`);
+      else if (l > 0.5) warnings.push(`${m} ${r.label}: 이론보다 ${lr(l)} 많이 투입 — 월말에 다음 달 몫을 미리 꺼냈거나 로스가 큰 경우입니다.`);
+    });
+  });
+  const comment = `#. 필름(리드필름) : 투입 ${f.rollsA}롤 → ${f.rollsB}롤(${sman(f.CB - f.CA)})`
+    + (f.ratio ? `, 필름 원가율 ${f.ratio.rA.toFixed(2)}% → ${f.ratio.rB.toFixed(2)}%(${pp2(f.ratio.d)}%p)` : '')
+    + ` / 두 달 누적 로스 ${f.rows.map((r) => `${r.short} ${lr(r.lossCum)}`).join(', ')}`;
+  return { lines, warnings, comment };
+}
