@@ -11,8 +11,8 @@ import { db } from '../firebase';
 import { todayKey } from '../lib/dateUtil';
 import { effectiveInput } from '../lib/containerStock';
 import type { StockEntry } from '../lib/containerStock';
-import { CONTAINER_COST_COL, CONTAINER_ITEMS, analyzeContainerCost, containerComments, moneyText } from '../lib/containerCost';
-import type { CCMonth, ContainerId } from '../lib/containerCost';
+import { CONTAINER_COST_COL, CONTAINER_ITEMS, analyzeContainerCost, analyzeContainerFull, containerComments, containerFullComments, containerNarrative, moneyText } from '../lib/containerCost';
+import type { CCFull, CCMonth, ContainerId } from '../lib/containerCost';
 import { saveProductionAmount, useProductionAmounts } from '../lib/monthlyAmount';
 import { AmtInput } from './CostDecompPanel';
 
@@ -28,7 +28,9 @@ const sgnInt = (n: number) => `${n >= 0 ? '+' : '−'}${Math.abs(Math.round(n)).
 
 /** 단가 입력 (소수 가능) — 칸을 벗어나면 저장 */
 function PriceInput({ value, onSave }: { value: number | null | undefined; onSave: (v: number | null) => void }) {
-  const show = (v: number | null | undefined) => (typeof v === 'number' ? String(v) : '');
+  // ERP 평균단가는 소수가 길다 — 소수 둘째 자리까지만 보여 주고, 손대지 않으면 저장값(원래 값)은 그대로 둔다
+  const r2 = (v: number) => Math.round(v * 100) / 100;
+  const show = (v: number | null | undefined) => (typeof v === 'number' ? String(r2(v)) : '');
   const [t, setT] = useState(show(value));
   useEffect(() => { setT(show(value)); }, [value]);
   return (
@@ -39,7 +41,8 @@ function PriceInput({ value, onSave }: { value: number | null | undefined; onSav
         if (s === '') { if (value != null) onSave(null); return; }
         const n = Number(s);
         if (!Number.isFinite(n) || n < 0) { setT(show(value)); return; }
-        if (n !== value) onSave(n);
+        if (typeof value === 'number' && Math.abs(n - r2(value)) < 1e-9) return;   // 보이는 값 그대로면 저장 안 함
+        onSave(n);
       }}
       onKeyDown={(e) => { if (e.key === 'Enter') (e.target as HTMLInputElement).blur(); }}
       className="w-24 border rounded px-2 py-1 text-right tabular-nums bg-yellow-50" />
@@ -86,8 +89,9 @@ export default function ContainerCostTab() {
   const costB = useDoc<{ prices?: Partial<Record<ContainerId, number>> }>(CONTAINER_COST_COL, monthB);
   const amounts = useProductionAmounts([monthA, monthB]);
   const theoryDoc = useDoc<Record<string, TheoryCell>>('containerStock', '_theory');
-  const [basis, setBasisState] = useState<Basis>(() => { try { return localStorage.getItem('containerCost:basis') === 'stock' ? 'stock' : 'prod'; } catch { return 'prod'; } });
-  const setBasis = (b: Basis) => { setBasisState(b); try { localStorage.setItem('containerCost:basis', b); } catch { /* noop */ } };
+  // 처음엔 재고조사 기준(투입량 = 제조원가와 같은 기준). 생산량 기준을 고르면 그 기기에서 기억
+  const [basis, setBasisState] = useState<Basis>(() => { try { return localStorage.getItem('containerCost:basisV2') === 'prod' ? 'prod' : 'stock'; } catch { return 'stock'; } });
+  const setBasis = (b: Basis) => { setBasisState(b); try { localStorage.setItem('containerCost:basisV2', b); } catch { /* noop */ } };
 
   // 생산량 기준 값이 없거나 오래된 달은 계산해서 서버에 올린다 (재고 정합성 탭과 같은 저장 자리 — 서로 다시 계산하지 않게)
   const [calc, setCalc] = useState('');
@@ -152,7 +156,23 @@ export default function ContainerCostTab() {
     [loading, calc, JSON.stringify(A), JSON.stringify(B), monthA, monthB]); // eslint-disable-line react-hooks/exhaustive-deps
   const unknownQty = basis === 'prod' ? (theoryOf(monthA)?.unknown || 0) + (theoryOf(monthB)?.unknown || 0) : 0;
   const ready = r && r.missing.length === 0;
-  const c = ready ? containerComments(r!) : null;
+  // 최종 분석: 사용 구성은 생산량(실제 사용) 기준, 로스 = 재고조사 투입 − 생산량, 원가율은 재고조사 기준
+  const full = useMemo(() => (loading || calc ? null
+    : analyzeContainerFull(qtyView.prod, qtyView.stock, { A: A.price, B: B.price }, { A: A.amount, B: B.amount }, monthA, monthB)),
+  [loading, calc, JSON.stringify(qtyView), JSON.stringify(A.price), JSON.stringify(B.price), A.amount, B.amount, monthA, monthB]); // eslint-disable-line react-hooks/exhaustive-deps
+  const F = full && 'hasStock' in full ? (full as CCFull) : null;
+  const stockMode = basis === 'stock' && !!F?.hasStock;
+  const story = F ? containerNarrative(F, basis, monthA, monthB, { A: A.amount, B: B.amount }) : null;
+  const c = ready ? (stockMode && F ? containerFullComments(F, monthA, monthB) : containerComments(r!)) : null;
+  // 원가율 나누기 (생산량 기준일 땐 로스 없이)
+  const ratioView = (() => {
+    if (!F || !(A.amount > 0 && B.amount > 0)) return null;
+    if (stockMode && F.ratio) return F.ratio;
+    const b0 = F.base;
+    const rpA = b0.CA / A.amount, rpB = b0.CB / B.amount;
+    return { rA: rpA * 100, rB: rpB * 100, d: (rpB - rpA) * 100, rev: rpA * ((A.amount / b0.QA) / (B.amount / b0.QB) - 1) * 100,
+      mix: (b0.mix / B.amount) * 100, price: (b0.price / B.amount) * 100, loss: 0, money: (rpB - rpA) * B.amount, stockBased: false };
+  })();
 
   return (
     <div className="space-y-4">
@@ -169,7 +189,7 @@ export default function ContainerCostTab() {
         <div className="ml-auto flex items-center gap-2">
           <span className="text-xs text-gray-500">수량 기준</span>
           <div className="flex rounded-md border overflow-hidden text-xs">
-            {([['prod', '생산량 기준 (월별 사용량)'], ['stock', '재고조사 기준 (투입량)']] as const).map(([k, t]) => (
+            {([['stock', '재고조사 기준 (투입량)'], ['prod', '생산량 기준 (월별 사용량)']] as const).map(([k, t]) => (
               <button key={k} onClick={() => setBasis(k)}
                 className={`px-3 py-1.5 font-bold ${basis === k ? 'bg-gray-800 text-white' : 'bg-white text-gray-600 hover:bg-gray-50'}`}>{t}</button>
             ))}
@@ -235,9 +255,26 @@ export default function ContainerCostTab() {
 
       {ready && r && c && (
         <>
+          {/* 분석 결과 — 원재료분석 맨 위 설명처럼 */}
+          {story && (
+            <div className="bg-white border-2 border-indigo-200 rounded-lg overflow-hidden">
+              <div className="px-4 py-2.5 border-b bg-indigo-50 font-bold text-indigo-900 text-sm">
+                📊 분석 결과 <span className="text-xs font-normal text-indigo-700">· {monthA} → {monthB} · {stockMode ? '재고조사 투입 기준 (제조원가와 같은 기준)' : '생산량 기준 (실제 사용)'}</span>
+              </div>
+              <div className="p-4 space-y-2 text-[15px] leading-relaxed text-gray-800">
+                {story.lines.map((l, i) => <p key={i}>{l}</p>)}
+                {story.warnings.length > 0 && (
+                  <div className="mt-3 bg-rose-50 border border-rose-200 rounded-lg p-3 space-y-1.5 text-sm text-rose-800">
+                    {story.warnings.map((w, i) => <div key={i}>⚠ {w}</div>)}
+                  </div>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* 1. 요약표 */}
           <div className="bg-white border rounded-lg overflow-hidden">
-            <div className="px-4 py-2.5 border-b bg-slate-50 font-bold text-gray-800 text-sm">1. 용기 데이터 요약</div>
+            <div className="px-4 py-2.5 border-b bg-slate-50 font-bold text-gray-800 text-sm">1. 용기 데이터 요약 <span className="text-xs font-normal text-gray-500">({stockMode ? '재고조사 투입 기준' : '생산량 기준 (실제 사용)'})</span></div>
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead className="text-xs text-gray-600 bg-slate-50">
@@ -275,43 +312,104 @@ export default function ContainerCostTab() {
               </table>
             </div>
             <div className="px-4 py-2.5 text-sm border-t bg-amber-50/50">
-              <b>사용 구성(Mix) 변동에 따른 비용 효과</b>: {moneyText(r.mix)} {r.mix <= 0 ? '절감' : '증가'} 효과
+              <b>{stockMode ? '투입 기준 비중 변화 효과' : '사용 구성(Mix) 변동에 따른 비용 효과'}</b>: {moneyText(r.mix)} {r.mix <= 0 ? '절감' : '증가'} 효과
               <span className="text-xs text-gray-500"> · 단가는 {monthA} 그대로 두고 비중만 바뀌었을 때 개당 평균단가 {sgn(r.mixAvgDelta)}원</span>
+              {stockMode && F && (
+                <div className="text-xs text-gray-600 mt-1">
+                  └ 이 중 실제 사용(생산량) 구성 몫 {sgnInt(F.base.mix)}원, 나머지 {sgnInt(r.mix - F.base.mix)}원은 품목별 로스(투입 − 생산) 차이 — 아래 2·3번 참고
+                </div>
+              )}
             </div>
           </div>
 
           {/* 2. 증감 나누기 */}
           <div className="bg-white border rounded-lg overflow-hidden">
             <div className="px-4 py-2.5 border-b bg-slate-50 font-bold text-gray-800 text-sm">
-              2. 용기비 증감 {sgnInt(r.total)}원 나누기 <span className="text-xs font-normal text-gray-500">(− 줄어듦 · + 늘어남 · 세 몫을 더하면 증감과 같습니다)</span>
+              2. 용기비 증감 {sgnInt(r.total)}원 나누기 <span className="text-xs font-normal text-gray-500">(− 줄어듦 · + 늘어남 · {stockMode ? '네' : '세'} 몫을 더하면 증감과 같습니다{stockMode ? ' · 구성은 실제 사용(생산량) 기준, 나머지 차이는 ④ 로스' : ''})</span>
             </div>
-            <div className="p-4 grid grid-cols-1 sm:grid-cols-4 gap-3">
+            <div className="p-4 grid grid-cols-2 lg:grid-cols-5 gap-3">
               {[
-                { t: '① 물량', s: '많이·적게 써서 (원가율 영향 없음)', v: r.volume, neutral: true },
-                { t: '② 사용 구성(Mix)', s: '비싼·싼 용기 비중이 바뀌어서', v: r.mix },
-                { t: '③ 단가', s: '용기를 비싸게·싸게 사서', v: r.price },
+                { t: '① 물량', s: '많이·적게 써서 (원가율 영향 없음)', v: F ? F.base.volume : r.volume, neutral: true },
+                { t: '② 사용 구성(Mix)', s: '비싼·싼 용기 비중 (실제 사용 기준)', v: F ? F.base.mix : r.mix },
+                { t: '③ 단가', s: '용기를 비싸게·싸게 사서', v: F ? F.base.price : r.price },
+                ...(stockMode && F ? [{ t: '④ 로스 변화', s: '재고조사 투입 − 생산량', v: F.lossCostB - F.lossCostA }] : []),
               ].map((k) => (
                 <div key={k.t} className="border rounded-lg p-3">
                   <div className="text-sm font-bold text-gray-800">{k.t}</div>
                   <div className="text-[11px] text-gray-500">{k.s}</div>
-                  <div className={`text-xl font-extrabold tabular-nums mt-1 ${k.neutral ? 'text-gray-700' : k.v < 0 ? 'text-emerald-700' : k.v > 0 ? 'text-rose-600' : 'text-gray-500'}`}>{sgnInt(k.v)}원</div>
+                  <div className={`text-xl font-extrabold tabular-nums mt-1 ${'neutral' in k && k.neutral ? 'text-gray-700' : k.v < 0 ? 'text-emerald-700' : k.v > 0 ? 'text-rose-600' : 'text-gray-500'}`}>{sgnInt(k.v)}원</div>
                 </div>
               ))}
-              <div className="border-2 border-indigo-200 rounded-lg p-3 bg-indigo-50/40">
-                <div className="text-sm font-bold text-gray-800">용기 원가율</div>
-                {r.ratio ? (
+              <div className="border-2 border-indigo-200 rounded-lg p-3 bg-indigo-50/40 col-span-2 lg:col-span-1">
+                <div className="text-sm font-bold text-gray-800">용기 원가율 <span className="text-[11px] font-normal text-gray-500">{stockMode ? '재고조사 기준' : '생산량 기준'}</span></div>
+                {ratioView ? (
                   <>
-                    <div className="text-xl font-extrabold tabular-nums mt-1">{(r.ratio.rA * 100).toFixed(2)}% → {(r.ratio.rB * 100).toFixed(2)}%</div>
-                    <div className={`text-sm font-bold tabular-nums ${r.ratio.d <= 0 ? 'text-emerald-700' : 'text-rose-600'}`}>{sgn(r.ratio.d, 2)}%p <span className="text-xs font-normal text-gray-500">(구성 몫 {sgn(r.ratio.mixPp, 2)}%p)</span></div>
+                    <div className="text-xl font-extrabold tabular-nums mt-1">{ratioView.rA.toFixed(2)}% → {ratioView.rB.toFixed(2)}%</div>
+                    <div className={`text-sm font-bold tabular-nums ${Math.abs(ratioView.d) < 0.005 ? 'text-gray-600' : ratioView.d < 0 ? 'text-emerald-700' : 'text-rose-600'}`}>{sgn(ratioView.d, 2)}%p{Math.abs(ratioView.d) < 0.005 ? ' (보합)' : ''}</div>
+                    <div className="mt-1.5 text-[11px] text-gray-600 space-y-0.5 tabular-nums">
+                      {[['구성', ratioView.mix], ['단가', ratioView.price], ...(stockMode ? [['로스', ratioView.loss]] : []), ['개당 생산금액', ratioView.rev]].map(([k, v]) => (
+                        <div key={k as string} className="flex justify-between"><span>{k}</span><span className={(v as number) < -0.0005 ? 'text-emerald-700' : (v as number) > 0.0005 ? 'text-rose-600' : ''}>{sgn(v as number, 2)}%p</span></div>
+                      ))}
+                    </div>
                   </>
                 ) : <div className="text-xs text-gray-500 mt-1">두 달 생산금액을 넣으면 원가율(%p)로 봅니다</div>}
               </div>
             </div>
           </div>
 
-          {/* 3. 보고서 문구 */}
+          {/* 3. 용기 로스 (재고조사 투입 − 생산량) */}
+          {F && F.hasStock && (
+            <div className="bg-white border rounded-lg overflow-hidden">
+              <div className="px-4 py-2.5 border-b bg-slate-50 font-bold text-gray-800 text-sm">
+                3. 용기 로스 (재고조사 투입 − 생산량) <span className="text-xs font-normal text-gray-500">— 음수(빨강) = 생산한 것보다 덜 쓴 것으로 나옴 → 재고조사·월말 시점 확인</span>
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-sm">
+                  <thead className="text-xs text-gray-600 bg-slate-50">
+                    <tr>
+                      <th className="px-3 py-2 text-left">용기</th>
+                      <th className="px-3 py-2 text-right text-blue-700">{monthA} 생산 / 투입</th>
+                      <th className="px-3 py-2 text-right text-blue-700">{monthA} 로스</th>
+                      <th className="px-3 py-2 text-right text-rose-700">{monthB} 생산 / 투입</th>
+                      <th className="px-3 py-2 text-right text-rose-700">{monthB} 로스</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y">
+                    {F.loss.map((x) => {
+                      const cell = (l: number | null, rate: number | null) => (l === null ? <td className="px-3 py-2 text-right text-gray-300">—</td> : (
+                        <td className={`px-3 py-2 text-right tabular-nums font-bold ${l < 0 ? 'bg-rose-50 text-rose-700' : 'text-gray-800'}`}>
+                          {sgnInt(l)}개 <span className="text-xs font-normal">({rate !== null ? sgn(rate * 100) : '—'}%)</span>
+                          {l < 0 && <div className="text-[10px] font-normal">생산보다 덜 씀 — 확인 필요</div>}
+                        </td>
+                      ));
+                      return (
+                        <tr key={x.id}>
+                          <td className="px-3 py-2 font-semibold text-gray-800">{x.label}</td>
+                          <td className="px-3 py-2 text-right tabular-nums text-gray-600">{nf(x.prodA)} / {x.stockA === null ? '—' : nf(x.stockA)}</td>
+                          {cell(x.lossA, x.rateA)}
+                          <td className="px-3 py-2 text-right tabular-nums text-gray-600">{nf(x.prodB)} / {x.stockB === null ? '—' : nf(x.stockB)}</td>
+                          {cell(x.lossB, x.rateB)}
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                  <tfoot className="bg-slate-100 font-bold">
+                    <tr>
+                      <td className="px-3 py-2">합계</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{nf(F.base.QA)} / {nf(F.base.QA + F.lossQtyA)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{sgnInt(F.lossQtyA)}개 ({sgn(F.lossRateA * 100)}%) · {sgnInt(F.lossCostA)}원</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{nf(F.base.QB)} / {nf(F.base.QB + F.lossQtyB)}</td>
+                      <td className="px-3 py-2 text-right tabular-nums">{sgnInt(F.lossQtyB)}개 ({sgn(F.lossRateB * 100)}%) · {sgnInt(F.lossCostB)}원</td>
+                    </tr>
+                  </tfoot>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {/* 4. 보고서 문구 */}
           <div className="bg-white border rounded-lg overflow-hidden">
-            <div className="px-4 py-2.5 border-b bg-slate-50 font-bold text-gray-800 text-sm">3. 보고서 문구</div>
+            <div className="px-4 py-2.5 border-b bg-slate-50 font-bold text-gray-800 text-sm">4. 보고서 문구</div>
             <div className="p-4 space-y-4 text-sm">
               {[
                 { t: '옵션 1 · 표준 보고서 양식 (추천)', lines: c.opt1 },
