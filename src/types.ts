@@ -7,6 +7,8 @@ export interface Item {
   marketKurly: number;
   /** 오아시스마켓 주문분. 나중에 생긴 채널이라 선택 필드다 (없던 날은 undefined) */
   oasis?: number;
+  /** 비마트(배민 B마트) 주문분. 나중에 생긴 채널이라 선택 필드다 */
+  bmart?: number;
   sample?: number;
   totalQty: number;
   actualProduction: number;

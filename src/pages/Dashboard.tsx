@@ -40,6 +40,7 @@ export default function Dashboard() {
     return day === 0 || day === 6;
   });
   const [hasSample, setHasSample] = useState(false);
+  const [hasBmart, setHasBmart] = useState(false);
 
   // 각 호기의 실제 생산량: { code: qty }
   const [machineQty, setMachineQty] = useState<Record<string, Record<string, number>>>({
@@ -175,14 +176,16 @@ export default function Dashboard() {
       return isNaN(n) ? 0 : n;
     };
 
-    // 열 순서: 코드 / 품목명 / 주문수량 / 쿠팡 / [마켓컬리] / [오아시스] / [샘플] / 총수량
+    // 열 순서: 코드 / 품목명 / 주문수량 / 쿠팡 / [마켓컬리] / [오아시스] / [비마트] / [샘플] / 총수량
     // 총수량은 항상 맨 끝이라, 가운데 선택 열이 늘어나면 뒤 열이 통째로 밀린다.
     // 그래서 고정 인덱스를 쓰지 않고 켜진 열을 세어 가며 자리를 잡는다.
     const useSample = !isWeekend && hasSample;
     const useOasis = !isWeekend && hasOasis;
+    const useBmart = !isWeekend && hasBmart;
     const iKurly = isWeekend ? -1 : 4;
     let nextCol = isWeekend ? 4 : 5;
     const iOasis = useOasis ? nextCol++ : -1;
+    const iBmart = useBmart ? nextCol++ : -1;
     const iSample = useSample ? nextCol++ : -1;
     const iTotal = nextCol;
     const minCols = iTotal + 1;
@@ -198,7 +201,7 @@ export default function Dashboard() {
 
     if (!rows.length) {
       const modeLabel = isWeekend ? '주말'
-        : `평일${useOasis ? '+오아시스' : ''}${useSample ? '+샘플' : ''}`;
+        : `평일${useOasis ? '+오아시스' : ''}${useBmart ? '+비마트' : ''}${useSample ? '+샘플' : ''}`;
       setTimeout(() => alert(`붙여넣을 데이터가 없습니다 (${modeLabel} 모드: ${minCols}열 필요)\n\n붙여넣은 첫 줄: ${text.split('\n')[0]?.slice(0, 80) || '(비어있음)'}`), 50);
       return;
     }
@@ -214,6 +217,7 @@ export default function Dashboard() {
           coupang: num(cols[3]),
           marketKurly: iKurly >= 0 ? num(cols[iKurly]) : 0,
           oasis: iOasis >= 0 ? num(cols[iOasis]) : 0,
+          bmart: iBmart >= 0 ? num(cols[iBmart]) : 0,
           sample: iSample >= 0 ? num(cols[iSample]) : 0,
           totalQty: num(cols[iTotal]),
           actualProduction: 0,
@@ -236,6 +240,7 @@ export default function Dashboard() {
 
   const hasKurly = items.some((i) => i.marketKurly > 0);
   const hasOasisCol = items.some((i) => (i.oasis || 0) > 0);
+  const hasBmartCol = items.some((i) => (i.bmart || 0) > 0);
   const hasSampleCol = items.some((i) => (i.sample || 0) > 0);
 
   /* 붙여넣기 안내문과 예시 — 체크한 열에 맞춰 같이 움직인다.
@@ -243,13 +248,15 @@ export default function Dashboard() {
   const colGuide = ['코드', '품목명', '주문수량', '쿠팡',
     ...(isWeekend ? [] : ['마켓컬리']),
     ...(!isWeekend && hasOasis ? ['오아시스'] : []),
+    ...(!isWeekend && hasBmart ? ['비마트'] : []),
     ...(!isWeekend && hasSample ? ['샘플'] : []),
     '총수량'];
   const colSample = ['A01', '순수쌀미음', '17', '-',
     ...(isWeekend ? [] : ['-']),
     ...(!isWeekend && hasOasis ? ['3'] : []),
+    ...(!isWeekend && hasBmart ? ['4'] : []),
     ...(!isWeekend && hasSample ? ['2'] : []),
-    String(17 + (!isWeekend && hasOasis ? 3 : 0) + (!isWeekend && hasSample ? 2 : 0))];
+    String(17 + (!isWeekend && hasOasis ? 3 : 0) + (!isWeekend && hasBmart ? 4 : 0) + (!isWeekend && hasSample ? 2 : 0))];
 
   return (
     <div className="space-y-5">
@@ -348,6 +355,23 @@ export default function Dashboard() {
             {!isWeekend && (
               <label
                 className={`flex items-center gap-2 px-3 py-1.5 rounded-md border cursor-pointer select-none transition ${
+                  hasBmart ? 'bg-cyan-50 border-cyan-300' : 'border-gray-200 hover:bg-gray-50'
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  checked={hasBmart}
+                  onChange={(e) => setHasBmart(e.target.checked)}
+                  className="w-4 h-4"
+                />
+                <span className={`text-sm font-medium ${hasBmart ? 'text-cyan-700' : 'text-gray-600'}`}>
+                  비마트 포함
+                </span>
+              </label>
+            )}
+            {!isWeekend && (
+              <label
+                className={`flex items-center gap-2 px-3 py-1.5 rounded-md border cursor-pointer select-none transition ${
                   hasSample ? 'bg-amber-50 border-amber-300' : 'border-gray-200 hover:bg-gray-50'
                 }`}
               >
@@ -400,6 +424,7 @@ export default function Dashboard() {
                   <th className="px-4 py-3 text-right font-medium text-orange-600">쿠팡</th>
                   {hasKurly && <th className="px-4 py-3 text-right font-medium text-blue-600">마켓컬리</th>}
                   {hasOasisCol && <th className="px-4 py-3 text-right font-medium text-emerald-600">오아시스</th>}
+                  {hasBmartCol && <th className="px-4 py-3 text-right font-medium text-cyan-600">비마트</th>}
                   {hasSampleCol && <th className="px-4 py-3 text-right font-medium text-amber-600">샘플</th>}
                   <th className="px-4 py-3 text-right font-medium">총수량</th>
                   <th className="px-4 py-3 text-right font-medium">실제 생산량</th>
@@ -429,6 +454,7 @@ export default function Dashboard() {
                       <td className="px-4 py-3 text-right text-orange-600 font-medium">{it.coupang || '-'}</td>
                       {hasKurly && <td className="px-4 py-3 text-right text-blue-600 font-medium">{it.marketKurly || '-'}</td>}
                       {hasOasisCol && <td className="px-4 py-3 text-right text-emerald-600 font-medium">{it.oasis || '-'}</td>}
+                      {hasBmartCol && <td className="px-4 py-3 text-right text-cyan-600 font-medium">{it.bmart || '-'}</td>}
                       {hasSampleCol && <td className="px-4 py-3 text-right text-amber-600 font-medium">{it.sample || '-'}</td>}
                       <td className="px-4 py-3 text-right font-semibold text-gray-800">{it.totalQty}</td>
                       <td className="px-4 py-3 text-right text-gray-700 font-medium">{displayActual || '-'}</td>

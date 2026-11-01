@@ -13,8 +13,8 @@ import { db } from '../firebase';
 export const CART_COL = 'coolingCarts';
 export const CONFIG_DOC = doc(db, 'coolingConfig', 'main');
 
-export type Channel = '주문' | '쿠팡' | '마켓컬리' | '오아시스' | '샘플';
-export const CHANNELS: Channel[] = ['주문', '쿠팡', '마켓컬리', '오아시스', '샘플'];
+export type Channel = '주문' | '쿠팡' | '마켓컬리' | '오아시스' | '비마트' | '샘플';
+export const CHANNELS: Channel[] = ['주문', '쿠팡', '마켓컬리', '오아시스', '비마트', '샘플'];
 
 /** 현황판 열 색과 같게 — 대차에 붙은 채널 스티커와 화면 색을 맞춘다 */
 export const CH_STYLE: Record<Channel, { bg: string; soft: string; text: string; border: string; dot: string }> = {
@@ -22,11 +22,12 @@ export const CH_STYLE: Record<Channel, { bg: string; soft: string; text: string;
   쿠팡: { bg: 'bg-orange-500', soft: 'bg-orange-50', text: 'text-orange-700', border: 'border-orange-400', dot: 'bg-orange-500' },
   마켓컬리: { bg: 'bg-blue-600', soft: 'bg-blue-50', text: 'text-blue-700', border: 'border-blue-400', dot: 'bg-blue-600' },
   오아시스: { bg: 'bg-emerald-600', soft: 'bg-emerald-50', text: 'text-emerald-700', border: 'border-emerald-400', dot: 'bg-emerald-600' },
+  비마트: { bg: 'bg-cyan-600', soft: 'bg-cyan-50', text: 'text-cyan-700', border: 'border-cyan-400', dot: 'bg-cyan-600' },
   샘플: { bg: 'bg-amber-500', soft: 'bg-amber-50', text: 'text-amber-700', border: 'border-amber-400', dot: 'bg-amber-500' },
 };
 
 /** 도면 칸처럼 좁은 곳에 쓰는 짧은 이름 */
-export const CH_SHORT: Record<Channel, string> = { 주문: '주문', 쿠팡: '쿠팡', 마켓컬리: '컬리', 오아시스: '오아시스', 샘플: '샘플' };
+export const CH_SHORT: Record<Channel, string> = { 주문: '주문', 쿠팡: '쿠팡', 마켓컬리: '컬리', 오아시스: '오아시스', 비마트: '비마트', 샘플: '샘플' };
 
 /** src = 어느 입고 대기 카드에서 실었는지 (카드 key). 예전 대차엔 없다 → 품목코드|대차채널 카드로 센다 */
 export interface CartItem { code: string; name: string; qty: number; src?: string }

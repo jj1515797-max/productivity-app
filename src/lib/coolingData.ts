@@ -193,6 +193,7 @@ export function usePendingCards(date: string, dayCarts: CoolingCart[], sorted: P
         ['쿠팡', it.coupang || 0],
         ['마켓컬리', it.marketKurly || 0],
         ['오아시스', it.oasis || 0],
+        ['비마트', it.bmart || 0],
         ['샘플', it.sample || 0],
       ];
       plan.forEach(([ch, q]) => {
@@ -212,7 +213,7 @@ export function usePendingCards(date: string, dayCarts: CoolingCart[], sorted: P
     });
     // 찾기 쉽게 품목코드 순 — 1순위 숫자(02 → 05 → 06 …, 알파벳과 무관), 2순위 알파벳(E02 → F02).
     // 같은 품목이면 생산계획 카드(채널 순) → 추가 생산·나눈 카드(시각 순)
-    const chOrder = ['주문', '쿠팡', '마켓컬리', '오아시스', '샘플'];
+    const chOrder = ['주문', '쿠팡', '마켓컬리', '오아시스', '비마트', '샘플'];
     const kindOrder = { plan: 0, add: 1, split: 1 };
     const numOf = (c: string) => { const m = c.match(/\d+/); return m ? parseInt(m[0], 10) : Number.MAX_SAFE_INTEGER; };
     const letOf = (c: string) => (c.match(/[A-Za-z]+/)?.[0] || '').toUpperCase();
