@@ -14,7 +14,7 @@ import { effectiveInput } from '../lib/containerStock';
 import type { StockEntry } from '../lib/containerStock';
 import {
   CONTAINER_COST_COL, CONTAINER_ITEMS, FILM_ITEMS, analyzeContainerCost, analyzeFilm,
-  containerAnalysis, containerLoss, containerRatio, containerReport, filmSummary,
+  containerAnalysis, containerLoss, containerLossMoney, containerRatio, containerReport, filmSummary,
 } from '../lib/containerCost';
 import type { CCMonth, CCPoint, ContainerId, FilmId } from '../lib/containerCost';
 import { saveProductionAmount, useProductionAmounts } from '../lib/monthlyAmount';
@@ -29,6 +29,7 @@ const nf = (n: number) => Math.round(n).toLocaleString();
 const sgn = (n: number, d = 1) => `${n >= 0 ? '+' : '−'}${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })}`;
 const sgnInt = (n: number) => `${n >= 0 ? '+' : '−'}${Math.abs(Math.round(n)).toLocaleString()}`;
 const man = (n: number) => `${Math.round(n / 1e4).toLocaleString()}만`;
+const sman = (n: number) => `${n >= 0 ? '+' : '−'}${Math.round(Math.abs(n) / 1e4).toLocaleString()}만`;
 const mon = (m: string) => `${Number(m.slice(5))}월`;
 const toneCls = (v: number, eps: number) => (Math.abs(v) < eps ? 'text-gray-600' : v < 0 ? 'text-emerald-700' : 'text-rose-600');
 
@@ -190,11 +191,13 @@ export default function ContainerCostTab() {
   const prodSum = (m: Record<ContainerId, number | null>) => (CONTAINER_ITEMS.every((it) => m[it.id] != null) ? CONTAINER_ITEMS.reduce((t, it) => t + (m[it.id] || 0), 0) : 0);
   const prodTot = basis === 'stock' ? { A: prodSum(qtyView.prod.A), B: prodSum(qtyView.prod.B) } : null;
   const q = ready ? containerRatio(r!, amt, prodTot) : null;
-  const points = ready ? containerAnalysis(r!, q, monthA, monthB) : null;
+  const lossMoney = ready ? containerLossMoney(r!, prodTot) : null;
+  const sideMoney = ready ? r!.mix + r!.price + (lossMoney ?? 0) : 0;
+  const points = ready ? containerAnalysis(r!, q, monthA, monthB, lossMoney) : null;
   const hasLoss = !!q && q.loss !== null;
   // 재고조사 확인 (참고) — 투입 − 생산
   const loss = loading || calc ? null : containerLoss(qtyView.prod, qtyView.stock, monthA, monthB);
-  const report = ready ? containerReport(r!, q, basis === 'stock' && loss ? loss.negatives : []) : null;
+  const report = ready ? containerReport(r!, q, basis === 'stock' && loss ? loss.negatives : [], lossMoney) : null;
   const reportLines = report ? (fmt === 'std' ? report.std : fmt === 'two' ? report.two : [report.one]) : [];
 
   /* ── 필름 ── 롤 수량은 재고 정합성과 같은 자리(containerStock/{월}.{f2|f4|fr}.input), 롤 단가는 containerCost */
@@ -304,6 +307,16 @@ export default function ContainerCostTab() {
                   <td className={`px-3 py-2.5 text-right font-bold border-l ${toneCls(r.mixAvgDelta, 0.05)}`} title={`${sgnInt(r.mix)}원`}>{sgn(r.mixAvgDelta)}원</td>
                   <td className={`px-3 py-2.5 text-right font-bold ${toneCls(r.price / r.QB, 0.05)}`} title={`${sgnInt(r.price)}원`}>{sgn(r.price / r.QB)}원</td>
                   {hasLoss && <td className="px-3 py-2.5 text-right text-gray-300">—</td>}
+                  <td className="px-3 py-2.5 text-right text-gray-300 border-l">—</td>
+                </tr>
+                <tr className="border-b">
+                  <td className="px-4 py-2.5 font-bold text-gray-700 whitespace-nowrap">금액 <span className="text-[11px] font-normal text-gray-500">같은 생산량</span></td>
+                  <td className="px-3 py-2.5 text-right text-xs text-gray-500" title={`${mon(monthA)} 용기비`}>{man(r.CA)}</td>
+                  <td className="px-3 py-2.5 text-right text-xs text-gray-500" title={`${mon(monthB)} 용기비`}>{man(r.CB)}</td>
+                  <td className={`px-3 py-2.5 text-right font-extrabold text-base bg-slate-50 ${toneCls(sideMoney, 5e3)}`} title={`용기 쪽 합계 = 구성 + 단가${lossMoney !== null ? ' + 로스' : ''} (실제 증감 ${sgnInt(r.total)}원에서 물량 몫을 뺀 값)`}>{sman(sideMoney)}</td>
+                  {[r.mix, r.price, ...(hasLoss && lossMoney !== null ? [lossMoney] : [])].map((v, i) => (
+                    <td key={i} className={`px-3 py-2.5 text-right font-bold ${i === 0 ? 'border-l' : ''} ${toneCls(v, 5e3)}`} title={`${sgnInt(v)}원`}>{Math.abs(v) < 5e3 ? '0' : sman(v)}</td>
+                  ))}
                   <td className="px-3 py-2.5 text-right text-gray-300 border-l">—</td>
                 </tr>
                 {hasLoss && q && (
