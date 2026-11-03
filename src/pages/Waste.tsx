@@ -6,6 +6,8 @@ import { isWasteEntryDoc } from '../lib/appDocs';
 import { todayKey } from '../lib/dateUtil';
 import { CODE_KEY_PREFIX, expandAll, expandWasteEntry, monthPriceKey, normalizeCode, normalizeMaterialName } from '../lib/wasteCompute';
 import type { Recipe, WasteEntry } from '../lib/wasteCompute';
+import TrialCostModal from '../components/TrialCostModal';
+import type { InvPriceDoc } from '../components/TrialCostModal';
 
 /* ===== 캐시 (월별) ===== */
 const CACHE_PREFIX = 'waste:';
@@ -69,6 +71,7 @@ export default function Waste() {
   /* 마스터 DB 구독 (recipes + materialPrices) */
   const [recipeMap, setRecipeMap] = useState<Map<string, Recipe>>(new Map());
   const [priceMap, setPriceMap] = useState<Map<string, number>>(new Map());
+  const [priceDocs, setPriceDocs] = useState<InvPriceDoc[]>([]);   // 시생산비용 산출용 (같은 구독)
 
   useEffect(() => {
     return onSnapshot(collection(db, 'recipes'), (snap) => {
@@ -85,16 +88,19 @@ export default function Waste() {
     // 월별 단가: 재고평가현황(materialPricesInventory) — 출고금액÷출고수량 실측 평균단가
     return onSnapshot(collection(db, 'materialPricesInventory'), (snap) => {
       const map = new Map<string, number>();
+      const docs: InvPriceDoc[] = [];
       snap.forEach((d) => {
         const data = d.data() as { month?: string; name?: string; pricePerGram?: number; code?: string };
         const month = data.month || '';
         if (!month) return;
         const price = Number(data.pricePerGram) || 0;
+        docs.push({ month, name: data.name || '', code: data.code, pricePerGram: price });
         // 해당 月 안에서 이름 키 + 코드 키 둘 다 등록 (코드 우선 매칭)
         if (data.name) map.set(monthPriceKey(month, normalizeMaterialName(data.name)), price);
         if (data.code) map.set(monthPriceKey(month, CODE_KEY_PREFIX + normalizeCode(data.code)), price);
       });
       setPriceMap(map);
+      setPriceDocs(docs);
     });
   }, []);
 
@@ -195,6 +201,7 @@ export default function Waste() {
 
   /* 입력 모달 */
   const [showInput, setShowInput] = useState(false);
+  const [showTrial, setShowTrial] = useState(false);
   const onSavedEntry = () => { clearAllCache(); setRefreshTick((t) => t + 1); };
 
   const shiftSel = (delta: number) => setSelectedMonth(shiftMonthKey(selectedMonth, delta));
@@ -313,6 +320,9 @@ export default function Waste() {
             className="border rounded px-2 py-1 text-sm font-bold" />
           <button onClick={() => shiftSel(1)} className="w-8 h-8 rounded hover:bg-gray-100">▶</button>
         </div>
+        <button onClick={() => setShowTrial(true)}
+          title="원재료를 골라 사용량(kg)을 넣으면 재고평가 단가로 금액을 계산합니다"
+          className="px-3 py-1.5 text-sm rounded bg-violet-600 text-white font-semibold hover:bg-violet-700 shadow-sm">🧪 시생산비용 산출</button>
         {loading && <span className="text-xs text-blue-600">불러오는 중...</span>}
         <div className="ml-auto flex gap-1.5">
           <button onClick={() => { clearAllCache(); setRefreshTick((t) => t + 1); }} className="px-2.5 py-1 text-xs rounded border hover:bg-gray-50" title="캐시 무시하고 다시 불러오기">🔄</button>
@@ -411,6 +421,7 @@ export default function Waste() {
       </div>
 
       {/* 입력 모달 */}
+      {showTrial && <TrialCostModal initialMonth={selectedMonth} priceDocs={priceDocs} onClose={() => setShowTrial(false)} />}
       {showInput && (
         <WasteInputModal
           recipeMap={recipeMap}
