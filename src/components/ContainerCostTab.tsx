@@ -29,7 +29,6 @@ const nf = (n: number) => Math.round(n).toLocaleString();
 const sgn = (n: number, d = 1) => `${n >= 0 ? '+' : '−'}${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })}`;
 const sgnInt = (n: number) => `${n >= 0 ? '+' : '−'}${Math.abs(Math.round(n)).toLocaleString()}`;
 const man = (n: number) => `${Math.round(n / 1e4).toLocaleString()}만`;
-const sman = (n: number) => `${n >= 0 ? '+' : '−'}${Math.round(Math.abs(n) / 1e4).toLocaleString()}만`;
 const mon = (m: string) => `${Number(m.slice(5))}월`;
 const toneCls = (v: number, eps: number) => (Math.abs(v) < eps ? 'text-gray-600' : v < 0 ? 'text-emerald-700' : 'text-rose-600');
 
@@ -92,7 +91,7 @@ function Points({ points }: { points: CCPoint[] }) {
     <ul className="space-y-2 text-[15px] leading-snug text-gray-800">
       {points.map((p) => (
         <li key={p.k} className="flex gap-3">
-          <span className="w-16 shrink-0 font-bold text-gray-500 flex items-center gap-1.5 whitespace-nowrap"><span className={`w-2 h-2 rounded-full ${dot[p.tone]}`} />{p.k}</span>
+          <span className="w-[4.5rem] shrink-0 font-bold text-gray-500 flex items-center gap-1.5 whitespace-nowrap"><span className={`w-2 h-2 rounded-full ${dot[p.tone]}`} />{p.k}</span>
           <span className={p.k === '결론' ? 'font-bold' : ''}>{p.t}</span>
         </li>
       ))}
@@ -188,7 +187,7 @@ export default function ContainerCostTab() {
   const ready = !!r && r.missing.length === 0;
   const amt = { A: A.amount, B: B.amount };
   const q = ready ? containerRatio(r!, amt) : null;
-  const points = ready ? containerAnalysis(r!, q, basis === 'stock' ? '투입' : '사용') : null;
+  const points = ready ? containerAnalysis(r!, q, amt) : null;
   // 재고조사 확인 (참고) — 투입 − 생산
   const loss = loading || calc ? null : containerLoss(qtyView.prod, qtyView.stock, monthA, monthB);
   const report = ready ? containerReport(r!, q, basis === 'stock' && loss ? loss.negatives : []) : null;
@@ -262,42 +261,54 @@ export default function ContainerCostTab() {
           <div className="overflow-x-auto">
             <table className="w-full text-sm tabular-nums">
               <thead className="text-xs text-gray-500">
+                <tr>
+                  <th colSpan={4} />
+                  <th colSpan={2} className="px-3 pt-2 text-center font-semibold text-indigo-700 border-l border-b border-indigo-100">용기 쪽</th>
+                  <th className="px-3 pt-2 text-center font-semibold text-gray-500 border-l border-b">제품 쪽</th>
+                </tr>
                 <tr className="border-b">
                   <th className="px-4 py-2 text-left font-semibold" />
                   <th className="px-3 py-2 text-right font-semibold">{mon(monthA)}</th>
                   <th className="px-3 py-2 text-right font-semibold">{mon(monthB)}</th>
                   <th className="px-3 py-2 text-right font-bold text-gray-800 bg-slate-50">증감</th>
-                  <th className="px-3 py-2 text-right font-semibold border-l">물량</th>
-                  <th className="px-3 py-2 text-right font-semibold">구성</th>
+                  <th className="px-3 py-2 text-right font-semibold border-l">구성</th>
                   <th className="px-3 py-2 text-right font-semibold">단가</th>
-                  <th className="px-3 py-2 text-right font-semibold">개당 생산금액</th>
+                  <th className="px-3 py-2 text-right font-semibold border-l">개당 생산금액</th>
                 </tr>
               </thead>
               <tbody>
                 <tr className="border-b">
-                  <td className="px-4 py-2.5 font-bold text-gray-700">용기비</td>
-                  <td className="px-3 py-2.5 text-right">{man(r.CA)}</td>
-                  <td className="px-3 py-2.5 text-right">{man(r.CB)}</td>
-                  <td className={`px-3 py-2.5 text-right font-extrabold text-base bg-slate-50 ${toneCls(r.total, 1)}`}>{sman(r.total)}</td>
-                  {[r.volume, r.mix, r.price].map((v, i) => (
-                    <td key={i} className={`px-3 py-2.5 text-right font-bold ${i === 0 ? 'border-l text-gray-600' : toneCls(v, 1)}`} title={`${sgnInt(v)}원`}>{sman(v)}</td>
-                  ))}
-                  <td className="px-3 py-2.5 text-right text-gray-300">—</td>
-                </tr>
-                <tr>
                   <td className="px-4 py-2.5 font-bold text-gray-700">원가율</td>
                   {q ? (
                     <>
                       <td className="px-3 py-2.5 text-right">{q.rA.toFixed(2)}%</td>
                       <td className="px-3 py-2.5 text-right">{q.rB.toFixed(2)}%</td>
                       <td className={`px-3 py-2.5 text-right font-extrabold text-base bg-slate-50 ${toneCls(q.d, 0.005)}`}>{sgn(q.d, 2)}%p</td>
-                      <td className="px-3 py-2.5 text-right text-gray-300 border-l">—</td>
                       {[q.mix, q.price, q.rev].map((v, i) => (
-                        <td key={i} className={`px-3 py-2.5 text-right font-bold ${toneCls(v, 0.005)}`}>{sgn(v, 2)}%p</td>
+                        <td key={i} className={`px-3 py-2.5 text-right font-bold ${i !== 1 ? 'border-l' : ''} ${toneCls(v, 0.005)}`}>{sgn(v, 2)}%p</td>
                       ))}
                     </>
-                  ) : <td colSpan={7} className="px-3 py-2.5 text-xs text-gray-500">아래 표에 두 달 생산금액을 넣으면 나옵니다</td>}
+                  ) : <td colSpan={6} className="px-3 py-2.5 text-xs text-gray-500">아래 표에 두 달 생산금액을 넣으면 나옵니다</td>}
                 </tr>
+                <tr className="border-b">
+                  <td className="px-4 py-2.5 font-bold text-gray-700">개당 용기단가</td>
+                  <td className="px-3 py-2.5 text-right">{r.avgA.toFixed(1)}원</td>
+                  <td className="px-3 py-2.5 text-right">{r.avgB.toFixed(1)}원</td>
+                  <td className={`px-3 py-2.5 text-right font-extrabold text-base bg-slate-50 ${toneCls(r.avgB - r.avgA, 0.05)}`}>{sgn(r.avgB - r.avgA)}원</td>
+                  <td className={`px-3 py-2.5 text-right font-bold border-l ${toneCls(r.mixAvgDelta, 0.05)}`} title={`${sgnInt(r.mix)}원`}>{sgn(r.mixAvgDelta)}원</td>
+                  <td className={`px-3 py-2.5 text-right font-bold ${toneCls(r.price / r.QB, 0.05)}`} title={`${sgnInt(r.price)}원`}>{sgn(r.price / r.QB)}원</td>
+                  <td className="px-3 py-2.5 text-right text-gray-300 border-l">—</td>
+                </tr>
+                {q && (
+                  <tr className="text-gray-500">
+                    <td className="px-4 py-2 text-xs font-semibold">용기 1개당 생산금액</td>
+                    <td className="px-3 py-2 text-right text-xs">{nf(A.amount / r.QA)}원</td>
+                    <td className="px-3 py-2 text-right text-xs">{nf(B.amount / r.QB)}원</td>
+                    <td className="px-3 py-2 text-right text-xs font-bold bg-slate-50">{sgn(((B.amount / r.QB) / (A.amount / r.QA) - 1) * 100)}%</td>
+                    <td colSpan={2} className="border-l" />
+                    <td className="px-3 py-2 text-right text-[11px] border-l">원가율 = 개당 용기단가 ÷ 이 값</td>
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>

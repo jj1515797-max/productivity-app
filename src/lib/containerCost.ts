@@ -164,55 +164,53 @@ const g1 = (r: number) => `${r >= 0 ? '+' : '−'}${Math.abs(r * 100).toFixed(1)
 const shortOf = (id: ContainerId) => CONTAINER_ITEMS.find((x) => x.id === id)!.short;
 const mm = (m: string) => `${Number(m.slice(5))}월`;
 
-/* ───────── 분석 (짧게) ───────── */
+/* ───────── 분석 (짧게) ─────────
+ *  용기비 금액 증감은 물량(많이 만들면 많이 씀)이 대부분이라 보지 않는다. 비율로 본다:
+ *   원가율 = 개당 용기단가 ÷ 용기 1개당 생산금액
+ *   개당 용기단가 증감 = 구성(원/개) + 단가(원/개)   ← 용기 쪽
+ *   원가율 증감(%p) = 구성 + 단가(용기 쪽) + 개당 생산금액(제품 쪽 — 제품 단가·구성, 용기와 무관) */
 export interface CCPoint { k: string; t: string; tone: 'good' | 'bad' | 'plain' }
-export function containerAnalysis(r: CCResult, q: CCRatio | null, qtyWord: '투입' | '사용'): CCPoint[] {
-  const tone = (v: number): CCPoint['tone'] => (Math.abs(v) < 1 ? 'plain' : v < 0 ? 'good' : 'bad');
+const s1 = (n: number) => `${n >= 0 ? '+' : '−'}${Math.abs(n).toFixed(1)}`;
+export function containerAnalysis(r: CCResult, q: CCRatio | null, amount: { A: number; B: number }): CCPoint[] {
+  const tone = (v: number, eps: number): CCPoint['tone'] => (Math.abs(v) < eps ? 'plain' : v < 0 ? 'good' : 'bad');
+  const dAvg = r.avgB - r.avgA, mixU = r.mixAvgDelta, priceU = r.price / r.QB;
   const pts: CCPoint[] = [];
+  // 결론 — 용기 쪽(개당 용기단가) + 원가율이 어디서 움직였나
+  let t = Math.abs(dAvg) < 0.3
+    ? `용기 쪽은 개당 ${s1(dAvg)}원으로 거의 보합`
+      + (Math.abs(mixU) >= 0.3 && Math.abs(priceU) >= 0.3 && Math.sign(mixU) !== Math.sign(priceU) ? ` (구성 ${s1(mixU)}원 ↔ 단가 ${s1(priceU)}원 상쇄)` : '')
+    : `용기 쪽에서 개당 ${s1(dAvg)}원 ${dAvg < 0 ? '절감' : '상승'} (구성 ${s1(mixU)}원, 단가 ${s1(priceU)}원)`;
   if (q) {
-    const name = (k: 'mix' | 'price' | 'rev', v: number) =>
-      k === 'mix' ? (v <= 0 ? '구성(싼 용기 비중↑)' : '구성(비싼 용기 비중↑)')
-        : k === 'price' ? (v <= 0 ? '단가 인하' : '단가 인상')
-          : (v >= 0 ? '개당 생산금액 하락' : '개당 생산금액 상승');
-    const parts = (['mix', 'price', 'rev'] as const).map((k) => ({ k, v: q[k], n: name(k, q[k]) }))
-      .filter((p) => Math.abs(p.v) >= 0.005).sort((x, y) => Math.abs(y.v) - Math.abs(x.v));
-    const head = `${q.rA.toFixed(2)}% → ${q.rB.toFixed(2)}%`;
-    let t: string;
-    if (Math.abs(q.d) < 0.005) {
-      t = `${head} 보합` + (parts.length ? ` — ${parts.map((p) => `${p.n} ${pp2(p.v)}%p`).join(', ')}가 서로 상쇄` : '');
-    } else {
-      const dir = Math.sign(q.d);
-      const main = parts.find((p) => Math.sign(p.v) === dir) || parts[0];
-      const same = parts.filter((p) => p !== main && Math.sign(p.v) === dir);
-      const opp = parts.filter((p) => p !== main && Math.sign(p.v) !== dir);
-      t = `${head} (${pp2(q.d)}%p ${q.d < 0 ? '하락' : '상승'}) · 주원인 ${main ? `${main.n} ${pp2(main.v)}%p` : '—'}`
-        + (same.length ? ` · 보탬 ${same.map((p) => `${p.n} ${pp2(p.v)}%p`).join(', ')}` : '')
-        + (opp.length ? ` · 상쇄 ${opp.map((p) => `${p.n} ${pp2(p.v)}%p`).join(', ')}` : '');
-    }
-    pts.push({ k: '결론', t, tone: Math.abs(q.d) < 0.005 ? 'plain' : q.d < 0 ? 'good' : 'bad' });
-  } else {
-    pts.push({ k: '결론', t: `용기비 ${man(r.CA)} → ${man(r.CB)} (${sman(r.total)}) — 두 달 생산금액을 넣으면 원가율로 봅니다`, tone: tone(r.total) });
-  }
+    const cs = q.mix + q.price;
+    const tail = `용기 쪽 ${pp2(cs)}%p, 제품 쪽 ${pp2(q.rev)}%p`;
+    t += Math.abs(q.d) < 0.005 ? ` · 원가율 보합 (${tail})`
+      : ` · 원가율 ${pp2(q.d)}%p ${q.d < 0 ? '하락' : '상승'}은 ${Math.abs(q.rev) > Math.abs(cs) ? '대부분 제품 쪽 몫' : '용기 쪽이 주도'} (${tail})`;
+  } else t += ' · 두 달 생산금액을 넣으면 원가율로 봅니다';
+  pts.push({ k: '결론', t, tone: tone(dAvg, 0.3) });
+
   const moved = [...r.rows].filter((x) => Math.abs(x.ds) >= 0.05).sort((x, y) => Math.abs(y.ds) - Math.abs(x.ds)).slice(0, 2);
   pts.push({
     k: '구성',
-    t: moved.length
-      ? `${moved.map((x) => `${shortOf(x.id)}(${x.tier}) ${(x.sA * 100).toFixed(1)}% → ${(x.sB * 100).toFixed(1)}% (${x.ds >= 0 ? '+' : '−'}${Math.abs(x.ds).toFixed(1)}%p)`).join(', ')} → 개당 평균단가 ${r.mixAvgDelta >= 0 ? '+' : '−'}${Math.abs(r.mixAvgDelta).toFixed(1)}원 · ${sman(r.mix)}`
-      : `용기 비중 변화 거의 없음 (${sman(r.mix)})`,
-    tone: tone(r.mix),
+    t: (moved.length
+      ? `${moved.map((x) => `${shortOf(x.id)}(${x.tier}) ${(x.sA * 100).toFixed(1)}% → ${(x.sB * 100).toFixed(1)}% (${s1(x.ds)}%p)`).join(', ')}`
+      : '용기 비중 변화 거의 없음') + ` → 개당 ${s1(mixU)}원 (${sman(r.mix)})`,
+    tone: tone(mixU, 0.3),
   });
   pts.push({
     k: '단가',
     t: r.priceChanged.length
-      ? `${r.priceChanged.map((c) => `${shortOf(r.rows.find((x) => x.label === c.label)!.id)} ${won(c.pA)} → ${won(c.pB)}원`).join(', ')} · ${sman(r.price)}`
-      : '품목별 단가 전월과 같음 (0원)',
-    tone: tone(r.price),
+      ? `${r.priceChanged.map((c) => `${shortOf(r.rows.find((x) => x.label === c.label)!.id)} ${won(c.pA)} → ${won(c.pB)}원`).join(', ')} → 개당 ${s1(priceU)}원 (${sman(r.price)})`
+      : '품목별 단가 전월과 같음',
+    tone: tone(priceU, 0.3),
   });
-  pts.push({
-    k: '물량',
-    t: `${qtyWord} ${Math.round(r.QA).toLocaleString()} → ${Math.round(r.QB).toLocaleString()}개 (${g1(r.QB / r.QA - 1)}) · ${sman(r.volume)} — 생산금액과 같이 움직여 원가율 영향 없음`,
-    tone: 'plain',
-  });
+  if (q) {
+    const perA = amount.A / r.QA, perB = amount.B / r.QB;
+    pts.push({
+      k: '제품 쪽',
+      t: `생산금액 ${g1(amount.B / amount.A - 1)}, 용기 ${g1(r.QB / r.QA - 1)} → 용기 1개당 생산금액 ${Math.round(perA).toLocaleString()} → ${Math.round(perB).toLocaleString()}원 (${g1(perB / perA - 1)}) → 원가율 ${pp2(q.rev)}%p · 제품 단가·구성 몫, 용기와 무관`,
+      tone: tone(q.rev, 0.005),
+    });
+  }
   return pts;
 }
 
@@ -345,7 +343,7 @@ export function filmSummary(f: FilmResult, monthA: string, monthB: string): { po
     t: `필름비 ${man(f.CA)} → ${man(f.CB)} (${sman(f.CB - f.CA)})` + (f.ratio ? ` · 원가율 ${f.ratio.rA.toFixed(2)}% → ${f.ratio.rB.toFixed(2)}% (${pp2(f.ratio.d)}%p)` : ''),
     tone: f.ratio ? (Math.abs(f.ratio.d) < 0.005 ? 'plain' : f.ratio.d < 0 ? 'good' : 'bad') : tone(f.CB - f.CA),
   });
-  points.push({ k: '나누기', t: `물량 ${sman(f.vol)} · 사용량(로스) ${sman(f.use)} · 단가 ${sman(f.price)}`, tone: tone(f.use + f.price) });
+  points.push({ k: '나누기', t: `사용량(로스) ${sman(f.use)} · 단가 ${sman(f.price)} (물량 몫 ${sman(f.vol)}은 많이 만들어 많이 쓴 것 — 제외)`, tone: tone(f.use + f.price) });
   const worst = [...f.rows].sort((x, y) => y.lossCum - x.lossCum)[0];
   points.push({
     k: '로스',
