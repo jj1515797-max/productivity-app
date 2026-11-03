@@ -139,21 +139,35 @@ export function containerComments(r: CCResult): { opt1: string[]; opt2: string[]
 }
 
 /* ───────── 원가율 나누기 ─────────
- *  원가율 증감(%p) = 구성 + 단가 + 개당 생산금액   (세 몫의 합 = 증감)
- *   구성 = 구성 금액 ÷ 생산금액B,  단가 = 단가 금액 ÷ 생산금액B
- *   개당 생산금액 = 원가율A × ((생산금액A ÷ 수량A) ÷ (생산금액B ÷ 수량B) − 1)
- *     ← 물량은 생산금액(분모)과 같이 움직여 상쇄되고, 용기 1개당 생산금액이 바뀐 만큼만 남는다
- *  재고조사 기준이면 수량 = 투입량 → 로스(투입 − 생산)는 이미 수량에 들어 있어 따로 더하지 않는다. */
-export interface CCRatio { rA: number; rB: number; d: number; mix: number; price: number; rev: number; money: number }
-export function containerRatio(r: CCResult, amount: { A: number; B: number }): CCRatio | null {
+ *  원가율 = 개당 용기단가 × (용기 수 ÷ 제품 수) ÷ 제품 1개당 생산금액
+ *  원가율 증감(%p) = 구성 + 단가 + 용기 로스 + 개당 생산금액   (네 몫의 합 = 증감)
+ *   구성 = 구성 금액 ÷ 생산금액B,  단가 = 단가 금액 ÷ 생산금액B   (용기 1개 값이 바뀐 몫)
+ *   용기 로스 = 원가율A × X × (u_B ÷ u_A − 1)    u = 투입 ÷ 생산 (제품 1개 만들 때 쓴 용기 수)
+ *   개당 생산금액 = 원가율A × (X − 1)            X = (생산금액A ÷ 생산A) ÷ (생산금액B ÷ 생산B)   ← 제품 쪽(판가·제품 구성)
+ *  재고조사 기준이면 투입량에 로스가 섞여 있어 이렇게 둘로 나눈다. 생산량 기준(투입 = 생산)이면 용기 로스는 없다.
+ *  물량은 생산금액(분모)과 같이 움직여 상쇄된다. */
+export interface CCRatio {
+  rA: number; rB: number; d: number; mix: number; price: number;
+  /** 용기 로스 몫 (%p) — 재고조사 기준 + 생산량을 알 때만 */
+  loss: number | null;
+  /** 개당 생산금액 몫 (%p) — 제품 1개(= 생산 용기 1개)당 */
+  rev: number;
+  money: number;
+  perA: number; perB: number;
+  /** 투입 ÷ 생산 (재고조사 기준일 때) */
+  uA: number | null; uB: number | null;
+}
+export function containerRatio(r: CCResult, amount: { A: number; B: number }, prod?: { A: number; B: number } | null): CCRatio | null {
   if (!(amount.A > 0 && amount.B > 0)) return null;
   const rA = r.CA / amount.A, rB = r.CB / amount.B;
-  return {
-    rA: rA * 100, rB: rB * 100, d: (rB - rA) * 100,
-    mix: (r.mix / amount.B) * 100, price: (r.price / amount.B) * 100,
-    rev: rA * ((amount.A / r.QA) / (amount.B / r.QB) - 1) * 100,
-    money: (rB - rA) * amount.B,
-  };
+  const base = { rA: rA * 100, rB: rB * 100, d: (rB - rA) * 100, mix: (r.mix / amount.B) * 100, price: (r.price / amount.B) * 100, money: (rB - rA) * amount.B };
+  if (prod && prod.A > 0 && prod.B > 0) {
+    const perA = amount.A / prod.A, perB = amount.B / prod.B, X = perA / perB;
+    const uA = r.QA / prod.A, uB = r.QB / prod.B;
+    return { ...base, rev: rA * (X - 1) * 100, loss: rA * X * (uB / uA - 1) * 100, perA, perB, uA, uB };
+  }
+  const perA = amount.A / r.QA, perB = amount.B / r.QB;
+  return { ...base, rev: rA * (perA / perB - 1) * 100, loss: null, perA, perB, uA: null, uB: null };
 }
 
 const pp2 = (n: number) => `${n >= 0 ? '+' : '−'}${Math.abs(n).toFixed(2)}`;
@@ -165,35 +179,35 @@ const shortOf = (id: ContainerId) => CONTAINER_ITEMS.find((x) => x.id === id)!.s
 const mm = (m: string) => `${Number(m.slice(5))}월`;
 
 /* ───────── 분석 (짧게) ─────────
- *  용기비 금액 증감은 물량(많이 만들면 많이 씀)이 대부분이라 보지 않는다. 비율로 본다:
- *   원가율 = 개당 용기단가 ÷ 용기 1개당 생산금액
- *   개당 용기단가 증감 = 구성(원/개) + 단가(원/개)   ← 용기 쪽
- *   원가율 증감(%p) = 구성 + 단가(용기 쪽) + 개당 생산금액(제품 쪽 — 제품 단가·구성, 용기와 무관) */
+ *  용기비 금액 증감은 물량(많이 만들면 많이 씀)이 대부분이라 보지 않는다. 비율로 본다. */
 export interface CCPoint { k: string; t: string; tone: 'good' | 'bad' | 'plain' }
 const s1 = (n: number) => `${n >= 0 ? '+' : '−'}${Math.abs(n).toFixed(1)}`;
-export function containerAnalysis(r: CCResult, q: CCRatio | null, amount: { A: number; B: number }): CCPoint[] {
+export function containerAnalysis(r: CCResult, q: CCRatio | null, monthA: string, monthB: string): CCPoint[] {
   const tone = (v: number, eps: number): CCPoint['tone'] => (Math.abs(v) < eps ? 'plain' : v < 0 ? 'good' : 'bad');
-  const dAvg = r.avgB - r.avgA, mixU = r.mixAvgDelta, priceU = r.price / r.QB;
+  const mixU = r.mixAvgDelta, priceU = r.price / r.QB;
   const pts: CCPoint[] = [];
-  // 결론 — 용기 쪽(개당 용기단가) + 원가율이 어디서 움직였나
-  let t = Math.abs(dAvg) < 0.3
-    ? `용기 쪽은 개당 ${s1(dAvg)}원으로 거의 보합`
-      + (Math.abs(mixU) >= 0.3 && Math.abs(priceU) >= 0.3 && Math.sign(mixU) !== Math.sign(priceU) ? ` (구성 ${s1(mixU)}원 ↔ 단가 ${s1(priceU)}원 상쇄)` : '')
-    : `용기 쪽에서 개당 ${s1(dAvg)}원 ${dAvg < 0 ? '절감' : '상승'} (구성 ${s1(mixU)}원, 단가 ${s1(priceU)}원)`;
+  // 결론 — 원가율을 움직인 몫: 주원인 · 보탬 · 상쇄
   if (q) {
-    const cs = q.mix + q.price;
-    const tail = `용기 쪽 ${pp2(cs)}%p, 제품 쪽 ${pp2(q.rev)}%p`;
-    const dir = q.d < 0 ? '하락' : '상승';
-    // 용기 쪽과 제품 쪽이 반대로 움직였으면 어느 쪽이 이겼는지, 진 쪽은 '오히려' 반대였다고 바로 쓴다
-    const opp = Math.abs(cs) >= 0.005 && Math.abs(q.rev) >= 0.005 && Math.sign(cs) !== Math.sign(q.rev);
-    t += Math.abs(q.d) < 0.005 ? ` · 원가율 보합 (${tail})`
-      : opp && Math.sign(q.d) === Math.sign(q.rev)
-        ? ` · 원가율 ${pp2(q.d)}%p ${dir}은 제품 쪽(${pp2(q.rev)}%p) ${q.d < 0 ? '덕분' : '때문'} — 용기 쪽은 오히려 ${pp2(cs)}%p ${cs > 0 ? '올림' : '내림'}`
-        : opp
-          ? ` · 원가율 ${pp2(q.d)}%p ${dir}은 용기 쪽(${pp2(cs)}%p) ${q.d < 0 ? '덕분' : '때문'} — 제품 쪽은 반대로 ${pp2(q.rev)}%p`
-          : ` · 원가율 ${pp2(q.d)}%p ${dir}은 ${Math.abs(q.rev) > Math.abs(cs) ? '대부분 제품 쪽 몫' : '용기 쪽이 주도'} (${tail})`;
-  } else t += ' · 두 달 생산금액을 넣으면 원가율로 봅니다';
-  pts.push({ k: '결론', t, tone: tone(dAvg, 0.3) });
+    const name = (k: string, v: number) => (
+      k === 'mix' ? (v <= 0 ? '구성(싼 용기 비중↑)' : '구성(비싼 용기 비중↑)')
+        : k === 'price' ? (v <= 0 ? '단가 인하' : '단가 인상')
+          : k === 'loss' ? (v <= 0 ? '용기 로스 감소' : '용기 로스 증가')
+            : (v >= 0 ? '개당 생산금액 하락' : '개당 생산금액 상승'));
+    const parts = [
+      { k: 'mix', v: q.mix }, { k: 'price', v: q.price }, ...(q.loss !== null ? [{ k: 'loss', v: q.loss }] : []), { k: 'rev', v: q.rev },
+    ].filter((p) => Math.abs(p.v) >= 0.005).sort((x, y) => Math.abs(y.v) - Math.abs(x.v));
+    const fmt = (p: { k: string; v: number }) => `${name(p.k, p.v)} ${pp2(p.v)}%p`;
+    let t = `${q.rA.toFixed(2)}% → ${q.rB.toFixed(2)}% (${pp2(q.d)}%p${Math.abs(q.d) < 0.005 ? ' 보합' : q.d < 0 ? ' 하락' : ' 상승'})`;
+    if (parts.length) {
+      const main = parts.find((p) => Math.sign(p.v) === Math.sign(q.d)) || parts[0];
+      const same = parts.filter((p) => p !== main && Math.sign(p.v) === Math.sign(main.v));
+      const opp = parts.filter((p) => p !== main && Math.sign(p.v) !== Math.sign(main.v));
+      t += ` · 주원인 ${fmt(main)}` + (same.length ? ` · 보탬 ${same.map(fmt).join(', ')}` : '') + (opp.length ? ` · 상쇄 ${opp.map(fmt).join(', ')}` : '');
+    }
+    pts.push({ k: '결론', t, tone: tone(q.d, 0.005) });
+  } else {
+    pts.push({ k: '결론', t: `개당 용기단가 ${r.avgA.toFixed(1)} → ${r.avgB.toFixed(1)}원 (${s1(r.avgB - r.avgA)}원) — 두 달 생산금액을 넣으면 원가율로 봅니다`, tone: tone(r.avgB - r.avgA, 0.3) });
+  }
 
   const moved = [...r.rows].filter((x) => Math.abs(x.ds) >= 0.05).sort((x, y) => Math.abs(y.ds) - Math.abs(x.ds)).slice(0, 2);
   pts.push({
@@ -210,11 +224,18 @@ export function containerAnalysis(r: CCResult, q: CCRatio | null, amount: { A: n
       : '품목별 단가 전월과 같음',
     tone: tone(priceU, 0.3),
   });
+  if (q && q.loss !== null && q.uA !== null && q.uB !== null) {
+    pts.push({
+      k: '용기 로스',
+      t: `투입 ÷ 생산 ${mm(monthA)} ${g1(q.uA - 1)} → ${mm(monthB)} ${g1(q.uB - 1)} → 원가율 ${pp2(q.loss)}%p`
+        + (q.uA < 1 || q.uB < 1 ? ' — 투입 < 생산(불가능)인 달이 있어 재고조사 차이일 수 있음' : ''),
+      tone: tone(q.loss, 0.005),
+    });
+  }
   if (q) {
-    const perA = amount.A / r.QA, perB = amount.B / r.QB;
     pts.push({
       k: '제품 쪽',
-      t: `생산금액 ${g1(amount.B / amount.A - 1)}, 용기 ${g1(r.QB / r.QA - 1)} → 용기 1개당 생산금액 ${Math.round(perA).toLocaleString()} → ${Math.round(perB).toLocaleString()}원 (${g1(perB / perA - 1)}) → 원가율 ${pp2(q.rev)}%p · 제품 단가·구성 몫, 용기와 무관`,
+      t: `제품 1개당 생산금액 ${Math.round(q.perA).toLocaleString()} → ${Math.round(q.perB).toLocaleString()}원 (${g1(q.perB / q.perA - 1)}) → 원가율 ${pp2(q.rev)}%p · 판가·제품 구성 몫, 용기와 무관`,
       tone: tone(q.rev, 0.005),
     });
   }
@@ -261,10 +282,10 @@ export function containerLoss(prod: { A: Qty; B: Qty }, stock: { A: Qty; B: Qty 
 export function containerReport(r: CCResult, q: CCRatio | null, negatives: string[]): { std: string[]; two: string[]; one: string } {
   const b = containerComments(r);
   const ratioLine = q
-    ? `#. 용기 원가율 ${q.rA.toFixed(2)}% → ${q.rB.toFixed(2)}% (${Math.abs(q.d) < 0.005 ? '보합, ' : ''}${pp2(q.d)}%p, ${moneyText(q.money)} ${effectWord(q.money)}) : 구성(Mix) ${pp2(q.mix)}%p · 단가 ${pp2(q.price)}%p · 개당 생산금액 ${pp2(q.rev)}%p`
+    ? `#. 용기 원가율 ${q.rA.toFixed(2)}% → ${q.rB.toFixed(2)}% (${Math.abs(q.d) < 0.005 ? '보합, ' : ''}${pp2(q.d)}%p, ${moneyText(q.money)} ${effectWord(q.money)}) : 구성(Mix) ${pp2(q.mix)}%p · 단가 ${pp2(q.price)}%p${q.loss !== null ? ` · 용기 로스 ${pp2(q.loss)}%p` : ''} · 개당 생산금액 ${pp2(q.rev)}%p`
     : b.opt1[2];
   const warn = negatives.length ? `※ 재고조사 투입량이 생산량보다 적음 : ${negatives.join(', ')} — 재고조사·월말 시점 확인 필요` : '';
-  const ranked = q ? (['mix', 'price', 'rev'] as const).map((k) => ({ k: k === 'mix' ? '구성(Mix)' : k === 'price' ? '단가' : '개당 생산금액', v: q[k] }))
+  const ranked = q ? [{ k: '구성(Mix)', v: q.mix }, { k: '단가', v: q.price }, ...(q.loss !== null ? [{ k: '용기 로스', v: q.loss }] : []), { k: '개당 생산금액', v: q.rev }]
     .filter((p) => Math.abs(p.v) >= 0.005).sort((x, y) => Math.abs(y.v) - Math.abs(x.v)) : [];
   const two = q ? [
     `#. 용기 원가율 ${q.rA.toFixed(2)}% → ${q.rB.toFixed(2)}% (${pp2(q.d)}%p, ${(Math.abs(q.money) / 1e6).toFixed(1)}백) / ${r.priceChanged.length ? '단가 변동' : '품목별 단가 동일'}, 사용 구성(Mix) ${r.mix <= 0 ? '개선으로' : '변동으로'} 평균단가 ${r.mixAvgDelta <= 0 ? '▼' : '▲'}${Math.abs(r.mixAvgDelta).toFixed(1)}원/개`,

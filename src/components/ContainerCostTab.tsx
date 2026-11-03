@@ -186,8 +186,12 @@ export default function ContainerCostTab() {
   const unknownQty = basis === 'prod' ? (theoryOf(monthA)?.unknown || 0) + (theoryOf(monthB)?.unknown || 0) : 0;
   const ready = !!r && r.missing.length === 0;
   const amt = { A: A.amount, B: B.amount };
-  const q = ready ? containerRatio(r!, amt) : null;
-  const points = ready ? containerAnalysis(r!, q, amt) : null;
+  // 재고조사 기준이면 투입량에 로스가 섞여 있다 → 생산량(제품 수)을 같이 넘겨 원가율을 '용기 로스'와 '제품 1개당 생산금액'으로 나눈다
+  const prodSum = (m: Record<ContainerId, number | null>) => (CONTAINER_ITEMS.every((it) => m[it.id] != null) ? CONTAINER_ITEMS.reduce((t, it) => t + (m[it.id] || 0), 0) : 0);
+  const prodTot = basis === 'stock' ? { A: prodSum(qtyView.prod.A), B: prodSum(qtyView.prod.B) } : null;
+  const q = ready ? containerRatio(r!, amt, prodTot) : null;
+  const points = ready ? containerAnalysis(r!, q, monthA, monthB) : null;
+  const hasLoss = !!q && q.loss !== null;
   // 재고조사 확인 (참고) — 투입 − 생산
   const loss = loading || calc ? null : containerLoss(qtyView.prod, qtyView.stock, monthA, monthB);
   const report = ready ? containerReport(r!, q, basis === 'stock' && loss ? loss.negatives : []) : null;
@@ -263,7 +267,7 @@ export default function ContainerCostTab() {
               <thead className="text-xs text-gray-500">
                 <tr>
                   <th colSpan={4} />
-                  <th colSpan={2} className="px-3 pt-2 text-center font-semibold text-indigo-700 border-l border-b border-indigo-100">용기 쪽</th>
+                  <th colSpan={hasLoss ? 3 : 2} className="px-3 pt-2 text-center font-semibold text-indigo-700 border-l border-b border-indigo-100">용기 쪽</th>
                   <th className="px-3 pt-2 text-center font-semibold text-gray-500 border-l border-b">제품 쪽</th>
                 </tr>
                 <tr className="border-b">
@@ -273,6 +277,7 @@ export default function ContainerCostTab() {
                   <th className="px-3 py-2 text-right font-bold text-gray-800 bg-slate-50">증감</th>
                   <th className="px-3 py-2 text-right font-semibold border-l">구성</th>
                   <th className="px-3 py-2 text-right font-semibold">단가</th>
+                  {hasLoss && <th className="px-3 py-2 text-right font-semibold">로스</th>}
                   <th className="px-3 py-2 text-right font-semibold border-l">개당 생산금액</th>
                 </tr>
               </thead>
@@ -284,11 +289,12 @@ export default function ContainerCostTab() {
                       <td className="px-3 py-2.5 text-right">{q.rA.toFixed(2)}%</td>
                       <td className="px-3 py-2.5 text-right">{q.rB.toFixed(2)}%</td>
                       <td className={`px-3 py-2.5 text-right font-extrabold text-base bg-slate-50 ${toneCls(q.d, 0.005)}`}>{sgn(q.d, 2)}%p</td>
-                      {[q.mix, q.price, q.rev].map((v, i) => (
-                        <td key={i} className={`px-3 py-2.5 text-right font-bold ${i !== 1 ? 'border-l' : ''} ${toneCls(v, 0.005)}`}>{sgn(v, 2)}%p</td>
+                      {[q.mix, q.price, ...(hasLoss ? [q.loss!] : [])].map((v, i) => (
+                        <td key={i} className={`px-3 py-2.5 text-right font-bold ${i === 0 ? 'border-l' : ''} ${toneCls(v, 0.005)}`}>{sgn(v, 2)}%p</td>
                       ))}
+                      <td className={`px-3 py-2.5 text-right font-bold border-l ${toneCls(q.rev, 0.005)}`}>{sgn(q.rev, 2)}%p</td>
                     </>
-                  ) : <td colSpan={6} className="px-3 py-2.5 text-xs text-gray-500">아래 표에 두 달 생산금액을 넣으면 나옵니다</td>}
+                  ) : <td colSpan={hasLoss ? 7 : 6} className="px-3 py-2.5 text-xs text-gray-500">아래 표에 두 달 생산금액을 넣으면 나옵니다</td>}
                 </tr>
                 <tr className="border-b">
                   <td className="px-4 py-2.5 font-bold text-gray-700">개당 용기단가</td>
@@ -297,16 +303,27 @@ export default function ContainerCostTab() {
                   <td className={`px-3 py-2.5 text-right font-extrabold text-base bg-slate-50 ${toneCls(r.avgB - r.avgA, 0.05)}`}>{sgn(r.avgB - r.avgA)}원</td>
                   <td className={`px-3 py-2.5 text-right font-bold border-l ${toneCls(r.mixAvgDelta, 0.05)}`} title={`${sgnInt(r.mix)}원`}>{sgn(r.mixAvgDelta)}원</td>
                   <td className={`px-3 py-2.5 text-right font-bold ${toneCls(r.price / r.QB, 0.05)}`} title={`${sgnInt(r.price)}원`}>{sgn(r.price / r.QB)}원</td>
+                  {hasLoss && <td className="px-3 py-2.5 text-right text-gray-300">—</td>}
                   <td className="px-3 py-2.5 text-right text-gray-300 border-l">—</td>
                 </tr>
+                {hasLoss && q && (
+                  <tr className="text-gray-500 border-b">
+                    <td className="px-4 py-2 text-xs font-semibold">용기 로스 <span className="font-normal">투입 ÷ 생산</span></td>
+                    <td className="px-3 py-2 text-right text-xs">{sgn((q.uA! - 1) * 100)}%</td>
+                    <td className="px-3 py-2 text-right text-xs">{sgn((q.uB! - 1) * 100)}%</td>
+                    <td className="px-3 py-2 text-right text-xs font-bold bg-slate-50">{sgn((q.uB! - q.uA!) * 100)}%p</td>
+                    <td colSpan={3} className="border-l" />
+                    <td className="border-l" />
+                  </tr>
+                )}
                 {q && (
                   <tr className="text-gray-500">
-                    <td className="px-4 py-2 text-xs font-semibold">용기 1개당 생산금액</td>
-                    <td className="px-3 py-2 text-right text-xs">{nf(A.amount / r.QA)}원</td>
-                    <td className="px-3 py-2 text-right text-xs">{nf(B.amount / r.QB)}원</td>
-                    <td className="px-3 py-2 text-right text-xs font-bold bg-slate-50">{sgn(((B.amount / r.QB) / (A.amount / r.QA) - 1) * 100)}%</td>
-                    <td colSpan={2} className="border-l" />
-                    <td className="px-3 py-2 text-right text-[11px] border-l">원가율 = 개당 용기단가 ÷ 이 값</td>
+                    <td className="px-4 py-2 text-xs font-semibold">제품 1개당 생산금액</td>
+                    <td className="px-3 py-2 text-right text-xs">{nf(q.perA)}원</td>
+                    <td className="px-3 py-2 text-right text-xs">{nf(q.perB)}원</td>
+                    <td className="px-3 py-2 text-right text-xs font-bold bg-slate-50">{sgn((q.perB / q.perA - 1) * 100)}%</td>
+                    <td colSpan={hasLoss ? 3 : 2} className="border-l" />
+                    <td className="border-l" />
                   </tr>
                 )}
               </tbody>
