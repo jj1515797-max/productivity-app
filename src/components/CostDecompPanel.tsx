@@ -1,4 +1,5 @@
-/** 원재료분석 › 원가율 분해 — 엑셀을 열지 않고 화면에서 보는 결론 · 연동 비교 · 효과 합계 · 원재료별/제품별/분류별 근거.
+/** 원재료분석 › 맨 위 분석 — 숫자 한 표(원재료비율 · 개당 원재료비 · 같은 생산량 기준 금액) + 짧은 분석 줄 + 원재료별/제품별/분류별 근거.
+ *  금액 증감은 물량(많이 만들면 많이 씀)을 빼고 본다: 같은 생산량 기준 차이 = 수율 + 제품 구성 + 단가 + 기타.
  *  계산은 src/lib/costDecomp.ts (수식 엑셀 「원가율분해」 시트와 같은 규칙). */
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import type { DecompMatRow, DecompProdRow, DecompResult } from '../lib/costDecomp';
@@ -47,6 +48,124 @@ function Diverge({ v, max, neutral }: { v: number; max: number; neutral?: boolea
 }
 
 
+/** 분석 줄 */
+interface Pt { k: string; t: string; tone: 'good' | 'bad' | 'plain' }
+const sgnN = (n: number, d = 1) => `${n >= 0 ? '+' : '−'}${Math.abs(n).toLocaleString(undefined, { minimumFractionDigits: d, maximumFractionDigits: d })}`;
+const g1 = (r: number) => `${r >= 0 ? '+' : '−'}${Math.abs(r * 100).toFixed(1)}%`;
+
+/** 결론·근거 줄 — 금액은 물량(많이 만들면 많이 씀)을 뺀 같은 생산량 기준, 원가율은 생산금액 대비 */
+function buildPoints(view: DecompView, ratio: ReturnType<typeof ratioDecomp>, amtA: number, amtB: number, mA: string, mB: string) {
+  const { rows, products, totals: t } = view.result;
+  const z = (v: number) => Math.abs(v) < 0.5;
+  const tn = (v: number, eps = 0.5): Pt['tone'] => (Math.abs(v) < eps ? 'plain' : v < 0 ? 'good' : 'bad');
+  const net = t.price + t.mix + t.yld + t.other;   // 같은 생산량 기준 원재료비 차이 (= 실제 증감 − 물량)
+  const pts: Pt[] = [];
+
+  // 결론 — 무엇이 원가율을 움직였나 (주원인 · 보탬 · 상쇄)
+  const named = (k: string, v: number) => (
+    k === 'yld' ? (v <= 0 ? '수율 개선' : '수율 악화')
+      : k === 'mix' ? '제품 구성'
+        : k === 'price' ? (v <= 0 ? '단가 인하' : '단가 인상')
+          : k === 'other' ? '기타'
+            : (v >= 0 ? '개당 생산금액 하락' : '개당 생산금액 상승'));
+  const src = ratio
+    ? (['yld', 'mix', 'price', 'other', 'rev'] as const).map((k) => ({ k, v: ratio[k] * 100, s: pp(ratio[k]) }))
+    : (['yld', 'mix', 'price', 'other'] as const).map((k) => ({ k, v: t[k] / 1e4, s: `${man(t[k])}` }));
+  const eps = ratio ? 0.005 : 1;
+  const parts = src.filter((p) => Math.abs(p.v) >= eps).sort((a, b) => Math.abs(b.v) - Math.abs(a.v));
+  const d = ratio ? ratio.dr * 100 : net / 1e4;
+  const head = ratio
+    ? `원재료비율 ${pct(ratio.rA, 2)} → ${pct(ratio.rB, 2)} (${pp(ratio.dr)}${Math.abs(d) < eps ? ' 보합' : d < 0 ? ' 하락' : ' 상승'})`
+    : `같은 생산량 기준 원재료비 ${man(net)} (개당 ${sgnN(net / t.QB)}원)`;
+  let concl = head;
+  if (parts.length) {
+    const dir = Math.sign(d);
+    const main = parts.find((p) => Math.sign(p.v) === dir) || parts[0];
+    const same = parts.filter((p) => p !== main && Math.sign(p.v) === Math.sign(main.v));
+    const opp = parts.filter((p) => p !== main && Math.sign(p.v) !== Math.sign(main.v));
+    concl += ` · 주원인 ${named(main.k, main.v)} ${main.s}`
+      + (same.length ? ` · 보탬 ${same.map((p) => `${named(p.k, p.v)} ${p.s}`).join(', ')}` : '')
+      + (opp.length ? ` · 상쇄 ${opp.map((p) => `${named(p.k, p.v)} ${p.s}`).join(', ')}` : '');
+  }
+  pts.push({ k: '결론', t: concl, tone: tn(d, eps) });
+
+  // 수율
+  const okRows = rows.filter((r) => r.status === 'ok').sort((a, b) => a.yld - b.yld);
+  const best = okRows.filter((r) => r.yld < -0.5).slice(0, 3);
+  const worst = okRows.filter((r) => r.yld > 0.5).slice(-3).reverse();
+  pts.push({
+    k: '수율',
+    t: z(t.yld) && !best.length && !worst.length ? '변화 없음'
+      : `${man(t.yld)} (좋아짐 ${man(t.gain.yld)} · 나빠짐 ${man(t.loss.yld)})`
+        + (best.length ? ` · 아낌: ${best.map((r) => `${r.name} ${man(r.yld)}`).join(', ')}` : '')
+        + (worst.length ? ` · 더 씀: ${worst.map((r) => `${r.name} ${man(r.yld)}`).join(', ')}` : ''),
+    tone: tn(t.yld, 1e5),
+  });
+
+  // 제품 구성 — 레시피 없는 제품은 개당 원재료비를 몰라(0) 싼 제품처럼 보이므로 이름에서 뺀다
+  const ps = products.filter((p) => p.hasRecipe && p.ings.length > 0).sort((a, b) => a.effect - b.effect);
+  const pDown = ps.filter((p) => p.effect < -0.5).slice(0, 2);
+  const pUp = ps.filter((p) => p.effect > 0.5).slice(-2).reverse();
+  const pName = (p: DecompProdRow) => `${p.name.replace(/^순수본_/, '')} ${p.delta > 0 ? '↑' : '↓'} ${man(p.effect)}`;
+  pts.push({
+    k: '제품 구성',
+    t: z(t.mix) ? '변화 없음'
+      : `${man(t.mix)} — 원재료가 ${t.mix > 0 ? '더' : '덜'} 드는 제품 쪽으로 생산 비중 이동 (↑↓ = 비중)`
+        + (pUp.length ? ` · 올린 제품: ${pUp.map(pName).join(', ')}` : '')
+        + (pDown.length ? ` · 내린 제품: ${pDown.map(pName).join(', ')}` : ''),
+    tone: tn(t.mix, 1e5),
+  });
+
+  // 단가
+  const prUp = rows.filter((r) => r.price > 0.5).sort((a, b) => b.price - a.price).slice(0, 2);
+  const prDn = rows.filter((r) => r.price < -0.5).sort((a, b) => a.price - b.price).slice(0, 2);
+  pts.push({
+    k: '단가',
+    t: t.aSubShare >= 0.999 ? `${mA} 단가가 없어 ${mB} 단가로 계산 (단가 효과 0)`
+      : z(t.price) ? '변화 없음'
+        : `${man(t.price)} (오름 ${man(t.loss.price)} · 내림 ${man(t.gain.price)})`
+          + (prUp.length ? ` · 오른 것: ${prUp.map((r) => `${r.name} ${man(r.price)}`).join(', ')}` : '')
+          + (prDn.length ? ` · 내린 것: ${prDn.map((r) => `${r.name} ${man(r.price)}`).join(', ')}` : ''),
+    tone: tn(t.price, 1e5),
+  });
+
+  // 기타 — 클 때만
+  if (Math.abs(t.other) >= 1e5) {
+    const big = rows.filter((r) => Math.abs(r.other) >= 0.5).sort((a, b) => Math.abs(b.other) - Math.abs(a.other)).slice(0, 3);
+    pts.push({ k: '기타', t: `${man(t.other)} — 수율을 비교 못 한 원재료(실투입 없음·범위 밖)${big.length ? ` · 큰 것: ${big.map((r) => `${r.name} ${man(r.other)}`).join(', ')}` : ''} → 아래 원재료별 「비교 불가」`, tone: tn(t.other, 1e5) });
+  }
+
+  // 매출 쪽
+  if (ratio) {
+    const perA = amtA / t.QA, perB = amtB / t.QB;
+    pts.push({ k: '매출 쪽', t: `생산금액 ${g1(amtB / amtA - 1)}, 생산량 ${g1(t.k - 1)} → 개당 생산금액 ${Math.round(perA).toLocaleString()} → ${Math.round(perB).toLocaleString()}원 (${g1(perB / perA - 1)}) → ${pp(ratio.rev)} · 판가·매출 구성 몫, 원재료와 무관`, tone: tn(ratio.rev * 100, 0.005) });
+  }
+
+  // 확인할 것 — 짧게
+  const swingNames = rows.filter((r) => r.swing).sort((a, b) => Math.abs(b.yld) - Math.abs(a.yld)).slice(0, 3).map((r) => r.name);
+  const warns = [
+    t.swingCount > 0 && !z(t.swingYld) ? `수율이 ${DECOMP_SWING * 100}%p 넘게 바뀐 원재료 ${t.swingCount}종(${swingNames.join('·')} 등) ${man(t.swingYld)}이 수율에 들어 있음 — 배합(개당 g) 변경·실투입 입력 오류도 수율로 잡힘` : '',
+    t.aSubShare >= 0.1 && t.aSubShare < 0.999 ? `${mA} 원재료비의 ${Math.round(t.aSubShare * 100)}%는 그달 단가가 없어 다른 달 단가로 계산 — 단가 효과가 작게 보일 수 있음` : '',
+    view.coverage.missingA + view.coverage.missingB > 0 ? `레시피 없는 제품 ${mA} ${Math.round(view.coverage.missingA).toLocaleString()} EA · ${mB} ${Math.round(view.coverage.missingB).toLocaleString()} EA — 수율·구성이 왜곡될 수 있음` : '',
+    ratio && (ratio.rA > 2 || ratio.rB > 2 || ratio.rA < 0.01 || ratio.rB < 0.01) ? '원재료비율이 1~200% 밖 — 생산금액 단위(원) 확인' : '',
+  ].filter(Boolean);
+  return { pts, warns, net };
+}
+
+function Points({ points }: { points: Pt[] }) {
+  const dot = { good: 'bg-emerald-500', bad: 'bg-rose-500', plain: 'bg-gray-300' };
+  return (
+    <ul className="space-y-2 text-[15px] leading-snug text-gray-800">
+      {points.map((p) => (
+        <li key={p.k} className="flex gap-3">
+          <span className="w-20 shrink-0 font-bold text-gray-500 flex items-center gap-1.5 whitespace-nowrap self-start pt-0.5"><span className={`w-2 h-2 rounded-full ${dot[p.tone]}`} />{p.k}</span>
+          <span className={p.k === '결론' ? 'font-bold' : ''}>{p.t}</span>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
 export default function CostDecompPanel({
   monthA, monthB, view, alt, recipeSrc, onRecipeSrc, yieldDbReady,
 }: {
@@ -70,91 +189,22 @@ export default function CostDecompPanel({
     saveProductionAmount(m, v).catch((e) => setAmtErr(`생산금액 저장 실패: ${e?.message || e}`));
   };
   const ratio = ratioDecomp(t, amtA, amtB);
-
-  const dM = t.MB - t.MA;
-  const flexGap = t.MB - t.flexed;   // = ③ + ④ + ⑤
-  const effects = [
-    { key: 'vol', label: '① 물량', sub: '많이·적게 만들어서 (원가율엔 영향 없음)', v: t.vol, gain: null as number | null, loss: null as number | null, ratio: null as number | null },
-    { key: 'price', label: '② 단가', sub: '원재료를 비싸게·싸게 사서', v: t.price, gain: t.gain.price, loss: t.loss.price, ratio: ratio?.price ?? null },
-    { key: 'mix', label: '③ 제품 구성', sub: '원재료가 많이·적게 드는 제품을 더 만들어서', v: t.mix, gain: t.gain.mix, loss: t.loss.mix, ratio: ratio?.mix ?? null },
-    { key: 'yld', label: '④ 수율', sub: '같은 제품을 더 적게·많이 투입해서', v: t.yld, gain: t.gain.yld, loss: t.loss.yld, ratio: ratio?.yld ?? null },
-    { key: 'other', label: '⑤ 기타', sub: '수율을 비교할 수 없는 원재료', v: t.other, gain: t.gain.other, loss: t.loss.other, ratio: ratio?.other ?? null },
-  ];
-  const effMax = Math.max(1, ...effects.map((e) => Math.abs(e.v)));
-
-  /* ===== 결론 문장 ===== */
-  const conclusion = useMemo(() => {
-    const zero = (v: number) => Math.abs(v) < 0.5;
-    const byYld = rows.filter((r) => r.status === 'ok').sort((a, b) => a.yld - b.yld);
-    const bestY = byYld.filter((r) => r.yld < -0.5).slice(0, 3);
-    const worstY = byYld.filter((r) => r.yld > 0.5).slice(-3).reverse();
-    // 레시피 없는 제품은 개당 원재료비를 알 수 없어(0 으로 계산) '싼 제품'처럼 보이므로 결론 문장에서 뺀다
-    const prodSorted = products.filter((p) => p.hasRecipe && p.ings.length > 0).sort((a, b) => a.effect - b.effect);
-    const prodGain = prodSorted.filter((p) => p.effect < -0.5).slice(0, 2);
-    const prodLoss = prodSorted.filter((p) => p.effect > 0.5).slice(-2).reverse();
-    const parts = [
-      { name: '수율', v: t.yld }, { name: '제품 구성', v: t.mix }, { name: '기타(비교 불가 원재료)', v: t.other },
-    ].sort((a, b) => Math.abs(b.v) - Math.abs(a.v));
-    // '가장 큰 이유'는 증감과 같은 방향인 몫 중에서 고른다. 반대로 작용한 더 큰 몫이 있으면 따로 적는다
-    const same = parts.filter((x) => !zero(x.v) && Math.sign(x.v) === Math.sign(flexGap));
-    const against = parts.filter((x) => !zero(x.v) && Math.sign(x.v) !== Math.sign(flexGap));
-    const growth = t.QA > 0 ? t.QB / t.QA - 1 : 0;
-    // 전체 생산이 k 배가 됐을 때보다 더/덜 — 실제 수량이 늘었어도 비중은 줄었을 수 있어 '비중'으로 쓴다
-    const prodPhrase = (p: DecompProdRow) =>
-      `${p.name}(원재료비가 평균보다 ${p.vsBase > 0 ? '많이' : '적게'} 드는 제품)의 생산 비중이 ${p.delta > 0 ? '늘어' : '줄어'} ${man(p.effect)}`;
-    const swingRows = rows.filter((r) => r.swing).sort((a, b) => Math.abs(b.yld) - Math.abs(a.yld));
-    const swingNames = swingRows.slice(0, 3).map((r) => r.name);
-    const headline = zero(flexGap)
-      ? '같은 생산량 · 같은 단가로 놓고 보면 원재료비 차이가 없습니다.'
-      : `같은 생산량 · 같은 단가로 놓고 보면 원재료비가 ${man(Math.abs(flexGap), false)}원 ${flexGap < 0 ? '줄었습니다' : '늘었습니다'}.`
-        + (same.length ? ` 가장 큰 이유는 「${same[0].name}」(${man(same[0].v)}원)입니다.` : '')
-        + (against.length && same.length && Math.abs(against[0].v) > Math.abs(same[0].v) * 0.5
-          ? ` 다만 「${against[0].name}」은 반대로 ${man(against[0].v)}원 작용했습니다.` : '');
-    const volPart = zero(t.vol) ? '' : `생산량이 ${Math.abs(growth * 100).toFixed(1)}% ${growth >= 0 ? '늘어' : '줄어'} 생긴 ① 물량(${man(t.vol)})`;
-    const pricePart = zero(t.price) ? '' : `② 단가(${man(t.price)})`;
-    const minus = [volPart, pricePart].filter(Boolean);
-    return {
-      headline,
-      lines: [
-        `${monthB} 원재료비는 ${man(t.MB, false)}원으로 ${monthA}보다 ${zero(dM) ? '변함없습니다' : `${man(dM)}원(${t.MA > 0 ? `${sgn(dM)}${Math.abs((dM / t.MA) * 100).toFixed(1)}%` : '—'}) 변했습니다`}.`
-          + (minus.length ? ` ${minus.length === 2 ? `${volPart}과 ${pricePart}를` : volPart ? `${volPart}을` : `${pricePart}를`} 빼면, 같은 생산량·같은 단가 기준 차이는 ${man(flexGap)}원입니다.` : ''),
-        zero(t.yld) && !bestY.length && !worstY.length
-          ? '수율 변화로 생긴 차이는 없습니다.'
-          : `수율 ${man(t.yld)}원 — 좋아진 원재료 ${man(t.gain.yld)} · 나빠진 원재료 ${man(t.loss.yld)}.${bestY.length ? ` 많이 아낀 원재료: ${bestY.map((r) => `${r.name} ${man(r.yld)}`).join(', ')}.` : ''}${worstY.length ? ` 더 쓴 원재료: ${worstY.map((r) => `${r.name} ${man(r.yld)}`).join(', ')}.` : ''}`,
-        zero(t.mix)
-          ? '제품 구성 변화로 생긴 차이는 없습니다.'
-          : `제품 구성 ${man(t.mix)}원 — 생산 비중이 원재료가 ${t.mix > 0 ? '더' : '덜'} 드는 제품 쪽으로 옮겨 갔습니다.${prodLoss.length ? ` 원재료비를 늘린 제품: ${prodLoss.map(prodPhrase).join(', ')}.` : ''}${prodGain.length ? ` 줄인 제품: ${prodGain.map(prodPhrase).join(', ')}.` : ''}`,
-        ratio
-          ? `원재료비율 ${pct(ratio.rA, 2)} → ${pct(ratio.rB, 2)} (${pp(ratio.dr)}) — 수율 ${pp(ratio.yld)} · 제품 구성 ${pp(ratio.mix)} · 단가 ${pp(ratio.price)} · 개당 생산금액 ${pp(ratio.rev)} · 기타 ${pp(ratio.other)}.`
-          : '아래 「원가율로 보기」에 두 달 생산금액을 넣으면 원재료비율(%p)로도 나눠 드립니다.',
-      ],
-      warns: [
-        t.aSubShare >= 0.999
-          ? `${monthA} 단가가 없어 그달 원재료비를 모두 ${monthB} 단가로 계산했습니다 — 그래서 ② 단가 효과는 0 이고, 나머지는 '같은 단가' 기준의 순수한 차이입니다.`
-          : t.aSubShare >= 0.1
-            ? `${monthA} 원재료비의 ${Math.round(t.aSubShare * 100)}%는 그달 단가가 없어 다른 달 단가로 계산했습니다 — 그 원재료들은 단가 효과가 0 으로 잡혀 ② 가 실제보다 작게 보일 수 있습니다.`
-            : '',
-        t.swingCount > 0 && !zero(t.swingYld)
-          ? `수율 효과 ${man(t.yld)}에는 수율이 ${DECOMP_SWING * 100}%p 넘게 바뀐 원재료 ${t.swingCount}종(${swingNames.join('·')} 등)의 ${man(t.swingYld)}이 들어 있습니다. 두 달 모두 지금 레시피로 계산하므로, 그사이 배합(개당 g)을 바꿨거나 입력이 틀렸으면 그 차이가 수율로 보입니다.`
-          : '',
-        Math.abs(t.other) > Math.abs(flexGap) * 0.3 && Math.abs(t.other) >= 1e5 ? `⑤ 기타(${man(t.other)})가 큽니다 — 아래 원재료별 표에서 '비교 불가'를 눌러 실투입 없음·범위 밖 원재료를 확인하세요.` : '',
-        view.coverage.missingA + view.coverage.missingB > 0 ? `레시피가 없는 제품이 있습니다 (${monthA} ${Math.round(view.coverage.missingA).toLocaleString()} EA · ${monthB} ${Math.round(view.coverage.missingB).toLocaleString()} EA) — 그 제품 원재료는 표준소요 0 이라 수율·구성이 왜곡될 수 있습니다.` : '',
-        ratio && (ratio.rA > 2 || ratio.rB > 2 || ratio.rA < 0.01 || ratio.rB < 0.01) ? '원재료비율이 1~200% 범위를 벗어납니다 — 생산금액 단위(원)를 확인하세요.' : '',
-      ].filter(Boolean),
-    };
-  }, [rows, products, t, flexGap, dM, ratio, monthA, monthB, view]);
-
+  // 해가 다르면(전년 비교) 연도까지
+  const lab = (m: string) => (monthA.slice(0, 4) !== monthB.slice(0, 4) ? `${m.slice(2, 4)}년 ${Number(m.slice(5))}월` : `${Number(m.slice(5))}월`);
+  const mA = lab(monthA), mB = lab(monthB);
+  const ok = view.hasActualA && view.hasActualB && t.QA > 0;
+  const an = useMemo(() => (ok ? buildPoints(view, ratio, amtA, amtB, mA, mB) : null), [ok, view, ratio, amtA, amtB, mA, mB]);
   const [tab, setTab] = useState<'mat' | 'prod' | 'cat'>('mat');
 
   // 실투입이 없는 달이 있으면 원재료비가 0 으로 계산돼 '100% 감소' 같은 엉뚱한 결론이 나온다 — 안내만 보여준다
-  if (!view.hasActualA || !view.hasActualB || !(t.QA > 0)) {
+  if (!ok || !an) {
     const miss = [!view.hasActualA ? monthA : '', !view.hasActualB ? monthB : ''].filter(Boolean).join(', ');
     const msg = miss
       ? `${miss} 실투입(설정 › 실제 투입중량)이 없어 원재료비를 계산할 수 없습니다. 실투입을 넣은 뒤 다시 분석하세요.`
       : `${monthA} 생산량이 없어 분해할 수 없습니다 (앱 도입 전 달이면 설정 › 월별 생산수량을 넣으세요).`;
     return (
       <div className="bg-white border-2 border-amber-300 rounded-lg p-4">
-        <div className="font-bold text-gray-800">💰 원가율 분해 <span className="text-sm font-normal text-gray-500">{monthA} → {monthB}</span></div>
+        <div className="font-bold text-gray-800">💰 원재료 분석 <span className="text-sm font-normal text-gray-500">{monthA} → {monthB}</span></div>
         <div className="mt-2 text-sm text-amber-900 bg-amber-50 border border-amber-200 rounded px-3 py-2">
           ⚠ {msg}
         </div>
@@ -162,12 +212,15 @@ export default function CostDecompPanel({
     );
   }
 
+  const perA = t.MA / t.QA, perB = t.MB / t.QB;
+  const comps = [t.yld, t.mix, t.price, t.other];
+  const cell = 'px-3 py-2.5 text-right';
   return (
     <div className="bg-white border-2 border-slate-300 rounded-lg overflow-hidden">
       {/* 머리 */}
       <div className="px-4 py-3 bg-slate-800 text-white flex items-center gap-3 flex-wrap">
-        <span className="font-bold">💰 원가율 분해</span>
-        <span className="text-sm text-slate-300">{monthA} → {monthB}</span>
+        <span className="font-bold">💰 원재료 분석</span>
+        <span className="text-sm text-slate-300">{mA} → {mB}</span>
         <div className="flex items-center text-xs rounded overflow-hidden border border-slate-500">
           <span className="px-2 py-1 bg-slate-700 text-slate-300">레시피</span>
           {([['yield', '분석용'], ['bom', '현장 BOM']] as const).map(([v, label]) => (
@@ -175,171 +228,84 @@ export default function CostDecompPanel({
               className={`px-2.5 py-1 font-semibold ${recipeSrc === v ? 'bg-white text-slate-800' : 'text-slate-200 hover:bg-slate-700'} disabled:opacity-40`}>{label}</button>
           ))}
         </div>
-        <span className="text-[11px] text-slate-400 ml-auto">원재료비 = ERP 실투입 × 그달 재고평가 단가 (없으면 {monthB} 단가) · 연동은 {monthB} 단가 · {view.recipeLabel}</span>
+        <span className="text-[11px] text-slate-400 ml-auto">원재료비 = ERP 실투입 × 재고평가 단가</span>
       </div>
 
-      {/* 결론 */}
-      <div className="p-4 bg-amber-50 border-b border-amber-200">
-        <div className="text-xs font-bold text-amber-800 mb-1">📌 결론</div>
-        <div className="text-base sm:text-lg font-bold text-gray-900 leading-snug">{conclusion.headline}</div>
-        <ul className="mt-2 space-y-1 text-sm text-gray-800 list-disc pl-5">
-          {conclusion.lines.map((l, i) => <li key={i}>{l}</li>)}
-        </ul>
-        {conclusion.warns.length > 0 && (
-          <div className="mt-2 space-y-1">
-            {conclusion.warns.map((w, i) => <div key={i} className="text-xs text-amber-900 bg-amber-100 border border-amber-300 rounded px-2 py-1">⚠ {w}</div>)}
-          </div>
-        )}
+      {/* 숫자 한 표 — 금액은 물량(많이 만들면 많이 씀)을 뺀 같은 생산량 기준 */}
+      <div className="overflow-x-auto">
+        <table className="w-full text-sm tabular-nums min-w-[760px]">
+          <thead className="text-xs text-gray-500">
+            <tr className="border-b">
+              <th className="px-4 py-2 text-left font-semibold" />
+              <th className="px-3 py-2 text-right font-semibold">{mA}</th>
+              <th className="px-3 py-2 text-right font-semibold">{mB}</th>
+              <th className="px-3 py-2 text-right font-bold text-gray-800 bg-slate-50">증감</th>
+              <th className="px-3 py-2 text-right font-semibold border-l">수율</th>
+              <th className="px-3 py-2 text-right font-semibold">제품 구성</th>
+              <th className="px-3 py-2 text-right font-semibold">단가</th>
+              <th className="px-3 py-2 text-right font-semibold">기타</th>
+              <th className="px-3 py-2 text-right font-semibold border-l">개당 생산금액</th>
+            </tr>
+          </thead>
+          <tbody>
+            <tr className="border-b">
+              <td className="px-4 py-2.5 font-bold text-gray-700 whitespace-nowrap">원재료비율</td>
+              {ratio ? (
+                <>
+                  <td className={cell}>{pct(ratio.rA, 2)}</td>
+                  <td className={cell}>{pct(ratio.rB, 2)}</td>
+                  <td className={`${cell} font-extrabold text-base bg-slate-50 ${toneP(ratio.dr)}`}>{pp(ratio.dr)}</td>
+                  {[ratio.yld, ratio.mix, ratio.price, ratio.other].map((v, i) => (
+                    <td key={i} className={`${cell} font-bold ${i === 0 ? 'border-l' : ''} ${toneP(v)}`}>{pp(v)}</td>
+                  ))}
+                  <td className={`${cell} font-bold border-l ${toneP(ratio.rev)}`}>{pp(ratio.rev)}</td>
+                </>
+              ) : <td colSpan={8} className="px-3 py-2.5 text-xs text-gray-500">아래에 두 달 생산금액을 넣으면 나옵니다</td>}
+            </tr>
+            <tr className="border-b">
+              <td className="px-4 py-2.5 font-bold text-gray-700 whitespace-nowrap">개당 원재료비</td>
+              <td className={cell}>{perA.toFixed(1)}원</td>
+              <td className={cell}>{perB.toFixed(1)}원</td>
+              <td className={`${cell} font-extrabold text-base bg-slate-50 ${tone((perB - perA) * 1e3)}`}>{sgnN(perB - perA)}원</td>
+              {comps.map((v, i) => (
+                <td key={i} className={`${cell} font-bold ${i === 0 ? 'border-l' : ''} ${tone((v / t.QB) * 1e3)}`}>{sgnN(v / t.QB)}원</td>
+              ))}
+              <td className={`${cell} text-gray-300 border-l`}>—</td>
+            </tr>
+            <tr className="border-b">
+              <td className="px-4 py-2.5 font-bold text-gray-700 whitespace-nowrap">금액 <span className="text-[11px] font-normal text-gray-500">같은 생산량</span></td>
+              <td className={`${cell} text-gray-500 text-xs`} title={`${monthA} 실제 원재료비`}>{man(t.MA, false)}</td>
+              <td className={`${cell} text-gray-500 text-xs`} title={`${monthB} 실제 원재료비`}>{man(t.MB, false)}</td>
+              <td className={`${cell} font-extrabold text-base bg-slate-50 ${tone(an.net)}`} title={`실제 증감 ${man(t.MB - t.MA)} 중 생산량이 바뀐 몫 ${man(t.vol)}을 뺀 값`}>{man(an.net)}</td>
+              {comps.map((v, i) => (
+                <td key={i} className={`${cell} font-bold ${i === 0 ? 'border-l' : ''} ${tone(v)}`}>{man(v)}</td>
+              ))}
+              <td className={`${cell} text-gray-300 border-l`}>—</td>
+            </tr>
+            <tr className="text-gray-500 bg-slate-50/60">
+              <td className="px-4 py-2 text-xs font-semibold whitespace-nowrap">생산금액</td>
+              <td className="px-3 py-1.5 text-right"><span className="inline-block"><AmtInput label="" value={amtA} onChange={(v) => saveAmt(monthA, v)} /></span></td>
+              <td className="px-3 py-1.5 text-right"><span className="inline-block"><AmtInput label="" value={amtB} onChange={(v) => saveAmt(monthB, v)} /></span></td>
+              <td className="px-3 py-2 text-right text-xs font-bold bg-slate-50">{amtA > 0 && amtB > 0 ? g1(amtB / amtA - 1) : ''}</td>
+              <td colSpan={4} className="px-3 py-2 text-[11px] border-l">{amtErr ? <span className="text-rose-600">{amtErr}</span> : `생산 ${Math.round(t.QA).toLocaleString()} → ${Math.round(t.QB).toLocaleString()} EA (${g1(t.k - 1)})`}</td>
+              <td className="px-3 py-2 text-right text-xs border-l">{ratio ? `${Math.round(amtA / t.QA).toLocaleString()} → ${Math.round(amtB / t.QB).toLocaleString()}원` : ''}</td>
+            </tr>
+          </tbody>
+        </table>
       </div>
 
-      {/* 연동 비교 — A → 연동 → B */}
-      <div className="p-4 border-b">
-        <div className="text-xs font-bold text-gray-600">🔁 연동 비교 — 생산량이 바뀐 만큼은 빼고, 같은 조건이었다면 얼마 들었어야 했는지와 비교</div>
-        <div className="text-[11px] text-gray-500 mb-2">
-          {monthA}과 똑같이(같은 제품 비율 · 같은 수율) {monthB}만큼 만들었다면 {monthB} 단가로 얼마가 들었을지를 「연동 원재료비」로 놓고, 실제 {monthB} 원재료비와 비교합니다.
-        </div>
-        <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_1fr_auto_1fr] gap-2 items-stretch">
-          <Kpi title={`${monthA} 원재료비`} value={man(t.MA, false)}
-            note={`${monthA} 실투입량 × ${t.aSubShare >= 0.999 ? `${monthB} 단가 (${monthA} 단가가 없어서)` : `${monthA} 단가`} · 생산 ${Math.round(t.QA).toLocaleString()} EA`} />
-          <Arrow label={Math.abs(t.price) >= 0.5 ? '생산량이 바뀐 몫 + 단가가 바뀐 몫 (① 물량 + ② 단가)' : '생산량이 바뀐 만큼 늘어난 몫 (① 물량)'} v={t.vol + t.price} />
-          <Kpi title={`연동 원재료비 (${monthA}처럼 ${monthB}만큼 만들었다면)`} value={man(t.flexed, false)}
-            note={`${monthA} 실투입량 × ${t.k.toFixed(3)}배 (생산 ${Math.abs((t.k - 1) * 100).toFixed(1)}% ${t.k >= 1 ? '증가' : '감소'}) × ${monthB} 단가`} accent />
-          <Arrow label="같은 양을 만들 때보다 덜(−)·더(+) 쓴 몫 (③ 구성 + ④ 수율 + ⑤ 기타)" v={flexGap} />
-          <Kpi title={`${monthB} 원재료비`} value={man(t.MB, false)} note={`${monthB} 실투입량 × ${monthB} 단가 · 생산 ${Math.round(t.QB).toLocaleString()} EA`} />
-        </div>
+      {/* 분석 */}
+      <div className="px-4 py-3 border-t">
+        <Points points={an.pts} />
       </div>
-
-      {/* 효과 합계 */}
-      <div className="p-4 border-b">
-        <div className="text-xs font-bold text-gray-600 mb-2">📊 원재료비 증감 {man(dM)}원을 나누면 <span className="font-normal text-gray-500">( <b className="text-emerald-700">− 줄어듦(좋음)</b> · <b className="text-rose-700">+ 늘어남(나쁨)</b> · ① 물량은 많이 만들어 느는 몫이라 좋고 나쁨이 없음 )</span></div>
-        <div className="space-y-2">
-          {effects.map((e) => (
-            <div key={e.key} className="grid grid-cols-[7.5rem_1fr_6.5rem] sm:grid-cols-[10rem_1fr_7rem_12rem] gap-2 items-center">
-              <div>
-                <div className="text-sm font-bold text-gray-800">{e.label}</div>
-                <div className="text-[10px] text-gray-500 leading-tight">{e.sub}</div>
-              </div>
-              <Diverge v={e.v} max={effMax} neutral={e.key === 'vol'} />
-              <div className={`text-right font-bold tabular-nums ${e.key === 'vol' ? 'text-gray-700' : tone(e.v)}`}>{man(e.v)}</div>
-              <div className="hidden sm:block text-[11px] text-gray-500 tabular-nums">
-                {e.gain !== null && e.loss !== null ? <>유리 <span className="text-emerald-700">{man(e.gain)}</span> · 불리 <span className="text-rose-700">{man(e.loss)}</span></> : '원가율엔 영향 없음'}
-              </div>
-            </div>
-          ))}
-          <div className="grid grid-cols-[7.5rem_1fr_6.5rem] sm:grid-cols-[10rem_1fr_7rem_12rem] gap-2 items-center border-t-2 border-indigo-200 pt-2 bg-indigo-50/60 rounded px-1">
-            <div className="text-sm font-bold text-indigo-900 leading-tight">같은 조건 비교<div className="text-[10px] font-normal text-gray-500">연동 기준 = ③ + ④ + ⑤</div></div>
-            <div className="text-[11px] text-gray-600">물량·단가를 빼고 {monthA}과 같은 조건이었다면 들었을 원재료비와의 차이 — 결론의 절감·증가 금액</div>
-            <div className={`text-right font-bold tabular-nums text-lg ${tone(flexGap)}`}>{man(flexGap)}</div>
-            <div className="hidden sm:block" />
-          </div>
-          <div className="grid grid-cols-[7.5rem_1fr_6.5rem] sm:grid-cols-[10rem_1fr_7rem_12rem] gap-2 items-center border-t pt-2">
-            <div className="text-sm font-bold leading-tight">실제 원재료비 증감<div className="text-[10px] font-normal text-gray-500">물량 포함 = ① ~ ⑤</div></div>
-            <div className="text-[11px] text-gray-500">{monthA} {man(t.MA, false)} → {monthB} {man(t.MB, false)} — 원재료비 금액 자체가 변한 크기 (더 만든 만큼 늘어난 것 포함)</div>
-            <div className={`text-right font-bold tabular-nums ${tone(dM)}`}>{man(dM)}</div>
-            <div className="hidden sm:block" />
-          </div>
-        </div>
-      </div>
-
-      {/* 원가율로 보기 */}
-      <div className="p-4 border-b bg-slate-50">
-        <div className="flex items-center gap-2 flex-wrap mb-2">
-          <span className="text-xs font-bold text-gray-600">🧮 원가율로 보기</span>
-          <span className="text-[11px] text-gray-400">생산금액(원)은 저장하면 모든 기기에 반영됩니다</span>
-          <AmtInput label={monthA} value={amtA} onChange={(v) => saveAmt(monthA, v)} />
-          <AmtInput label={monthB} value={amtB} onChange={(v) => saveAmt(monthB, v)} />
-          {amtErr && <span className="text-[11px] text-rose-600">{amtErr}</span>}
-        </div>
-        {ratio ? (
-          <div className="grid grid-cols-1 sm:grid-cols-[14rem_1fr] gap-3 items-start">
-            <div className="bg-white border rounded p-3">
-              <div className="text-xs text-gray-500">원재료비율</div>
-              <div className="text-xl font-bold tabular-nums">{pct(ratio.rA, 2)} → {pct(ratio.rB, 2)}</div>
-              <div className={`text-sm font-bold ${toneP(ratio.dr)}`}>{pp(ratio.dr)}</div>
-            </div>
-            <div className="space-y-1.5">
-              {[
-                { label: 'ⓐ 개당 생산금액 (판가·매출 구성)', v: ratio.rev },
-                { label: '② 원재료 단가', v: ratio.price },
-                { label: '③ 제품 구성 (원재료 쪽)', v: ratio.mix },
-                { label: '④ 수율', v: ratio.yld },
-                { label: '⑤ 기타', v: ratio.other },
-              ].map((x, _i, arr) => {
-                const mx = Math.max(1e-9, ...arr.map((y) => Math.abs(y.v)));
-                return (
-                  <div key={x.label} className="grid grid-cols-[7rem_1fr_4.5rem] sm:grid-cols-[11rem_1fr_5rem] gap-2 items-center">
-                    <span className="text-xs text-gray-700 leading-tight">{x.label}</span>
-                    <Diverge v={x.v * 1e8} max={mx * 1e8} />
-                    <span className={`text-right text-sm font-bold tabular-nums ${toneP(x.v)}`}>{pp(x.v)}</span>
-                  </div>
-                );
-              })}
-              <div className="text-[10px] text-gray-500">① 물량은 생산금액도 같이 늘어 비율에서는 상쇄되어 ⓐ 안으로 들어갑니다. 다섯 줄을 더하면 원재료비율 증감과 같습니다.</div>
-            </div>
-          </div>
-        ) : (
-          <div className="text-xs text-gray-500">두 달 생산금액을 넣으면 원재료비율 증감(%p)을 수율·제품 구성·단가·개당 생산금액으로 나눠 보여줍니다.</div>
-        )}
-      </div>
-
-      {/* 레시피 기준 비교 */}
-      {alt && (
-        <div className="p-4 border-b">
-          <div className="text-xs font-bold text-gray-600 mb-2">🧾 레시피 기준에 따라 얼마나 달라지나</div>
-          <div className="overflow-x-auto">
-            <table className="text-xs min-w-[520px] w-full">
-              <thead className="text-gray-500">
-                <tr><th className="text-left px-2 py-1">레시피</th><th className="text-right px-2 py-1">③ 제품 구성</th><th className="text-right px-2 py-1">④ 수율</th><th className="text-right px-2 py-1">⑤ 기타</th><th className="text-right px-2 py-1">수율 비교 원재료</th><th className="text-right px-2 py-1">레시피 반영</th></tr>
-              </thead>
-              <tbody>
-                {[view, alt].map((v, i) => {
-                  const tt = v.result.totals;
-                  const okN = v.result.rows.filter((r) => r.status === 'ok').length;
-                  return (
-                    <tr key={i} className={`border-t ${i === 0 ? 'font-bold bg-indigo-50/50' : ''}`}>
-                      <td className="px-2 py-1">{v.recipeLabel}{i === 0 ? ' (지금 보는 것)' : ''}</td>
-                      <td className={`text-right px-2 py-1 tabular-nums ${tone(tt.mix)}`}>{man(tt.mix)}</td>
-                      <td className={`text-right px-2 py-1 tabular-nums ${tone(tt.yld)}`}>{man(tt.yld)}</td>
-                      <td className={`text-right px-2 py-1 tabular-nums ${tone(tt.other)}`}>{man(tt.other)}</td>
-                      <td className="text-right px-2 py-1">{okN}종</td>
-                      <td className="text-right px-2 py-1">{v.coverage.a.toFixed(1)}% · {v.coverage.b.toFixed(1)}%</td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-          <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-2">
-            {[
-              {
-                t: '③ 제품 구성', c: 'border-indigo-200 bg-indigo-50/60',
-                d: '「무엇을 만들었나」 의 영향입니다. 원재료가 많이(비싸게) 드는 제품의 생산 비중이 늘면 +, 적게 드는 제품 비중이 늘면 − 입니다. 같은 수율로 만들었다고 보고 계산하므로 공장의 잘잘못이 아니라 주문·생산계획의 영향입니다.',
-              },
-              {
-                t: '④ 수율', c: 'border-emerald-200 bg-emerald-50/60',
-                d: `「같은 제품을 얼마나 아껴 만들었나」 입니다. 수율 = 레시피상 필요량 ÷ 실제 투입량. ${monthB}에 만든 제품을 ${monthA} 수율 그대로 만들었다면 필요했을 양보다 실제로 덜 넣었으면 −(절감), 더 넣었으면 + 입니다. 손질·로스·계량 같은 현장 관리의 결과입니다.`,
-              },
-              {
-                t: '⑤ 기타', c: 'border-gray-200 bg-gray-50',
-                d: '수율을 비교할 수 없어 ③·④ 로 나누지 못한 원재료 몫입니다. 한 달이라도 실투입이 없거나, 수율이 20~200% 를 벗어나 입력 이상으로 보이거나, 레시피에는 없는데 실투입만 있는 원재료가 여기로 갑니다.',
-              },
-            ].map((x) => (
-              <div key={x.t} className={`border rounded p-2.5 ${x.c}`}>
-                <div className="text-xs font-bold text-gray-800">{x.t}</div>
-                <div className="text-[11px] text-gray-700 leading-relaxed mt-0.5">{x.d}</div>
-              </div>
-            ))}
-          </div>
-          <div className="mt-2 text-[11px] text-gray-600 leading-relaxed space-y-0.5">
-            <div>· <b>수율 비교 원재료</b> — 두 달 모두 수율을 계산할 수 있어 ④ 수율에 들어간 원재료 수입니다. 많을수록 ⑤ 기타가 작아집니다.</div>
-            <div>· <b>레시피 반영</b> — 그 달 생산량 중 레시피가 등록된 제품의 비율({monthA} · {monthB}). 100% 가 아니면 레시피 없는 제품 몫이 빠져 계산됩니다.</div>
-            <div>· <b>왜 레시피에 따라 달라지나</b> — 원재료비 합계와 ① 물량 · ② 단가는 「실투입 × 단가」 라 레시피와 무관하게 같습니다. 레시피는 제품마다 「원래 얼마가 필요한가(표준소요)」 를 정하므로, 그 기준으로 나누는 ③ · ④ · ⑤ 만 달라집니다. 분석용 레시피가 실제 배합에 가까워 더 정확합니다.</div>
-          </div>
+      {an.warns.length > 0 && (
+        <div className="px-4 py-2.5 border-t bg-amber-50 text-sm text-amber-900 space-y-1">
+          {an.warns.map((w, i) => <div key={i}>⚠ {w}</div>)}
         </div>
       )}
 
       {/* 근거 */}
-      <div className="px-4 pt-3 flex gap-1 border-b">
+      <div className="px-4 pt-3 flex gap-1 border-t border-b bg-slate-50/50">
         {([['mat', `원재료별 (${rows.filter((r) => r.status !== 'noUse').length})`], ['prod', `제품별 구성 (${products.length})`], ['cat', '분류별']] as const).map(([k, label]) => (
           <button key={k} onClick={() => setTab(k)}
             className={`px-3 py-1.5 text-sm rounded-t border-b-2 ${tab === k ? 'border-indigo-600 text-indigo-700 font-bold' : 'border-transparent text-gray-500 hover:text-gray-800'}`}>{label}</button>
@@ -350,28 +316,39 @@ export default function CostDecompPanel({
         {tab === 'prod' && <ProductTable products={products} cbar={t.cbar} monthA={monthA} monthB={monthB} />}
         {tab === 'cat' && <CategoryTable rows={rows} monthA={monthA} monthB={monthB} />}
       </div>
+
+      {/* 레시피 기준 비교 — 접어 둠 */}
+      {alt && (
+        <details className="border-t">
+          <summary className="px-4 py-2.5 text-sm font-bold text-gray-700 cursor-pointer select-none bg-slate-50">레시피 기준 비교 <span className="font-normal text-xs text-gray-500">· 합계·단가는 같고 수율·구성·기타 나눔만 달라짐 (분석용이 실제 배합에 가까움)</span></summary>
+          <div className="overflow-x-auto px-4 py-3">
+            <table className="text-xs min-w-[520px] w-full">
+              <thead className="text-gray-500">
+                <tr><th className="text-left px-2 py-1">레시피</th><th className="text-right px-2 py-1">수율</th><th className="text-right px-2 py-1">제품 구성</th><th className="text-right px-2 py-1">기타</th><th className="text-right px-2 py-1">수율 비교 원재료</th><th className="text-right px-2 py-1">레시피 있는 생산 비율</th></tr>
+              </thead>
+              <tbody>
+                {[view, alt].map((v, i) => {
+                  const tt = v.result.totals;
+                  return (
+                    <tr key={i} className={`border-t ${i === 0 ? 'font-bold bg-indigo-50/50' : ''}`}>
+                      <td className="px-2 py-1">{v.recipeLabel}{i === 0 ? ' (지금)' : ''}</td>
+                      <td className={`text-right px-2 py-1 tabular-nums ${tone(tt.yld)}`}>{man(tt.yld)}</td>
+                      <td className={`text-right px-2 py-1 tabular-nums ${tone(tt.mix)}`}>{man(tt.mix)}</td>
+                      <td className={`text-right px-2 py-1 tabular-nums ${tone(tt.other)}`}>{man(tt.other)}</td>
+                      <td className="text-right px-2 py-1">{v.result.rows.filter((r) => r.status === 'ok').length}종</td>
+                      <td className="text-right px-2 py-1">{v.coverage.a.toFixed(1)}% · {v.coverage.b.toFixed(1)}%</td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </details>
+      )}
     </div>
   );
 }
 
-function Kpi({ title, value, note, accent }: { title: string; value: string; note: string; accent?: boolean }) {
-  return (
-    <div className={`rounded-lg border p-3 ${accent ? 'bg-indigo-50 border-indigo-200' : 'bg-white'}`}>
-      <div className="text-xs text-gray-500">{title}</div>
-      <div className="text-xl font-bold tabular-nums">{value}<span className="text-sm font-normal text-gray-500">원</span></div>
-      <div className="text-[10px] text-gray-500 leading-tight mt-0.5">{note}</div>
-    </div>
-  );
-}
-function Arrow({ label, v }: { label: string; v: number }) {
-  return (
-    <div className="flex sm:flex-col items-center justify-center gap-1 px-1 text-center">
-      <span className="text-gray-400 text-lg leading-none"><span className="sm:hidden">↓</span><span className="hidden sm:inline">→</span></span>
-      <span className={`text-sm font-bold tabular-nums ${tone(v)}`}>{man(v)}</span>
-      <span className="text-[10px] text-gray-500 leading-tight max-w-[10rem]">{label}</span>
-    </div>
-  );
-}
 /** '35억' · '3,512,000,000' · '1.5억' · '3억5천만' 을 원으로. 못 읽으면 null (기존 값 유지) */
 function parseWon(text: string): number | null {
   const t = text.replace(/[\s,원]/g, '');
@@ -455,9 +432,9 @@ function MaterialTable({ rows, monthA, monthB }: { rows: DecompMatRow[]; monthA:
               <th className="px-2 py-1.5 text-right">{monthA} 수율</th>
               <th className="px-2 py-1.5 text-right">{monthB} 수율</th>
               {th('dY', '증감')}
-              {th('yld', '④ 수율효과')}
-              {th('mix', '③ 제품구성')}
-              {th('other', '⑤ 기타')}
+              {th('yld', '수율효과')}
+              {th('mix', '제품구성')}
+              {th('other', '기타')}
               {th('costB', `${monthB} 원재료비`)}
             </tr>
           </thead>
@@ -488,7 +465,7 @@ function MaterialTable({ rows, monthA, monthB }: { rows: DecompMatRow[]; monthA:
                         <span>상태 <b>{statusLabel(r.status, monthA, monthB)}</b></span>
                         {r.kgDelta !== null && <span>수율로 {r.kgDelta > 0 ? '더' : '덜'} 쓴 양 <b>{Math.abs(r.kgDelta).toLocaleString(undefined, { maximumFractionDigits: 1 })} kg</b></span>}
                         <span>원재료비 {Math.round(r.costA).toLocaleString()} → {Math.round(r.costB).toLocaleString()}</span>
-                        {Math.abs(r.price) >= 1 && <span>② 단가 {won(r.price)}</span>}
+                        {Math.abs(r.price) >= 1 && <span>단가효과 {won(r.price)}</span>}
                       </div>
                       {r.swing && <div className="mt-1 text-amber-800">⚠ 수율이 {pp(r.dY, 1)} 바뀌었습니다. 두 달 모두 지금 레시피로 표준을 잡으므로, 그사이 배합(개당 g)을 바꿨거나 실투입 입력이 틀렸으면 그 차이가 수율로 보입니다.</div>}
                     </td>
@@ -509,7 +486,7 @@ function MaterialTable({ rows, monthA, monthB }: { rows: DecompMatRow[]; monthA:
           </tfoot>
         </table>
       </div>
-      <div className="text-[10px] text-gray-500">줄을 누르면 표준소요·실투입·단가가 보입니다. ④ 수율효과 = ({monthB} 실투입 − {monthB} 표준 ÷ {monthA} 수율) × {monthB} 단가. − 는 덜 써서 아낀 금액입니다.</div>
+      <div className="text-[10px] text-gray-500">줄을 누르면 표준소요·실투입·단가가 보입니다. 수율효과 = ({monthB} 실투입 − {monthB} 표준 ÷ {monthA} 수율) × {monthB} 단가. − 는 덜 써서 아낀 금액입니다.</div>
     </div>
   );
 }
@@ -547,7 +524,7 @@ function ProductTable({ products, cbar, monthA, monthB }: { products: DecompProd
               <th className="px-2 py-1.5 text-right">비율대로였다면 대비</th>
               <th className="px-2 py-1.5 text-right">개당 원재료비</th>
               <th className="px-2 py-1.5 text-right">기준선 대비</th>
-              <th className="px-2 py-1.5 text-right">③ 구성효과</th>
+              <th className="px-2 py-1.5 text-right">구성효과</th>
             </tr>
           </thead>
           <tbody className="divide-y">
@@ -604,10 +581,10 @@ function CategoryTable({ rows, monthA, monthB }: { rows: DecompMatRow[]; monthA:
           <tr>
             <th className="px-2 py-1.5 text-left">분류</th>
             <th className="px-2 py-1.5 text-right">{monthA} → {monthB} 수율</th>
-            <th className="px-2 py-1.5 w-40">④ 수율효과</th>
+            <th className="px-2 py-1.5 w-40">수율효과</th>
             <th className="px-2 py-1.5 text-right" />
-            <th className="px-2 py-1.5 text-right">③ 제품구성</th>
-            <th className="px-2 py-1.5 text-right">⑤ 기타</th>
+            <th className="px-2 py-1.5 text-right">제품구성</th>
+            <th className="px-2 py-1.5 text-right">기타</th>
             <th className="px-2 py-1.5 text-right">{monthB} 원재료비</th>
           </tr>
         </thead>
