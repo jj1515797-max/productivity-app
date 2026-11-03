@@ -183,8 +183,15 @@ export function containerAnalysis(r: CCResult, q: CCRatio | null, amount: { A: n
   if (q) {
     const cs = q.mix + q.price;
     const tail = `용기 쪽 ${pp2(cs)}%p, 제품 쪽 ${pp2(q.rev)}%p`;
+    const dir = q.d < 0 ? '하락' : '상승';
+    // 용기 쪽과 제품 쪽이 반대로 움직였으면 어느 쪽이 이겼는지, 진 쪽은 '오히려' 반대였다고 바로 쓴다
+    const opp = Math.abs(cs) >= 0.005 && Math.abs(q.rev) >= 0.005 && Math.sign(cs) !== Math.sign(q.rev);
     t += Math.abs(q.d) < 0.005 ? ` · 원가율 보합 (${tail})`
-      : ` · 원가율 ${pp2(q.d)}%p ${q.d < 0 ? '하락' : '상승'}은 ${Math.abs(q.rev) > Math.abs(cs) ? '대부분 제품 쪽 몫' : '용기 쪽이 주도'} (${tail})`;
+      : opp && Math.sign(q.d) === Math.sign(q.rev)
+        ? ` · 원가율 ${pp2(q.d)}%p ${dir}은 제품 쪽(${pp2(q.rev)}%p) ${q.d < 0 ? '덕분' : '때문'} — 용기 쪽은 오히려 ${pp2(cs)}%p ${cs > 0 ? '올림' : '내림'}`
+        : opp
+          ? ` · 원가율 ${pp2(q.d)}%p ${dir}은 용기 쪽(${pp2(cs)}%p) ${q.d < 0 ? '덕분' : '때문'} — 제품 쪽은 반대로 ${pp2(q.rev)}%p`
+          : ` · 원가율 ${pp2(q.d)}%p ${dir}은 ${Math.abs(q.rev) > Math.abs(cs) ? '대부분 제품 쪽 몫' : '용기 쪽이 주도'} (${tail})`;
   } else t += ' · 두 달 생산금액을 넣으면 원가율로 봅니다';
   pts.push({ k: '결론', t, tone: tone(dAvg, 0.3) });
 
