@@ -349,6 +349,8 @@ export interface DevRow {
   pct: number;          // 배합비 % (제품 단위로 보정된 값)
   /** 셀에 '%' 기호가 있었나 — 백분율 서식 판정의 결정적 근거 */
   hadPercentSign?: boolean;
+  /** 실온 이유식 ERP 품목코드 (예: SSB55130033) — 시트에 제품코드 열이 있을 때만 */
+  itemCode?: string;
 }
 
 /** 배합비 칸에 숫자 대신 이 말이 적혀 있으면 그 줄은 쓰지 않는다는 뜻이다.
@@ -578,18 +580,28 @@ export function parseAmbientSheet(text: string): {
   const norm = (s: string) => s.replace(/\s+/g, '').replace(/\([^)]*\)/g, '').toLowerCase();
 
   const head = split(lines[0]).map(norm);
-  const findCol = (...cands: string[]) => head.findIndex((h) => cands.some((c) => h.includes(c)));
+  // 제품코드(ERP 품목코드) 열 — '원재료코드' 같은 원재료 쪽 코드 열과 헷갈리지 않게 먼저 찾아 둔다
+  const isMatCode = (h: string) => /원재료|재료|원료|자재/.test(h);
+  let ci = head.findIndex((h) => ['제품코드', '품목코드', 'erp품목코드', 'erp코드', '코드'].includes(h));
+  if (ci < 0) ci = head.findIndex((h) => h.includes('코드') && !isMatCode(h));
+  // 이름·원재료·배합비 열은 코드 열을 빼고 찾는다 ('제품코드' 가 '제품' 에 걸리지 않게)
+  const findCol = (...cands: string[]) => head.findIndex((h, i) => i !== ci && !h.includes('코드') && cands.some((c) => h.includes(c)));
   let mi = findCol('제품명', '품목명', '제품');
   let ni = findCol('원재료', '재료명', '원료');
   let pi = findCol('배합비', '비율', '%');
   let start = 1;
   const headerUsed = mi >= 0 && ni >= 0 && pi >= 0;
   if (!headerUsed) {
-    // 머리글이 없다 — 제품명 / 원재료명 / % (열이 더 있으면 맨 끝을 % 로)
-    const w = split(lines[0]).length;
-    mi = 0; ni = 1; pi = Math.max(2, w - 1);
+    // 머리글이 없다 — (제품코드) / 제품명 / 원재료명 / % (열이 더 있으면 맨 끝을 % 로)
+    const first = split(lines[0]);
+    const w = first.length;
+    // 첫 칸이 SSB55130033 · A-001-01 처럼 영문+숫자 코드면 제품코드 열로 본다
+    if (w >= 4 && /^[A-Za-z]{1,5}[-_]?\d/.test(first[0] || '')) { ci = 0; mi = 1; ni = 2; }
+    else { ci = -1; mi = 0; ni = 1; }
+    pi = Math.max(ni + 1, w - 1);
     start = 0;
   }
+  const codeOf = new Map<string, string>();   // 제품명 → 제품코드 (한 제품에 코드가 둘이면 알려준다)
 
   const rows: DevRow[] = [];
   for (let i = start; i < lines.length; i++) {
@@ -603,7 +615,13 @@ export function parseAmbientSheet(text: string): {
     if (isSkipMark(pctRaw)) { skipped.push({ prodCode: prodName, rawName, mark: pctRaw }); continue; }
     const pct = parseFloat(pctRaw);
     if (!isFinite(pct)) { errors.push(`${i + 1}행: 배합비를 읽을 수 없음 — "${pctRaw}"`); continue; }
-    rows.push({ prodCode: prodName, prodName, rawName, pct, hadPercentSign: (cells[pi] || '').includes('%') });
+    const itemCode = ci >= 0 ? (cells[ci] || '').trim() : '';
+    if (itemCode) {
+      const prev = codeOf.get(prodName);
+      if (prev && prev !== itemCode) errors.push(`${i + 1}행: 「${prodName}」 제품코드가 두 개입니다 — ${prev} / ${itemCode}`);
+      else codeOf.set(prodName, itemCode);
+    }
+    rows.push({ prodCode: prodName, prodName, rawName, pct, hadPercentSign: (cells[pi] || '').includes('%'), ...(itemCode ? { itemCode } : {}) });
   }
   return { rows, skipped, errors, headerUsed };
 }

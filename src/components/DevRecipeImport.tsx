@@ -58,6 +58,7 @@ export default function DevRecipeImport({ mode = 'cold' }: { mode?: 'cold' | 'am
   const [packW, setPackW] = useState<Map<string, number>>(new Map());
   const [prodName, setProdName] = useState<Map<string, string>>(new Map());
   const [docIdOf, setDocIdOf] = useState<Map<string, string>>(new Map());
+  const [ambByCode, setAmbByCode] = useState<Map<string, string>>(new Map());   // 실온: ERP 품목코드 → 현장 실온 레시피 제품명
   const [loaded, setLoaded] = useState(false);
   const [loading, setLoading] = useState(false);
   const [onlyReview, setOnlyReview] = useState(true);
@@ -116,10 +117,12 @@ export default function DevRecipeImport({ mode = 'cold' }: { mode?: 'cold' | 'am
       if (amb && ar) {
         b.clear(); idMap.clear();
         const names: string[] = [];
+        const byCode = new Map<string, string>();
         ar.forEach((d) => {
-          const v = d.data() as { name?: string; ingredients?: { name: string; code?: string }[] };
+          const v = d.data() as { name?: string; code?: string; ingredients?: { name: string; code?: string }[] };
           const nm = (v.name || d.id).trim();
           names.push(nm);
+          if (v.code) byCode.set(normalizeCode(v.code), nm);
           const key = normalizeCode(nm);
           idMap.set(key, d.id);
           const list: BomIngredient[] = (v.ingredients || []).map((i) => ({ name: i.name, code: i.code }));
@@ -132,6 +135,7 @@ export default function DevRecipeImport({ mode = 'cold' }: { mode?: 'cold' | 'am
           });
         });
         setAmbNames(names.sort((x, y) => x.localeCompare(y)));
+        setAmbByCode(byCode);
       }
       const pw = new Map<string, number>();
       const pn = new Map<string, string>();
@@ -215,9 +219,22 @@ export default function DevRecipeImport({ mode = 'cold' }: { mode?: 'cold' | 'am
     if (!amb) return parseDevSheet(text);
     // 실온: 시트 제품명을 현장 제품명으로 바꿔 둔 게 있으면 적용 (생산 입력 이름과 같아야 분석에 잡힌다)
     const p0 = parseAmbientSheet(text);
-    const m = (n: string) => nameMap[n] || n;
+    // 시트에 제품코드(ERP 품목코드)가 있으면 그 코드를 가진 현장 실온 레시피 이름으로 바로 맞춘다 (이름이 달라도 연결)
+    const codeByName = new Map<string, string>();
+    p0.rows.forEach((r) => { if (r.itemCode && !codeByName.has(r.prodCode)) codeByName.set(r.prodCode, r.itemCode); });
+    const m = (n: string) => {
+      if (nameMap[n]) return nameMap[n];
+      const c = codeByName.get(n);
+      return (c && ambByCode.get(normalizeCode(c))) || n;
+    };
     return { ...p0, rows: p0.rows.map((r) => ({ ...r, prodCode: m(r.prodCode) })), skipped: p0.skipped.map((r) => ({ ...r, prodCode: m(r.prodCode) })) };
-  }, [text, amb, nameMap]);
+  }, [text, amb, nameMap, ambByCode]);
+  /** 실온: 제품(현장 이름) → 시트의 제품코드 */
+  const itemCodeOf = useMemo(() => {
+    const out = new Map<string, string>();
+    parsed.rows.forEach((r) => { if (r.itemCode && !out.has(r.prodCode)) out.set(r.prodCode, r.itemCode); });
+    return out;
+  }, [parsed]);
 
   const reports: ProductReport[] = useMemo(() => {
     if (!loaded || parsed.rows.length === 0) return [];
@@ -333,8 +350,10 @@ export default function DevRecipeImport({ mode = 'cold' }: { mode?: 'cold' | 'am
           if (amb) {
             // 실온: 제품명이 키. 현장 실온 레시피와 같은 문서 ID 를 써야 생산 입력(제품명)과 연결된다.
             const id = docIdOf.get(normalizeCode(p.prodCode)) || ambientDocId(p.prodCode);
+            const itemCode = itemCodeOf.get(p.prodCode);
             batch.set(doc(db, 'ambientRecipesYield', id), {
               name: p.prodCode,
+              ...(itemCode ? { code: itemCode } : {}),   // 시트에 제품코드가 있으면 품목코드도 같이 (없으면 기존 값 유지)
               batchPieces: 1,                    // 개당 g 으로 저장
               packWeight: p.packWeight,
               pctSum: Math.round(p.pctSum * 10000) / 10000,
@@ -399,8 +418,9 @@ export default function DevRecipeImport({ mode = 'cold' }: { mode?: 'cold' | 'am
     <div className="space-y-3">
       {amb && (
         <div className="bg-teal-50 border border-teal-200 rounded p-2.5 text-xs text-teal-900">
-          <b>실온 이유식</b>은 제품코드가 없어 <b>제품명</b>으로 연결합니다 — 시트 제품명이 <b>생산 입력(실온) 제품명과 같아야</b> 분석에 잡힙니다.
+          <b>실온 이유식</b>은 <b>제품명</b>으로 생산 입력과 연결합니다 — 시트 제품명이 <b>생산 입력(실온) 제품명과 같아야</b> 분석에 잡힙니다.
           현장 실온 레시피에 같은 이름이 없으면 비슷한 이름을 추천하니 눌러서 맞춰 주세요.<br />
+          · <b>제품코드</b>(ERP 품목코드, 예: SSB55130033) 열을 같이 붙이면 <b>코드로 현장 레시피를 찾아</b> 이름이 달라도 연결하고, 저장할 때 코드도 함께 넣습니다.<br />
           · 개당 g = 배합비% × <b>개당 중량</b> ÷ 100 · 저장 대상은 <b>분석용 실온 레시피 DB(ambientRecipesYield)</b> 뿐입니다.
         </div>
       )}
@@ -429,7 +449,7 @@ export default function DevRecipeImport({ mode = 'cold' }: { mode?: 'cold' | 'am
           </div>
         </div>
         <div className="text-[11px] text-gray-500">
-          <b>{amb ? '제품명 / 원재료명 / 배합비%' : '제품코드 / (제품명) / 원재료명 / 배합비%'}</b> — 탭 또는 쉼표 구분. 머리글이 있으면 자동 인식합니다.
+          <b>{amb ? '(제품코드) / 제품명 / 원재료명 / 배합비%' : '제품코드 / (제품명) / 원재료명 / 배합비%'}</b> — 탭 또는 쉼표 구분. 머리글이 있으면 자동 인식합니다.
           배합비는 <b>품목코드별 합계가 100%</b>여야 합니다 — 아니면 저장을 막습니다.
           엑셀에서 값으로 붙여 <code className="bg-gray-100 px-1 rounded">0.3369</code> 처럼 들어와도
           <b>제품 단위 합계를 보고</b> 자동으로 %로 바꿉니다 (0.19% 같은 소량 원재료는 그대로 둡니다).
@@ -444,7 +464,7 @@ export default function DevRecipeImport({ mode = 'cold' }: { mode?: 'cold' | 'am
         )}
         <textarea value={text} onChange={(e) => { setText(e.target.value); setOv({}); setDone(null); setNameMap({}); }}
           placeholder={amb
-            ? '제품명\t원재료명\t배합비(%)\n한우야채진밥\t정제수\t55.2\n한우야채진밥\t멥쌀\t20.1'
+            ? '제품코드\t제품명\t원재료명\t배합비(%)\nSSB55130033\t한우야채진밥\t정제수\t55.2\nSSB55130033\t한우야채진밥\t멥쌀\t20.1'
             : '품목코드\t제품명\t원재료명\t배합비(%)\nE-001\t순수쌀미음\t정제수\t91.65\nE-001\t순수쌀미음\t맵쌀\t8.35'}
           className="w-full h-32 border rounded p-2 font-mono text-xs" />
         {parsed.errors.length > 0 && (
@@ -550,6 +570,16 @@ export default function DevRecipeImport({ mode = 'cold' }: { mode?: 'cold' | 'am
                   <div className="px-3 py-2 border-b bg-slate-50 flex items-baseline gap-2 flex-wrap text-xs">
                     <b className="text-sm text-gray-800">{p.prodCode}</b>
                     {!amb && <span className="text-gray-600">{p.name || p.rows[0]?.prodName}</span>}
+                    {amb && itemCodeOf.get(p.prodCode) && (() => {
+                      const c = itemCodeOf.get(p.prodCode)!;
+                      const linked = ambByCode.get(normalizeCode(c)) === p.prodCode;
+                      return (
+                        <span className={`font-mono rounded px-1.5 ${linked ? 'bg-emerald-100 text-emerald-800' : 'bg-gray-100 text-gray-600'}`}
+                          title={linked ? '현장 실온 레시피와 품목코드로 연결됨' : '현장 실온 레시피에 이 품목코드가 없어 이름으로 연결 — 저장하면 이 코드도 같이 들어갑니다'}>
+                          {c}{linked ? ' ✓ 코드 연결' : ''}
+                        </span>
+                      );
+                    })()}
                     {amb && (() => {
                       const origs = Object.keys(nameMap).filter((k) => nameMap[k] === p.prodCode && k !== p.prodCode);
                       if (origs.length === 0) return null;
