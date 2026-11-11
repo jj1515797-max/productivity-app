@@ -32,10 +32,9 @@ export const ROOT_COLLECTIONS = [
   'containerStock',       // 용기 재고
   'containerCost',        // 용기 월별 단가 (용기분석 원가)
   'purchaseChat',         // 구매팀 채팅
-  // 원가·노무비 분석
+  // 원가 분석
   'costGrades',           // 품목별 고·중·저원가 고정 등급 (원재료분석)
   'prodMonthCache',       // 지난달 품목별 생산수량 캐시 (원가 등급 비중)
-  'laborMonthly',         // 월별 공수·노무비 (노무비분석)
 ];
 /** 서브컬렉션 ID (collectionGroup 으로 전량 수집 — 같은 이름이면 부모가 달라도 다 모인다:
  *  items = days/{날짜}/items + remix/{날짜}/items, entries = 호기 생산 + waste/{날짜}/entries) */
