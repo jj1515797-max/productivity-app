@@ -288,6 +288,9 @@ export default function LaborAnalysis() {
                   인당 생산성 <b>{chg(A.q, B.q)}</b>({(A.q / 1e4).toFixed(1)}만 → {(B.q / 1e4).toFixed(1)}만) · 시간당 금액 <b>{chg(A.w, B.w)}</b> → 노무비율 <b>{pp(dec.dR)}</b>.
                   {' '}총인원이 총공수 ÷ 8(연장 1.5배 포함)이라 연장근무는 인당 생산성 안에 들어 있어요 — 현장 노무비율 = 시간당 금액 × 8 ÷ 인당 생산성.
                 </div>
+                {(A.Lx > 0) !== (B.Lx > 0) && (
+                  <div className="text-xs px-2 py-1.5 rounded bg-amber-50 text-amber-800 border border-amber-200">⚠ 「통제 밖」 금액이 {A.Lx > 0 ? mon(A.month) : mon(B.month)}에만 있어요. 두 달 모두 넣어야 시간당 금액·통제 밖 몫이 맞게 나뉩니다 (한쪽만 있으면 그 금액이 통제 밖 증감으로 잡힘).</div>
+                )}
                 <div className="text-[11px] text-gray-500">몫을 모두 더하면 노무비율 변화와 정확히 같습니다 (로그 평균 분해 · 금액 = 몫 × {mon(B.month)} 생산금액)</div>
               </div>
               {/* 기여도 막대 (0 기준, 오른쪽 = 올림 / 왼쪽 = 내림) */}
@@ -411,7 +414,7 @@ export default function LaborAnalysis() {
                       <td className="px-2 py-1.5 text-right">{subCell(['ot', 'ex'])}</td>
                       <td className="px-2 py-1.5 text-right">{cell('wage')}</td>
                       <td className="px-2 py-1.5 text-right">{cell('outside')}</td>
-                      <td className="px-2 py-1.5 text-right text-gray-600">{d ? man(d.money) : ''}</td>
+                      <td className="px-2 py-1.5 text-right text-gray-600">{d ? man(d.money) : ''}{prev && (prev.Lx > 0) !== (M.Lx > 0) && <span className="ml-1 text-amber-600" title="통제 밖 금액이 한 달에만 있어 시간당 금액·통제 밖 몫이 왜곡됩니다">⚠</span>}</td>
                     </tr>
                   );
                 })}
