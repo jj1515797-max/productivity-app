@@ -1,13 +1,13 @@
 /** 노무비분석 — 노무비율 트리 (윤기성 실장 11/6 회의 지시)
  *
- *  노무비율 = 노무비 ÷ 생산금액
- *    = 현장 노무비율 + 통제 밖 노무비율(관리직 급여·퇴직급여 등)
- *  현장 노무비율 = 시간당 금액 × (1 + 연장 가중비율) × 1인 1일 정규공수 ÷ 인당 일생산금액
- *    · 인당 일생산금액(생산성) = 생산금액 ÷ 연인원(총인원)
- *    · 1인 1일 정규공수       = 정규공수 ÷ 연인원   (중도 입사·단축 근무가 있으면 인원수가 아니라 정규공수로 봐야 한다)
- *    · 연장 가중비율          = (연장 × 1.5 + 초과 × 2.0) ÷ 정규공수 = 총공수 ÷ 정규공수 − 1
- *    · 시간당 금액            = 현장 노무비 ÷ 총공수(가중)   ← 금액 = 공수 × 시간당 금액
- *  위 식은 정의상 정확히 맞으므로, 두 달 사이 증감을 로그 평균(LMDI)으로 나누면 다섯 몫의 합이 노무비율 증감과 정확히 같다.
+ *  공수표의 총인원 = 총공수(가중: 정규 + 연장×1.5 + 초과×2.0) ÷ 8 이고, 생산성(인당 일생산금액) = 생산금액 ÷ 총인원.
+ *  → 연장근무는 이미 인당 생산성 안에 들어 있다. 그래서 트리는
+ *
+ *  노무비율 = 노무비 ÷ 생산금액 = 현장 노무비율 + 통제 밖(관리직 급여·퇴직급여 등)
+ *  현장 노무비율 = 시간당 금액 × 가중 총공수 ÷ 생산금액 = 시간당 금액 × 8 ÷ 인당 생산성
+ *    · 인당 생산성의 역수(생산금액당 가중 공수)는 정규공수 몫 + 연장(×1.5) 몫 + 초과·휴일(×2.0) 몫으로 더해진다
+ *    · 시간당 금액 = 현장 노무비 ÷ 가중 총공수   ← 금액 = 공수 × 시간당 금액
+ *  두 달 사이 증감을 로그 평균(LMDI)으로 나누면 몫의 합이 노무비율 증감과 정확히 같다.
  *  (내린 항목만 보면 금액이 맞지 않는다 — 오른 항목과 내린 항목을 같이 본다)
  *
  *  Firestore laborMonthly/{YYYY-MM} = 아래 LaborMonth
@@ -18,31 +18,26 @@ export interface LaborMonth {
   month: string;
   workDays?: number;
   regularHours: number;      // 정규공수 (h)
-  otHours: number;           // 연장근무 (h)
+  otHours: number;           // 연장근무 (h, ×1.5)
   extraHours: number;        // 연장초과 (h, ×2.0)
   weightedHours?: number;    // 총공수 (가중) — 없으면 정규 + 연장×1.5 + 초과×2.0
-  personDays: number;        // 총인원 (연인원)
+  personDays?: number;       // 총인원 (= 총공수 ÷ 8, 참고용)
   avgHeadcount?: number;
   productionAmount: number;  // 생산금액 (원)
   laborCost?: number;        // 노무비 총액 (원)
   laborRatio?: number;       // 노무비율 (%) — 금액이 없을 때
   outsideCost?: number;      // 통제 밖 (관리직 급여·퇴직급여 등, 원)
-  packDays?: number;         // 내포장 연인원 (선택) — 생산성을 공정별로 나눌 때
-  prepDays?: number;         // 전처리 연인원 (선택)
   updatedAt?: string;
 }
 
 export interface LaborMetrics {
   month: string;
   P: number; L: number; Lx: number; Lf: number;
-  Hr: number; Ho: number; He: number; Hw: number; N: number; days: number; head: number;
+  Hr: number; Ho: number; He: number; Hw: number; days: number; head: number;
   R: number; Rf: number; Rx: number;
-  q: number;   // 인당 일생산금액
-  h: number;   // 1인 1일 정규공수
-  o: number;   // 연장 가중비율
-  w: number;   // 시간당 금액 (현장 노무비 ÷ 가중 공수)
-  qh: number;  // 정규공수 1시간당 생산금액
-  pack: number; prep: number;   // 공정별 연인원 (없으면 0)
+  q: number;   // 인당 생산성 = 생산금액 ÷ (총공수 ÷ 8)  — 공수표 「생산성」과 같은 값
+  w: number;   // 시간당 금액 (현장 노무비 ÷ 가중 총공수)
+  sReg: number; sOt: number; sEx: number;   // 생산 1원당 정규 / 연장×1.5 / 초과×2.0 공수 (합 = Hw/P)
 }
 
 export function laborCostOf(m: LaborMonth): number {
@@ -52,77 +47,47 @@ export function laborCostOf(m: LaborMonth): number {
 }
 
 export function metrics(m: LaborMonth): LaborMetrics | null {
-  const P = m.productionAmount, L = laborCostOf(m), Hr = m.regularHours, N = m.personDays;
-  if (!(P > 0 && L > 0 && Hr > 0 && N > 0)) return null;
+  const P = m.productionAmount, L = laborCostOf(m), Hr = m.regularHours;
+  if (!(P > 0 && L > 0 && Hr > 0)) return null;
   const Ho = m.otHours || 0, He = m.extraHours || 0;
   const Hw = m.weightedHours && m.weightedHours >= Hr ? m.weightedHours : Hr + 1.5 * Ho + 2 * He;
   const Lx = Math.min(Math.max(m.outsideCost || 0, 0), L);
   const Lf = L - Lx;
-  const o = Hw / Hr - 1;
   return {
-    month: m.month, P, L, Lx, Lf, Hr, Ho, He, Hw, N, days: m.workDays || 0, head: m.avgHeadcount || 0,
+    month: m.month, P, L, Lx, Lf, Hr, Ho, He, Hw, days: m.workDays || 0, head: m.avgHeadcount || 0,
     R: L / P, Rf: Lf / P, Rx: Lx / P,
-    q: P / N, h: Hr / N, o, w: Lf > 0 ? Lf / Hw : 0, qh: P / Hr,
-    pack: m.packDays || 0, prep: m.prepDays || 0,
+    q: (8 * P) / Hw, w: Lf > 0 ? Lf / Hw : 0,
+    sReg: Hr / P, sOt: (1.5 * Ho) / P, sEx: Math.max(0, Hw - Hr - 1.5 * Ho) / P,   // 초과 몫에 총공수 반올림 차이 포함
   };
 }
 
-export type PartKey = 'prod' | 'hours' | 'ot' | 'wage' | 'outside';
-export interface SubPart { key: string; label: string; pp: number; money: number; a: number; b: number }
+export type PartKey = 'prod' | 'wage' | 'outside';
+export interface SubPart { key: 'reg' | 'ot' | 'ex'; label: string; pp: number; money: number; a: number; b: number }
 export interface Part { key: PartKey; label: string; pp: number; money: number; subs?: SubPart[] }
 
 const lmean = (a: number, b: number) => (a > 0 && b > 0 && Math.abs(a - b) > 1e-12 ? (a - b) / (Math.log(a) - Math.log(b)) : a);
 
-/** A → B 노무비율 증감을 다섯 몫으로 (pp = 비율 소수, money = pp × B 생산금액) */
+/** A → B 노무비율 증감 = 인당 생산성(정규·연장·초과 몫) + 시간당 금액 + 통제 밖  (pp = 비율 소수, money = pp × B 생산금액) */
 export function decompose(A: LaborMetrics, B: LaborMetrics): { dR: number; parts: Part[]; money: number } {
   const lw = lmean(B.Rf, A.Rf);
   const ln = (b: number, a: number) => (a > 0 && b > 0 ? Math.log(b / a) : 0);
-  const raw: [PartKey, string, number][] = [
-    ['prod', '인당 일생산금액', -lw * ln(B.q, A.q)],
-    ['hours', '1인 1일 정규공수', lw * ln(B.h, A.h)],
-    ['ot', '연장근무', lw * ln(1 + B.o, 1 + A.o)],
-    ['wage', '시간당 금액', B.w > 0 && A.w > 0 ? lw * ln(B.w, A.w) : B.Rf - A.Rf],
-    ['outside', '통제 밖 (관리직·퇴직급여)', B.Rx - A.Rx],
+  const prodPP = -lw * ln(B.q, A.q);
+  const wagePP = B.w > 0 && A.w > 0 ? lw * ln(B.w, A.w) : B.Rf - A.Rf - prodPP;
+  const SA = A.sReg + A.sOt + A.sEx, SB = B.sReg + B.sOt + B.sEx, LS = lmean(SB, SA);
+  const sub = (key: SubPart['key'], label: string, a: number, b: number): SubPart => {
+    const pp = LS > 0 ? (lw * (b - a)) / LS : 0;
+    return { key, label, pp, money: pp * B.P, a, b };
+  };
+  const parts: Part[] = [
+    {
+      key: 'prod', label: '인당 생산성', pp: prodPP, money: prodPP * B.P,
+      subs: [sub('reg', '정규공수', A.sReg, B.sReg), sub('ot', '연장근무 (×1.5)', A.sOt, B.sOt), sub('ex', '초과·휴일 (×2.0)', A.sEx, B.sEx)],
+    },
+    { key: 'wage', label: '시간당 금액', pp: wagePP, money: wagePP * B.P },
+    { key: 'outside', label: '통제 밖 (관리직·퇴직급여)', pp: B.Rx - A.Rx, money: (B.Rx - A.Rx) * B.P },
   ];
-  const parts: Part[] = raw.map(([key, label, pp]) => ({ key, label, pp, money: pp * B.P }));
-
-  // 연장근무 → 연장(×1.5) / 초과(×2.0, 총공수와의 차이 포함)  — 1+o = 1 + a + b 이므로 몫이 정확히 나뉜다
-  const L1o = lmean(1 + B.o, 1 + A.o);
-  const aOf = (M: LaborMetrics) => (1.5 * M.Ho) / M.Hr;
-  const ot = parts.find((p) => p.key === 'ot')!;
-  if (L1o > 0) {
-    const sub = (key: string, label: string, a: number, b: number): SubPart => {
-      const pp = (lw * (b - a)) / L1o;
-      return { key, label, pp, money: pp * B.P, a, b };
-    };
-    ot.subs = [
-      sub('ot15', '연장 (×1.5) ÷ 정규공수', aOf(A), aOf(B)),
-      sub('ot20', '초과·휴일 (×2.0) ÷ 정규공수', A.o - aOf(A), B.o - aOf(B)),
-    ];
-  }
-
-  // 인당 생산성 → 내포장 / 전처리 / 그 외 (두 달 모두 공정별 연인원이 있을 때) — N/P = Σ Nᵢ/P
-  const pa = A.pack + A.prep > 0 && A.pack + A.prep <= A.N, pb = B.pack + B.prep > 0 && B.pack + B.prep <= B.N;
-  if (pa && pb) {
-    const SA = A.N / A.P, SB = B.N / B.P, LS = lmean(SB, SA);
-    const prod = parts.find((p) => p.key === 'prod')!;
-    const sub = (key: string, label: string, nA: number, nB: number): SubPart => {
-      const pp = (lw * (nB / B.P - nA / A.P)) / LS;
-      return { key, label, pp, money: pp * B.P, a: nA > 0 ? A.P / nA : 0, b: nB > 0 ? B.P / nB : 0 };
-    };
-    prod.subs = [
-      sub('pack', '내포장 생산성', A.pack, B.pack),
-      sub('prep', '전처리 생산성', A.prep, B.prep),
-      sub('etc', '그 외 공정 생산성', A.N - A.pack - A.prep, B.N - B.pack - B.prep),
-    ];
-  }
   const dR = B.R - A.R;
   return { dR, parts, money: dR * B.P };
-}
-
-/** 노무비 금액 변화를 공수 × 시간당 금액으로 (정규 / 연장 / 통제 밖) */
-export function costSplit(M: LaborMetrics) {
-  return { regular: M.Hr * M.w, overtime: (M.Hw - M.Hr) * M.w, outside: M.Lx, total: M.L };
 }
 
 /* ───────── 공수표 붙여넣기 ─────────
