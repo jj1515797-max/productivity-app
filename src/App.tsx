@@ -14,7 +14,6 @@ import Productivity from './pages/Productivity';
 import Under10 from './pages/Under10';
 import Waste from './pages/Waste';
 import MaterialAnalysis from './pages/MaterialAnalysis';
-import LaborAnalysis from './pages/LaborAnalysis';
 import ProductSettings from './pages/ProductSettings';
 import Inventory from './pages/Inventory';
 import Remix from './pages/Remix';
@@ -120,7 +119,7 @@ function useLongPress(onLong: () => void, ms = 5000) {
 
 function MainContainer() {
   const path = useLocation().pathname;
-  const wide = path.startsWith('/analytics/monthly') || path.startsWith('/analytics/remix') || path.startsWith('/analytics/productivity') || path.startsWith('/analytics/material') || path.startsWith('/analytics/labor') || path.startsWith('/analytics/remain-analysis') || path.startsWith('/analytics/yield') || path.startsWith('/attendance') || path.startsWith('/inventory');
+  const wide = path.startsWith('/analytics/monthly') || path.startsWith('/analytics/remix') || path.startsWith('/analytics/productivity') || path.startsWith('/analytics/material') || path.startsWith('/analytics/remain-analysis') || path.startsWith('/analytics/yield') || path.startsWith('/attendance') || path.startsWith('/inventory');
   return (
     <main className={`flex-1 ${wide ? 'max-w-screen-2xl' : 'max-w-screen-xl'} w-full mx-auto px-4 py-5`}>
       <Routes>
@@ -146,7 +145,6 @@ function MainContainer() {
           <Route path="/analytics/waste" element={<Waste />} />
           <Route path="/analytics/report" element={<Report />} />
           <Route path="/analytics/material" element={<MaterialAnalysis />} />
-          <Route path="/analytics/labor" element={<LaborAnalysis />} />
           <Route path="/analytics/scoop" element={<ScoopAnalysis />} />
           <Route path="/analytics/container" element={<ContainerAnalysis />} />
           <Route path="/analytics/product" element={<ProductSearch />} />
@@ -203,7 +201,6 @@ const SUB_TABS: Record<Section, { label: string; to: string; exact?: boolean }[]
     { label: '내포장분석', to: '/analytics/scoop' },
     { label: '용기분석', to: '/analytics/container' },
     { label: '원재료분석', to: '/analytics/material' },
-    { label: '노무비분석', to: '/analytics/labor' },
     { label: '원재료수율분석', to: '/analytics/yield' },
     { label: '제품검색', to: '/analytics/product' },
     { label: '설정', to: '/analytics/settings' },
