@@ -20,6 +20,8 @@ import { buildCategoryIndex, categoryOf } from '../lib/materialCategory';
 import type { CategoryDoc } from '../lib/materialCategory';
 import { buildDecompMaterials, buildDecompProducts, computeCostDecomp } from '../lib/costDecomp';
 import CostDecompPanel from '../components/CostDecompPanel';
+import CostGradePanel from '../components/CostGradePanel';
+import { saveProdMonth, toProdMonth } from '../lib/prodMonthCache';
 import ProductCostPanel from '../components/ProductCostPanel';
 import type { DecompView } from '../components/CostDecompPanel';
 
@@ -194,6 +196,7 @@ export default function MaterialAnalysis() {
   }, []);
   const [expandStages, setExpandStages] = useState<Record<string, boolean>>({});
   const [err, setErr] = useState<string | null>(null);
+  const [gradeRefresh, setGradeRefresh] = useState(0);
   // 원가율 분해(화면) — 분석을 돌린 두 달의 실투입·원재료 분류
   const [decompSrc, setDecompSrc] = useState<{
     months: { a: string; b: string };
@@ -330,6 +333,11 @@ export default function MaterialAnalysis() {
           .catch(() => [] as CategoryDoc[]),
       ]);
       setDecompSrc({ months: { a: monthA, b: monthB }, a: inA, b: inB, cats });
+      // 원가 등급 비중 분석용 — 지난달 품목별 생산수량을 서버에 남겨 둔다 (이미 읽은 데이터라 추가 읽기 없음)
+      ([[monthA, aRaw], [monthB, bRaw]] as const).forEach(([m, raw]) => {
+        if (raw.pmVer !== undefined) return;   // 월별 생산수량으로 채운 달은 그 문서를 바로 쓴다
+        saveProdMonth(toProdMonth(m, raw)).then(() => setGradeRefresh((k) => k + 1)).catch(() => {});
+      });
       // 분석 1 — 월별 생산 분해 (단계·품목·실온)
       const aProd_ = computeMonthlyProduction(aRaw.entries, aRaw.items, aRaw.ambient, aRaw.logistics, aRaw.logisticsByCode);
       const bProd_ = computeMonthlyProduction(bRaw.entries, bRaw.items, bRaw.ambient, bRaw.logistics, bRaw.logisticsByCode);
@@ -805,6 +813,10 @@ export default function MaterialAnalysis() {
           view={decompView} alt={decompAlt}
           recipeSrc={useYieldDb ? 'yield' : 'bom'} onRecipeSrc={setRecipeSrc} yieldDbReady={yRecipeMap.size > 0} />
       )}
+
+      {/* 원가 등급 비중 분석 — 품목 등급 고정 · 월별 비중 ↔ 원재료비율 (윤기성 실장 11/6 지시) */}
+      <CostGradePanel recipeMap={effRecipeMap} ambientMap={effAmbientRecipeMap} priceMap={priceMap}
+        recipeLabel={useYieldDb ? '분석용 레시피' : '현장 BOM 레시피'} refreshKey={gradeRefresh} />
 
       {/* ============================================================
           분석 1: 월별 생산 현황 (냉장 단계별 + 실온 제품별)
