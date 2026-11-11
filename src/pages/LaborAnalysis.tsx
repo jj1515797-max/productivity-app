@@ -220,7 +220,7 @@ export default function LaborAnalysis() {
     const yr = (months[months.length - 1] || String(new Date().getFullYear())).slice(0, 4);
     const r = parseRatios(ratioPaste, yr);
     const ks = Object.keys(r);
-    if (!ks.length) { setErr('노무비율을 못 읽었어요 — 「1월 ⇥ 9.2」 또는 월 줄 + 값 줄로 붙여넣어 주세요'); return; }
+    if (!ks.length) { setErr('노무비율을 못 읽었어요 — 「10월 11.2」처럼 한 줄에 「월 값」으로 써 주세요'); return; }
     setErr('');
     setDraft((d) => { const n = { ...d }; ks.forEach((m) => { n[m] = { ...(n[m] || {}), laborRatio: r[m] }; }); return n; });
     setMsg(`노무비율 ${ks.length}개월 불러옴 (${ks.map((m) => `${monY(m)} ${r[m]}%`).join(', ')})`);
@@ -445,8 +445,8 @@ export default function LaborAnalysis() {
             <button onClick={importGongsu} disabled={!paste.trim()} className="mt-1 px-3 py-1 rounded bg-indigo-600 text-white text-xs font-bold disabled:opacity-40">공수 불러오기</button>
           </div>
           <div>
-            <div className="text-xs font-bold text-gray-700 mb-1">노무비율 붙여넣기 <span className="font-normal text-gray-500">(「1월 ⇥ 9.2%」 줄마다, 또는 월 줄 + 값 줄)</span></div>
-            <textarea value={ratioPaste} onChange={(e) => setRatioPaste(e.target.value)} rows={4} placeholder={'1월\t2월\t3월\t…\n9.2%\t10.8%\t10.4%\t…'}
+            <div className="text-xs font-bold text-gray-700 mb-1">노무비율 붙여넣기 <span className="font-normal text-gray-500">(한 줄에 한 달씩 「10월 11.2」 · 엑셀 월 줄 + 값 줄 복사도 됨 · 표의 노무비율 % 칸에 바로 써도 됨)</span></div>
+            <textarea value={ratioPaste} onChange={(e) => setRatioPaste(e.target.value)} rows={4} placeholder={'9월 11.0\n10월 11.2'}
               className="w-full border rounded p-2 text-xs font-mono" />
             <button onClick={importRatios} disabled={!ratioPaste.trim()} className="mt-1 px-3 py-1 rounded bg-indigo-600 text-white text-xs font-bold disabled:opacity-40">노무비율 불러오기</button>
           </div>

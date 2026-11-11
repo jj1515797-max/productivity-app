@@ -174,10 +174,13 @@ export function parseGongsu(text: string): { rows: LaborMonth[]; errors: string[
   return { rows, errors };
 }
 
-/** 월별 노무비율 붙여넣기 — 세로(「1월 ⇥ 9.2%」, 「2026-01 ⇥ 9.2」) 또는 가로(월 줄 + 값 줄). 0.092 처럼 소수면 %로 바꾼다 */
+/** 월별 노무비율 붙여넣기
+ *  · 한 줄에 한 달: 「10월 11.2」 「10월 11.2%」 「2026-10 11.2」 (띄어쓰기·탭 모두 — 손으로 칠 땐 탭을 못 넣는다)
+ *  · 엑셀 가로: 월 줄 + 값 줄 (한 달만 있어도 됨)
+ *  0.092 처럼 1보다 작으면 %로 바꾼다 */
 export function parseRatios(text: string, year: string): Record<string, number> {
   const out: Record<string, number> = {};
-  const lines = text.split('\n').map((l) => l.split('\t').map((s) => s.trim())).filter((r) => r.some(Boolean));
+  const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
   const monthOf = (s: string): string | null => {
     let m = s.match(/(\d{4})\s*[-./년]\s*(\d{1,2})/);
     if (m && +m[2] >= 1 && +m[2] <= 12) return `${m[1]}-${m[2].padStart(2, '0')}`;
@@ -186,20 +189,26 @@ export function parseRatios(text: string, year: string): Record<string, number> 
     return null;
   };
   const val = (s: string): number | null => {
-    if (!s) return null;
+    if (!s || /[월년]/.test(s)) return null;
     const v = Number(s.replace(/[%,\s]/g, ''));
-    return Number.isFinite(v) && v > 0 ? (v < 1 ? v * 100 : v) : null;
+    return Number.isFinite(v) && v > 0 ? (v < 1 ? Math.round(v * 1e6) / 1e4 : v) : null;
   };
-  for (let i = 0; i < lines.length - 1; i++) {
-    const ms = lines[i].map(monthOf);
-    if (ms.filter(Boolean).length < 2) continue;
-    ms.forEach((m, j) => { const v = m ? val(lines[i + 1][j] || '') : null; if (m && v !== null) out[m] = v; });
-  }
-  if (Object.keys(out).length) return out;
-  lines.forEach((r) => {
-    const m = monthOf(r[0] || '');
-    const v = r.slice(1).map(val).find((x) => x !== null);
-    if (m && v != null) out[m] = v;
+  // 1) 한 줄에 「월 값」
+  const one = /^((?:\d{4}\s*[-./년]\s*)?\d{1,2})\s*(?:월[\s:=]*|[\s:=]+)([\d.]+)\s*%?$/;
+  lines.forEach((l) => {
+    const m = l.replace(/\t/g, ' ').match(one);
+    const mo = m ? monthOf(m[1].trim()) : null;
+    const v = m ? val(m[2]) : null;
+    if (mo && v !== null) out[mo] = v;
   });
+  if (Object.keys(out).length) return out;
+  // 2) 가로: 월 줄 + 바로 아래 값 줄 (칸 위치로 짝)
+  const cells = (l: string) => (l.includes('\t') ? l.split('\t') : l.split(/\s+/)).map((x) => x.trim());
+  for (let i = 0; i < lines.length - 1; i++) {
+    const ms = cells(lines[i]).map(monthOf);
+    if (!ms.some(Boolean)) continue;
+    const vs = cells(lines[i + 1]);
+    ms.forEach((m, j) => { const v = m ? val(vs[j] || '') : null; if (m && v !== null) out[m] = v; });
+  }
   return out;
 }
