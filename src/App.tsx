@@ -33,6 +33,7 @@ import { useChatRole, useChatWatcher } from './lib/purchaseChat';
 import InboundHistory from './pages/InboundHistory';
 import Logo from './components/Logo';
 import AnalyticsGate from './components/AnalyticsGate';
+import { logoutGoogle } from './components/AuthGate';
 import { useTrackVisit } from './lib/presence';
 import { isAlertOn, toggleAlertByLongPress, watchTodayProgress, handleProgress } from './lib/completionAlert';
 import { useEffect, useRef, useState } from 'react';
@@ -304,6 +305,13 @@ function Header() {
               🔓 로그아웃
             </button>
           )}
+          <button
+            onClick={() => { if (window.confirm('구글 계정에서 로그아웃할까요? 다시 들어올 땐 주소 끝에 ?login 을 붙이세요.')) logoutGoogle(); }}
+            className="ml-2 px-2.5 py-1 text-xs rounded bg-slate-700 hover:bg-slate-800 text-slate-100 font-medium"
+            title="구글 계정 로그아웃"
+          >
+            ⏏ 계정
+          </button>
         </nav>
       </div>
 
@@ -337,6 +345,12 @@ function Header() {
             🔓 분석 로그아웃
           </button>
         )}
+        <button
+          onClick={() => { if (window.confirm('구글 계정에서 로그아웃할까요? 다시 들어올 땐 주소 끝에 ?login 을 붙이세요.')) logoutGoogle(); }}
+          className="col-span-6 mt-1 py-1 text-[11px] rounded bg-slate-700 text-slate-100 font-medium"
+        >
+          ⏏ 구글 계정 로그아웃
+        </button>
       </nav>
       {chatSetup && <ChatSetupModal onClose={() => setChatSetup(false)} />}
       {chatRole && !location.pathname.startsWith('/inventory/chat') && <ChatAlarm unread={unreadMsgs} />}
